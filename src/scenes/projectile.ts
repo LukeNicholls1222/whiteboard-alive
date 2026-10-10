@@ -1,5 +1,5 @@
 // Projectile: the drawn ball flies along a parabola from where it was drawn, in the direction of the
-// drawn arrow (or cannon barrel), leaving a dotted trail. Lands, waits 1.5 s, and fires again.
+// drawn arrow (or cannon barrel), leaving a dotted trail. Lands, waits 1.5 s, and fires again (0.4 s after a long shot stopped at the picture's edge).
 //
 // Works without AI roles: the ball is found as a small round closed loop (or a filled dot) in the ink,
 // the arrow as a long thin stroke starting at the ball, the barrel as the ink right next to the ball.
@@ -15,6 +15,8 @@ import { DEFAULT_KG, EARTH_G, mps, noteFor, pxPerStep, scaleFor } from '../units
 import { dragConstant, roundFactor } from '../air';
 
 const RELAUNCH_MS = 1500;
+/** Wait before firing again after a long shot was stopped at the picture's edge (short: it never landed). */
+const EDGE_RELAUNCH_MS = 400;
 /** Minimum elevation when the ball starts on the ground (a flat shot would just roll). */
 const MIN_ELEV_GROUND_DEG = 15;
 /** Minimum elevation when there is a drop below the ball (a horizontal shot off a cliff is still an arc). */
@@ -24,16 +26,25 @@ const DEFAULT_ELEV_DEG = 45;
 const TRAIL_EVERY = 2; // steps between trail samples
 /** Collision cell size (px) for the drawn scenery. */
 const CELL = 5;
-/** Give up on a flight after this long and fire again (never leave the scene stuck). */
+/** Give up on a flight after this long and fire again (never leave the scene stuck)... */
 const MAX_FLIGHT_MS = 9000;
+/** ...unless the ball is still on its way to the ground and the picture shows that far (a Moon shot): then up to this. */
+const LONG_FLIGHT_MS = 60000;
 /** After landing the ball's speed is multiplied by this every step, so it rolls to a stop. */
 const ROLL_DECAY = 0.93;
 /** Steps a fast ball may skid along the ground after touching it before it counts as landed (measured ~20 at 10 m/s). */
 const SKID_STEPS = 60;
 /** Smallest ball drawn on a zoomed-out picture (CSS px radius), so a fast shot is still seen flying. */
 const MIN_BALL_CSS = 4;
-/** On a zoomed-out picture the drawn launcher (cannon, ball, arrow) stays at least this share of its width. */
+/** On a zoomed-out picture the drawn launcher (cannon, ball, arrow) stays at least this share of its width... */
 const LAUNCHER_SHARE = 0.12;
+/** ...or this, when the top of the arc does not fit otherwise. Past that the top of the arc still wins (a very fast shot). */
+const LAUNCHER_SHARE_MIN = 0.08;
+/**
+ * A zoomed-out picture always shows the arc up to this × the time to its top: the top and the start of the way down
+ * (the ball has dropped (0.5)² = 25 % of the rise again). A shot that lands further away stops at the edge after that.
+ */
+const PAST_APEX = 1.5;
 /** Room below the ground line on a zoomed-out picture, as a share of its width (the ground's value label goes there). */
 const BELOW_GROUND = 0.12;
 /** Room above the arc on a zoomed-out picture, as a share of its width (the buttons over the picture's top edge). */
@@ -859,14 +870,27 @@ export const buildProjectile: SceneBuilder = (input) => {
 
   // --- View: a shot that would leave the photo (fast, or on the Moon) widens the picture to its whole flight ---
   const relaunchSteps = Math.round(RELAUNCH_MS / STEP_MS);
+  const edgeRelaunchSteps = Math.round(EDGE_RELAUNCH_MS / STEP_MS);
   const maxSteps = Math.round(MAX_FLIGHT_MS / STEP_MS);
+  const longSteps = Math.round(LONG_FLIGHT_MS / STEP_MS);
   /** Gravity the ball feels, px per step², read from the engine every step (the gravity slider and Moon are live). */
   let gNow = g;
+  /** Steps from launch until the ball is down at the ground (Infinity without gravity). */
+  const landSteps = () => {
+    if (gNow <= 1e-9) return Infinity;
+    const disc = v0.y * v0.y + 2 * gNow * (floorY - bodyR - start.y);
+    return disc >= 0 ? (-v0.y + Math.sqrt(disc)) / gNow : Infinity;
+  };
+  /** Longest a flight lasts: MAX_FLIGHT_MS, or a little past landing for a long (Moon) shot, at most LONG_FLIGHT_MS. */
+  const flightSteps = () => {
+    const t = landSteps();
+    return Number.isFinite(t) ? Math.min(longSteps, Math.max(maxSteps, Math.ceil(1.1 * t))) : maxSteps;
+  };
   // The floor reaches as far as the ball can get within one flight, its skid and its roll.
   const rollSteps = SKID_STEPS + (1 - Math.pow(ROLL_DECAY, relaunchSteps)) / (1 - ROLL_DECAY);
   /** Leftmost / rightmost the ball has been (the picture never cuts off where it really went). */
   let seenX0 = start.x, seenX1 = start.x;
-  const reach = Math.abs(v0.x) * (maxSteps + rollSteps) + W;
+  const reach = Math.abs(v0.x) * (longSteps + rollSteps) + W;
   if (2 * reach > W * 4) Matter.Body.scale(floor, (2 * reach) / (W * 4), 1);
   // The drawing (scenery ink, ball, arrow, ground line) and the launcher: the drawn part right at the launch point
   // (cannon, ball, arrow). A zoomed-out picture keeps the launcher at least LAUNCHER_SHARE of its width.
@@ -908,23 +932,26 @@ export const buildProjectile: SceneBuilder = (input) => {
   if (launcher.x1 < launcher.x0) add(launcher, start.x - r, start.y - r, start.x + r, start.y + r);
   if (span) add(drawing, span.x0, floorY, span.x1, floorY);
   const launcherSize = Math.max(launcher.x1 - launcher.x0, launcher.y1 - launcher.y0, 4 * r);
-  /** Widest the picture gets (world px): the launcher stays visible, the drawing is never cut more than the photo cuts it. */
-  const maxViewW = Math.max(launcherSize / LAUNCHER_SHARE, Math.min(W, drawing.x1 - drawing.x0 + 6 * r));
+  /** The drawing is never cut more than the photo cuts it. */
+  const drawnW = Math.min(W, drawing.x1 - drawing.x0 + 6 * r);
+  /** Widest the picture gets (world px) with the launcher at LAUNCHER_SHARE, and at LAUNCHER_SHARE_MIN. */
+  const maxViewW = Math.max(launcherSize / LAUNCHER_SHARE, drawnW);
+  const maxViewWMin = Math.max(launcherSize / LAUNCHER_SHARE_MIN, drawnW);
   /** How far inside the picture's edge (world px, picture `w` wide) a ball that flies out of it is stopped. */
   const edgeRoom = (w: number) => Math.max(bodyR, 0.015 * w);
+  /** Share of the picture's width at most taken by edgeRoom (for picking a width that leaves the ball room). */
+  const EDGE_SHARE = 0.015;
   /**
    * Box around the flight and the drawing: launch point, top of the arc and landing point (plus skid and roll, and
    * wherever the ball has been) with a margin. Its shape follows the flight (a long flat shot gets a wide, low
-   * picture), between MIN_VIEW_ASPECT and MAX_VIEW_ASPECT. No wider than maxViewW: past that the ball stops at the
-   * picture's edge and fires again (onStep). Null while the flight fits the photo.
+   * picture), between MIN_VIEW_ASPECT and MAX_VIEW_ASPECT. No wider than maxViewW (the launcher at LAUNCHER_SHARE),
+   * unless the top of the arc and the start of the way down (PAST_APEX) need more: then as much of the flight as
+   * maxViewWMin allows, and never less than they need. Past that width the ball stops at the picture's edge and fires
+   * again (onStep). Null while the flight fits the photo.
    */
   const flightView = (): ViewRect | null => {
     const vx = v0.x, vy = v0.y;
-    let tEnd = maxSteps;
-    if (gNow > 1e-9) {
-      const disc = vy * vy + 2 * gNow * (floorY - bodyR - start.y);
-      if (disc >= 0) tEnd = Math.min(tEnd, (-vy + Math.sqrt(disc)) / gNow);
-    }
+    const tEnd = Math.min(flightSteps(), landSteps());
     const tTop = vy < 0 ? (gNow > 1e-9 ? Math.min(-vy / gNow, tEnd) : tEnd) : 0;
     const yTop = start.y + vy * tTop + (gNow * tTop * tTop) / 2;
     const xEnd = start.x + vx * tEnd;
@@ -935,15 +962,30 @@ export const buildProjectile: SceneBuilder = (input) => {
     const m = 3 * r + 0.04 * Math.min(Math.max(x1 - x0, start.y - yTop), maxViewW);
     x0 -= m;
     x1 += m;
-    if (x1 - x0 > maxViewW) {
+    // What the picture must show: from the launcher to the start of the way down, with the ball's stopping room at
+    // that side (width), and from the top of the arc to the ground with the room above and below (height).
+    const back = vx >= 0 ? Math.min(launcher.x0, start.x - r) - m : Math.max(launcher.x1, start.x + r) + m;
+    const xPast = start.x + vx * Math.min(tEnd, PAST_APEX * tTop);
+    const needX = (Math.abs(xPast - back) + 2 * r + m) / (1 - EDGE_SHARE);
+    const hNeed = Math.max(drawing.y1, floorY) - Math.min(drawing.y0, yTop - r) + 2 * m;
+    const needY = hNeed / (MAX_VIEW_ASPECT - ABOVE_ARC - BELOW_GROUND);
+    const need = Math.max(needX, needY);
+    const cap = need <= maxViewW ? maxViewW : Math.max(need, Math.min(x1 - x0, maxViewWMin));
+    if (x1 - x0 > cap) {
       // Keep the launcher and as much of the flight as fits.
       if (vx >= 0) {
-        x0 = Math.max(x0, Math.min(launcher.x0, start.x - r) - m);
-        x1 = x0 + maxViewW;
+        x0 = Math.max(x0, back);
+        x1 = x0 + cap;
       } else {
-        x1 = Math.min(x1, Math.max(launcher.x1, start.x + r) + m);
-        x0 = x1 - maxViewW;
+        x1 = Math.min(x1, back);
+        x0 = x1 - cap;
       }
+    }
+    if (x1 - x0 < needY) {
+      // A steep shot: wider on both sides, so the top of the arc fits under the buttons.
+      const grow = (needY - (x1 - x0)) / 2;
+      x0 -= grow;
+      x1 += grow;
     }
     // Highest point of the arc inside that width (a shot cut off at the side stops there, before its top).
     const w = x1 - x0;
@@ -961,7 +1003,7 @@ export const buildProjectile: SceneBuilder = (input) => {
     if (y1 - y0 < MIN_VIEW_ASPECT * w) y0 = y1 - MIN_VIEW_ASPECT * w; // sky above a flat shot
     else if (y1 - y0 > MAX_VIEW_ASPECT * w) {
       // A steep shot: wider (up to the limit, on both sides), then the top of the arc is cut (the ball stops there).
-      const grow = Math.max(0, Math.min(maxViewW, (y1 - y0) / MAX_VIEW_ASPECT) - w) / 2;
+      const grow = Math.max(0, Math.min(Math.max(cap, w), (y1 - y0) / MAX_VIEW_ASPECT) - w) / 2;
       x0 -= grow;
       x1 += grow;
       y0 = Math.max(y0, y1 - MAX_VIEW_ASPECT * (x1 - x0));
@@ -990,7 +1032,7 @@ export const buildProjectile: SceneBuilder = (input) => {
     return true;
   };
 
-  // --- Loop: fly, land, wait 1.5 s, fire again. Keep the previous arc as a faint ghost. ---
+  // --- Loop: fly, land, wait 1.5 s (0.4 s when stopped at the edge), fire again. Keep the previous arc as a faint ghost. ---
   let trail: Point[] = [{ ...start }];
   let ghostTrail: Point[] = [];
   let steps = 0;
@@ -1027,7 +1069,7 @@ export const buildProjectile: SceneBuilder = (input) => {
       const landed = !ghost && steps > 5 && moved > 3 * r && body.velocity.y > -0.5 && touchingStatic(engine);
       const stuck = steps > 20 && slowSteps > 30;
       const gone = steps > 2 && stopAtEdge();
-      if (landed || stuck || gone || steps > maxSteps) {
+      if (landed || stuck || gone || steps > flightSteps()) {
         trail.push({ x: body.position.x, y: body.position.y });
         landedSteps = 0;
       }
@@ -1043,7 +1085,8 @@ export const buildProjectile: SceneBuilder = (input) => {
       Matter.Body.setAngularVelocity(body, body.angularVelocity * ROLL_DECAY);
       stopAtEdge();
     }
-    if (++landedSteps < relaunchSteps) return;
+    // Stopped at the edge: fire again soon (the wait is never longer than the flight). Landed: a longer look.
+    if (++landedSteps < (hold ? edgeRelaunchSteps : relaunchSteps)) return;
     hold = null;
     ghostTrail = trail;
     trail = [{ ...start }];
