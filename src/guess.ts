@@ -335,9 +335,20 @@ function holes(ink: Uint8Array, W: number, H: number, minSide: number): Shape[] 
   return out;
 }
 
-/** Filled-in blobs: ink far thicker than the pen (a coloured-in bob or ball). */
+/**
+ * Filled-in blobs: ink far thicker than the pen (a coloured-in bob or ball). A marker-filled ball photographed
+ * under a lamp keeps a few glare specks of paper inside it (black-ink-only detection leaves them out of the ink),
+ * which would cut its depth to a fraction of its radius. Enclosed paper specks too small to be a closed shape
+ * (under HOLE_MIN) are therefore counted as ink here.
+ */
 function solids(ink: Uint8Array, W: number, H: number, minSide: number, stroke: number): Shape[] {
-  const d = distance(ink, W, H);
+  const speck = (HOLE_MIN * minSide) ** 2;
+  const filled = ink.slice();
+  components(W, H, (i) => !ink[i], (pix, n, border) => {
+    if (border || n >= speck) return;
+    for (const i of pix) filled[i] = 255;
+  });
+  const d = distance(filled, W, H);
   const deep = Math.max(SOLID_DEPTH * stroke, SOLID_MIN * minSide * 0.5);
   // Deepest point of each thick core = centre of an inscribed disc. A scribbled-in blob can give several cores;
   // overlapping discs are merged into one.
