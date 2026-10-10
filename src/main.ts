@@ -81,6 +81,8 @@ async function startScene(input: SceneInput, opts: StartOptions = {}): Promise<B
   sim?.stop();
   // Show what the AI understood on top of the paper, then let it come alive.
   if (opts.intro) await overlay.playIntro({ ...input, scene });
+  // A rebuild (typed number) may move the drawing itself (stretched ramp): "what the AI saw" follows it.
+  else overlay.setScene(scene);
   if (opts.forGen !== undefined && opts.forGen !== gen) return null;
   sim?.stop();
   sim = new Simulation(stage, scene, input.width, input.height);

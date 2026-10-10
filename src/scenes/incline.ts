@@ -6,7 +6,7 @@ import Matter from 'matter-js';
 import type { Contour, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
 import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
 import { replayWhenStopped } from './replay';
-import { STEP_ACCEL } from '../sim';
+import { PAPER_FILL, STEP_ACCEL } from '../sim';
 import { DEFAULT_KG, noteFor } from '../units';
 
 /** Coulomb friction coefficient μ used when the AI gives no `params.friction`. */
@@ -532,19 +532,22 @@ const TOP_MARGIN = 0.1;
 
 /**
  * Vertical-only stretch of the ramp: rows above `anchorY` move away from it by ×k, rows below it (the base stroke)
- * stay as drawn, so the base keeps its place and its line width while the high corner rises or sinks.
+ * stay as drawn, so the base keeps its place and its line width while the high corner rises or sinks. `pad` = blank
+ * paper added above the photo when the stretched ramp is taller than the picture: every world y is photo y + pad.
  */
 interface Stretch {
   anchorY: number;
   k: number;
+  pad: number;
 }
-const stretchY = (y: number, st: Stretch) => (y < st.anchorY ? st.anchorY - (st.anchorY - y) * st.k : y);
+const stretchY = (y: number, st: Stretch) => (y < st.anchorY ? st.anchorY - (st.anchorY - y) * st.k : y) + st.pad;
 const stretchPt = (p: Point, st: Stretch): Point => ({ x: p.x, y: stretchY(p.y, st) });
 const deg = (rad: number) => (rad * 180) / Math.PI;
 
 /**
- * The stretch that makes the slope edge rise at `want` degrees (base length unchanged: height = base × tan θ), and
- * the steepest angle this drawing takes before its top corner leaves the picture. No `want` = as drawn.
+ * The stretch that makes the slope edge rise at `want` degrees (base length unchanged: height = base × tan θ). Any
+ * angle in the input range is taken: when the top corner would leave the picture, blank paper is added above it
+ * (`st.pad`) instead of capping the angle. No `want` = as drawn.
  */
 function stretchFor(tri: Tri, slope: Slope, stroke: number, H: number, want: number | undefined) {
   const floorY = Math.max(...tri.map((p) => p.y));
@@ -552,37 +555,64 @@ function stretchFor(tri: Tri, slope: Slope, stroke: number, H: number, want: num
   const anchorY = floorY - Math.max(2, stroke) - 2;
   const { top, bottom } = slope;
   const dx = Math.abs(bottom.x - top.x);
-  const angleAt = (k: number) => deg(Math.atan2(Math.abs(stretchY(bottom.y, { anchorY, k }) - stretchY(top.y, { anchorY, k })), dx));
+  const angleAt = (k: number) => deg(Math.atan2(Math.abs(stretchY(bottom.y, { anchorY, k, pad: 0 }) - stretchY(top.y, { anchorY, k, pad: 0 })), dx));
   // Rise of the slope edge after the stretch: a + b·k (its lower end may sit in the unstretched base band).
   const a = bottom.y >= anchorY ? bottom.y - anchorY : 0;
   const b = bottom.y >= anchorY ? anchorY - top.y : bottom.y - top.y;
-  const kMax = (anchorY - TOP_MARGIN * H) / Math.max(1, anchorY - apexY);
-  const canStretch = dx >= 1 && b > 1 && kMax > 0;
-  const maxDeg = canStretch ? Math.max(MIN_ANGLE_DEG, Math.min(MAX_ANGLE_DEG, Math.floor(angleAt(kMax)))) : MAX_ANGLE_DEG;
-  if (want === undefined || !canStretch) return { st: { anchorY, k: 1 }, maxDeg, angle: deg(slope.angle), adjusted: false };
+  const canStretch = dx >= 1 && b > 1;
+  const maxDeg = MAX_ANGLE_DEG;
+  if (want === undefined || !canStretch) return { st: { anchorY, k: 1, pad: 0 }, maxDeg, angle: deg(slope.angle), adjusted: false };
   const target = Math.min(Math.max(want, MIN_ANGLE_DEG), maxDeg);
   const k = Math.max(0.02, (dx * Math.tan((target * Math.PI) / 180) - a) / b);
-  return { st: { anchorY, k }, maxDeg, angle: angleAt(k), adjusted: target < want - 1e-9 };
+  // Keep the top corner as far below the top edge as it was drawn (at most TOP_MARGIN of the picture); once paper
+  // has to be added, TOP_MARGIN of the taller picture (gap = TOP_MARGIN·(H + pad)), clear of the badges.
+  const newApexY = stretchY(apexY, { anchorY, k, pad: 0 });
+  const pad =
+    newApexY >= Math.min(apexY, TOP_MARGIN * H) ? 0 : Math.max(0, Math.ceil((TOP_MARGIN * H - newApexY) / (1 - TOP_MARGIN)));
+  return { st: { anchorY, k, pad }, maxDeg, angle: angleAt(k), adjusted: Math.abs(target - want) > 1e-9 };
 }
 
 /**
  * The background with the ramp's hand-drawn lines stretched (`rampMask` = the ramp's ink and inside, without the
- * blocks): erased where they were, redrawn in two slices, the base band as drawn and everything above it ×k.
+ * blocks): erased where they were, redrawn in two slices, the base band as drawn and everything above it ×k. With a
+ * `pad` the photo is drawn that far down on a taller canvas, blank paper above it.
  */
 function stretchedBackground(input: SceneInput, masks: Uint8Array[], rampMask: Uint8Array, st: Stretch): HTMLCanvasElement {
-  const bg = eraseFromPaper(input, [...masks, rampMask]);
+  const erased = eraseFromPaper(input, [...masks, rampMask]);
+  let bg = erased;
+  if (st.pad > 0) {
+    bg = document.createElement('canvas');
+    bg.width = erased.width;
+    bg.height = erased.height + st.pad;
+    const c = bg.getContext('2d')!;
+    c.fillStyle = PAPER_FILL;
+    c.fillRect(0, 0, bg.width, bg.height);
+    c.drawImage(erased, 0, st.pad);
+  }
   const cut = cutSprite(input, rampMask);
   const ctx = bg.getContext('2d')!;
   const { image, offset } = cut;
   const split = Math.min(image.height, Math.max(0, Math.round(st.anchorY - offset.y)));
+  const y0 = offset.y + st.pad;
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  if (image.height > split) ctx.drawImage(image, 0, split, image.width, image.height - split, offset.x, offset.y + split, image.width, image.height - split);
+  if (image.height > split) ctx.drawImage(image, 0, split, image.width, image.height - split, offset.x, y0 + split, image.width, image.height - split);
   if (split > 0) {
     const h = split * st.k;
-    ctx.drawImage(image, 0, 0, image.width, split, offset.x, offset.y + split - h, image.width, h);
+    ctx.drawImage(image, 0, 0, image.width, split, offset.x, y0 + split - h, image.width, h);
   }
   return bg;
+}
+
+/** Is any pixel of `mask` within `r` px of p (outline points sit just outside the ink)? */
+function nearMask(mask: Uint8Array, W: number, H: number, p: Point, r = 4): boolean {
+  const px = Math.round(p.x), py = Math.round(p.y);
+  for (let dy = -r; dy <= r; dy += 2)
+    for (let dx = -r; dx <= r; dx += 2) {
+      const x = px + dx, y = py + dy;
+      if (x >= 0 && y >= 0 && x < W && y < H && mask[y * W + x]) return true;
+    }
+  return false;
 }
 
 const boundsOf = (pts: Point[]) => {
@@ -603,7 +633,8 @@ export const buildIncline: SceneBuilder = (input) => {
   const blocks = pickBlocks(input, usable, incline, ink, rampShape, drawnSlope);
   if (!blocks.length) throw new Error('incline: no block found');
 
-  // An entered angle stretches the ramp vertically (base as drawn), up to the steepest that fits on the picture.
+  // An entered angle stretches the ramp vertically (base as drawn); blank paper is added above the photo when the
+  // stretched ramp is taller than it (fit.st.pad: the whole world is then that much lower).
   const asked = noteFor(input.analysis, 'angle', ['ramp'])?.value;
   const fit = stretchFor(rampShape.tri, drawnSlope, rampShape.stroke, H, asked);
   const stretched = Math.abs(fit.st.k - 1) > 1e-6;
@@ -646,6 +677,8 @@ export const buildIncline: SceneBuilder = (input) => {
   const moving: Matter.Body[] = [];
   const sprites: Sprite[] = [];
   const masks: Uint8Array[] = [];
+  /** Each block's cut-out mask (photo px) and its pose when the scene starts, for drawnAt. */
+  const starts: { mask: Uint8Array; origin: Point; originAngle: number; at: Point; angle: number }[] = [];
 
   for (const blk of blocks) {
     const body = Matter.Bodies.fromVertices(blk.centroid.x, blk.centroid.y, [blk.hull], {
@@ -699,19 +732,22 @@ export const buildIncline: SceneBuilder = (input) => {
     bodies.push(body);
     moving.push(body);
     masks.push(blk.erase);
+    starts.push({ mask: blk.sprite, origin, originAngle, at: { ...body.position }, angle: body.angle });
     const cut = cutSprite(input, blk.sprite);
     sprites.push({ image: cut.image, offset: cut.offset, follow: { kind: 'body', body, origin, originAngle } });
   }
   if (bodies.length < 2) throw new Error('incline: block bodies could not be built');
   const block = bodies[1];
 
-  // Floor at the ramp's base and walls at the image edges keep the block on screen.
-  const floorY = Math.min(H, Math.max(a.y, b.y, c.y));
+  // Floor at the ramp's base and walls at the image edges keep the block on screen (world = photo + blank strip on top).
+  const pad = stretched ? fit.st.pad : 0;
+  const worldH = H + pad;
+  const floorY = Math.min(worldH, Math.max(a.y, b.y, c.y));
   const wallOpts = { isStatic: true, ...surface };
   bodies.push(
     Matter.Bodies.rectangle(W / 2, floorY + 50, W * 3, 100, wallOpts),
-    Matter.Bodies.rectangle(-50, H / 2, 100, H * 4, wallOpts),
-    Matter.Bodies.rectangle(W + 50, H / 2, 100, H * 4, wallOpts),
+    Matter.Bodies.rectangle(-50, worldH / 2, 100, worldH * 4, wallOpts),
+    Matter.Bodies.rectangle(W + 50, worldH / 2, 100, worldH * 4, wallOpts),
   );
 
   const kg = noteFor(input.analysis, 'mass', ['block', 'ball', 'bob'])?.value;
@@ -722,10 +758,22 @@ export const buildIncline: SceneBuilder = (input) => {
   const inner = { x: (la * a.x + lb * b.x + lc * c.x) / per, y: (la * a.y + lb * b.y + lc * c.y) / per };
   // The ramp stays in the background as drawn (stretched to an entered angle); only the moving blocks are erased.
   let background: HTMLCanvasElement;
+  let drawnAt: ((p: Point) => Point) | undefined;
   if (stretched) {
     const rampMask = contourMask(input, [incline], 3);
     for (const m of masks) for (let i = 0; i < rampMask.length; i++) if (m[i]) rampMask[i] = 0;
     background = stretchedBackground(input, masks, rampMask, fit.st);
+    // Where drawn ink is shown at the start: blocks moved and turned with their body, the ramp stretched, the rest
+    // of the drawing only lowered by the blank strip.
+    drawnAt = (p) => {
+      for (const s of starts) {
+        if (!nearMask(s.mask, W, H, p)) continue;
+        const r = s.angle - s.originAngle, cr = Math.cos(r), sr = Math.sin(r);
+        const dx = p.x - s.origin.x, dy = p.y - s.origin.y;
+        return { x: s.at.x + dx * cr - dy * sr, y: s.at.y + dx * sr + dy * cr };
+      }
+      return nearMask(rampMask, W, H, p) ? stretchPt(p, fit.st) : { x: p.x, y: p.y + pad };
+    };
   } else background = eraseFromPaper(input, masks);
   const angleFrom: ValueSource = asked === undefined ? 'drawn' : fit.adjusted ? 'adjusted' : 'input';
   return {
@@ -734,6 +782,8 @@ export const buildIncline: SceneBuilder = (input) => {
     sprites,
     background,
     label: 'Incline',
+    // The picture shows the blank strip too (the photo plus `pad` above it, in this scene's lowered world).
+    ...(stretched ? { view: pad > 0 ? { x: 0, y: 0, w: W, h: worldH } : undefined, drawnAt } : {}),
     onStep: replayWhenStopped(moving),
     measures: { ramp: slope.length, ground: x1 - x0 },
     parts: {

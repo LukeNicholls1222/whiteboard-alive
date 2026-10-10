@@ -12,8 +12,8 @@
 
 import Matter from 'matter-js';
 import { DEFAULT_FRICTION } from './scenes/incline';
-import type { Simulation } from './sim';
-import type { Analysis, BuiltScene, PartInfo, PartName, Point, ValueSource } from './types';
+import { visibleRect, type Simulation } from './sim';
+import type { Analysis, BuiltScene, PartInfo, PartName, Point, ValueSource, ViewRect } from './types';
 import {
   DEFAULT_KG,
   OMEGA2_PER_STIFFNESS,
@@ -108,7 +108,7 @@ export class QuantityLabels {
   /** Fastest body speed seen, px per step (scales the arrows of a scene without a speedHint). */
   private vSeen = 0;
   /** Buttons and badges floating over the picture (the slow-motion badge, "Show what AI saw"), world px. */
-  private floats: { boxes: Box[]; css: number; age: number } | null = null;
+  private floats: { boxes: Box[]; css: number; x0: number; y0: number; age: number } | null = null;
 
   constructor(private card: HTMLElement) {
     injectStyle();
@@ -153,8 +153,10 @@ export class QuantityLabels {
 
   private draw(ctx: CanvasRenderingContext2D, scene: BuiltScene, pxScale: number) {
     const css = (window.devicePixelRatio || 1) / pxScale; // world px per CSS px
-    const worldW = ctx.canvas.width / pxScale;
-    const worldH = ctx.canvas.height / pxScale;
+    // What the picture shows (world px): the photo, or the scene's view (sim.ts).
+    const vis = visibleRect(ctx);
+    const worldW = vis.w;
+    const worldH = vis.h;
     const h = PILL_H_CSS * css;
     const gap = GAP_CSS * css;
     const pad = PAD_CSS * css;
@@ -169,7 +171,7 @@ export class QuantityLabels {
       return;
     }
     const sim = this.sim!;
-    const predicted = (this.paths ??= predictPaths(scene, sim.engine, worldW, worldH, lmax));
+    const predicted = (this.paths ??= predictPaths(scene, sim.engine, vis, lmax));
     // What moves right now (bodies, their arrows, swinging strings); also remembered for later re-placements.
     const now = this.current(scene, lmax);
     // Labels never cover a part of the drawing (its own or another one's): moving parts by their body's box,
@@ -184,8 +186,8 @@ export class QuantityLabels {
         keepBoxes.push({ x: b.min.x - m, y: b.min.y - m, w: b.max.x - b.min.x + 2 * m, h: b.max.y - b.min.y + 2 * m });
       } else if ((p.clear ?? 0) > 0) keepCircles.push({ c: { ...p.at() }, r: p.clear! });
     }
-    const bar = scaleBarZone(ctx, css, worldW, worldH);
-    const floats = this.floatingBoxes(ctx.canvas, css);
+    const bar = scaleBarZone(ctx, css, worldW, worldH, vis.x, vis.y);
+    const floats = this.floatingBoxes(ctx.canvas, css, vis);
     const arrowGap = ARROW_SPACE_CSS * css;
     /** Is a box clear of the given things (bodies 2 px apart, arrows and strings ARROW_SPACE_CSS from their edge)? */
     const clearOf = (b: Box, list: Keep[], soft: boolean) =>
@@ -212,10 +214,10 @@ export class QuantityLabels {
       // Always: on the picture, LABEL_SPACE_CSS off the other cards and the scale bar, off the drawing's parts,
       // and off whatever moves right now (bodies and their arrows).
       const base = (b: Box) =>
-        b.x >= 2 * css &&
-        b.y >= 2 * css &&
-        b.x + b.w <= worldW - 2 * css &&
-        b.y + b.h <= worldH - 2 * css &&
+        b.x >= vis.x + 2 * css &&
+        b.y >= vis.y + 2 * css &&
+        b.x + b.w <= vis.x + worldW - 2 * css &&
+        b.y + b.h <= vis.y + worldH - 2 * css &&
         !placed.some((o) => overlap(grow(o, space), b)) &&
         !overlap(grow(bar, space), b) &&
         !floats.some((o) => overlap(grow(o, space), b)) &&
@@ -229,25 +231,38 @@ export class QuantityLabels {
         const paths = this.observed.length ? predicted.concat(this.observed) : predicted;
         // Best: off every path, strings included; then strings may be crossed; then off what moves right now only.
         const tiers = [(b: Box) => clearOf(b, paths, true), (b: Box) => clearOf(b, paths, false), () => true];
-        let k = -1;
-        for (const ok of tiers) {
-          k = spots.findIndex((s) => {
-            const b = boxAt(s);
-            return base(b) && ok(b);
-          });
-          if (k >= 0) break;
-        }
+        /** A spot moved just enough to keep its card on the picture (3 px in, so it passes the 2 px edge test). */
+        const inside = (s: Point): Point => ({
+          x: Math.min(Math.max(s.x, vis.x + w / 2 + 3 * css), vis.x + worldW - w / 2 - 3 * css),
+          y: Math.min(Math.max(s.y, vis.y + H / 2 + 3 * css), vis.y + worldH - H / 2 - 3 * css),
+        });
+        const find = (list: Point[]) => {
+          for (const ok of tiers) {
+            const i = list.findIndex((s) => {
+              const b = boxAt(s);
+              return base(b) && ok(b);
+            });
+            if (i >= 0) return i;
+          }
+          return -1;
+        };
+        let k = find(spots);
         if (k >= 0) {
           group.at = spots[k];
           group.retry = 0;
         } else {
-          // Nothing fits cleanly: the preferred spot, kept on the picture; look again in a moment.
-          k = 0;
-          group.at = {
-            x: Math.min(Math.max(spots[0].x, w / 2 + 2 * css), worldW - w / 2 - 2 * css),
-            y: Math.min(Math.max(spots[0].y, H / 2 + 2 * css), worldH - H / 2 - 2 * css),
-          };
-          group.retry = RETRY_FRAMES;
+          // A part in a corner of the picture (a launch point on a zoomed-out view): its spots pushed onto the picture.
+          const pushed = spots.map(inside);
+          k = find(pushed);
+          if (k >= 0) {
+            group.at = pushed[k];
+            group.retry = 0;
+          } else {
+            // Nothing fits cleanly: the preferred spot, kept on the picture; look again in a moment.
+            k = 0;
+            group.at = pushed[0];
+            group.retry = RETRY_FRAMES;
+          }
         }
         group.spot = k;
       }
@@ -271,18 +286,18 @@ export class QuantityLabels {
    * Where the badges and buttons floating over the picture are (world px), so no card hides behind them.
    * Read from the page every half second or when the picture is resized (they show and hide on their own).
    */
-  private floatingBoxes(canvas: HTMLCanvasElement, css: number): Box[] {
+  private floatingBoxes(canvas: HTMLCanvasElement, css: number, vis: ViewRect): Box[] {
     const f = this.floats;
-    if (f && f.css === css && ++f.age < 30) return f.boxes;
+    if (f && f.css === css && f.x0 === vis.x && f.y0 === vis.y && ++f.age < 30) return f.boxes;
     const cr = canvas.getBoundingClientRect();
     const boxes: Box[] = [];
     for (const el of this.card.querySelectorAll<HTMLElement>('.time-badge, .btn-float')) {
       if (el.hidden || !el.offsetParent) continue;
       const r = el.getBoundingClientRect();
       if (!r.width || !r.height) continue;
-      boxes.push({ x: (r.left - cr.left) * css, y: (r.top - cr.top) * css, w: r.width * css, h: r.height * css });
+      boxes.push({ x: vis.x + (r.left - cr.left) * css, y: vis.y + (r.top - cr.top) * css, w: r.width * css, h: r.height * css });
     }
-    this.floats = { boxes, css, age: 0 };
+    this.floats = { boxes, css, x0: vis.x, y0: vis.y, age: 0 };
     return boxes;
   }
 
@@ -342,8 +357,10 @@ function poseKeeps(b: Matter.Body, x: number, y: number, dirs: Point[], len: num
  *   spring               the stroke of ± amplitude (speedHint / ω) along the spring;
  *   anything else        straight on along its velocity, then along the ground (a block sliding off a ramp).
  */
-function predictPaths(scene: BuiltScene, engine: Matter.Engine, W: number, H: number, lmax: number): Keep[] {
+function predictPaths(scene: BuiltScene, engine: Matter.Engine, vis: ViewRect, lmax: number): Keep[] {
   const out: Keep[] = [];
+  // Edges of the picture (world px): left/top X0/Y0, right/bottom W/H (the photo: 0, 0, width, height).
+  const X0 = vis.x, Y0 = vis.y, W = vis.x + vis.w, H = vis.y + vis.h;
   const g = engine.gravity.y * engine.gravity.scale * STEP_MS * STEP_MS; // px per step², downwards
   const hint = scene.speedHint && scene.speedHint > 0 ? scene.speedHint : 0;
   const groundY = scene.parts?.ground?.at().y;
@@ -371,7 +388,7 @@ function predictPaths(scene: BuiltScene, engine: Matter.Engine, W: number, H: nu
       }
     } else if (scene.label === 'Pulley') {
       const wheel = scene.parts?.wheel;
-      const top = wheel ? wheel.at().y + (wheel.clear ?? 0) + hh : p.y - H / 2;
+      const top = wheel ? wheel.at().y + (wheel.clear ?? 0) + hh : p.y - vis.h / 2;
       for (let y = Math.min(top, p.y); y <= Math.max(H, p.y); y += PATH_STEP) add(p.x, y, [{ x: 0, y: -1 }, { x: 0, y: 1 }], lmax);
     } else if (scene.label === 'Projectile') {
       const floor = groundY ?? H;
@@ -386,7 +403,7 @@ function predictPaths(scene: BuiltScene, engine: Matter.Engine, W: number, H: nu
         x += vx;
         y += vy;
         run += Math.hypot(vx, vy);
-        if (y + hh > floor || x < -hh || x > W + hh || y > H + hh) break;
+        if (y + hh > floor || x < X0 - hh || x > W + hh || y > H + hh) break;
       }
       pts.push({ x, y, vx, vy });
       const vTop = Math.max(hint, ...pts.map((q) => Math.hypot(q.vx, q.vy)));
@@ -412,7 +429,7 @@ function predictPaths(scene: BuiltScene, engine: Matter.Engine, W: number, H: nu
       // Straight on along the velocity (down if still), full-length arrow; along the ground once it gets there.
       let d = v > 1e-9 ? { x: v0.x / v, y: v0.y / v } : { x: 0, y: 1 };
       let x = p.x, y = p.y;
-      for (let i = 0; i < 2000 && x >= -hh && x <= W + hh && y <= H + hh && y >= -hh; i++) {
+      for (let i = 0; i < 2000 && x >= X0 - hh && x <= W + hh && y <= H + hh && y >= Y0 - hh; i++) {
         add(x, y, [d], lmax);
         if (groundY !== undefined && d.y > 0 && y + hh >= groundY) d = { x: Math.sign(d.x) || 1, y: 0 };
         x += d.x * PATH_STEP;

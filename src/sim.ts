@@ -3,13 +3,48 @@
 import Matter from 'matter-js';
 import decomp from 'poly-decomp';
 import { MotionTracker } from './motion';
-import type { BuiltScene, SimParams, Sprite } from './types';
+import type { BuiltScene, SimParams, Sprite, ViewRect } from './types';
 import { BASE_SCALE, STEP_MS } from './units';
 
 // The step constants live in units.ts (a leaf module); re-exported here for the scene builders.
 export { STEP_ACCEL, STEP_MS } from './units';
 
 Matter.Common.setDecomp(decomp);
+
+// ---- View (camera) ------------------------------------------------------------------------------------
+// A scene may show more than the photo (BuiltScene.view): the picture keeps the card's width, its height follows
+// the view's shape up to MAX_VIEW_ASPECT × the width, and a taller view is shrunk to fit and centred. Without a
+// view the photo fills the card exactly as before. The renderer, the overlay and the labels all use these helpers.
+
+/** Tallest picture a view may make, as height / width. */
+export const MAX_VIEW_ASPECT = 1.6;
+/** Paper colour shown where the view reaches past the photo. */
+export const PAPER_FILL = 'rgb(251, 250, 246)';
+
+/** The scene's view right now (it may follow live gravity), or null = the photo as it is. */
+export function viewOf(scene: BuiltScene): ViewRect | null {
+  const v = typeof scene.view === 'function' ? scene.view() : scene.view;
+  return v && v.w > 0 && v.h > 0 ? v : null;
+}
+
+/** CSS height of the picture for a card `cssW` wide. */
+export function pictureCssHeight(view: ViewRect | null, photoW: number, photoH: number, cssW: number): number {
+  if (!view) return (cssW * photoH) / photoW;
+  return Math.min((cssW * view.h) / view.w, MAX_VIEW_ASPECT * cssW);
+}
+
+/** Canvas transform for a canvas of the given device-pixel size: world (x, y) -> (S·x + tx, S·y + ty). */
+export function pictureTransform(view: ViewRect | null, photoW: number, canvasW: number, canvasH: number) {
+  if (!view) return { S: canvasW / photoW, tx: 0, ty: 0 };
+  const S = Math.min(canvasW / view.w, canvasH / view.h);
+  return { S, tx: (canvasW - view.w * S) / 2 - view.x * S, ty: (canvasH - view.h * S) / 2 - view.y * S };
+}
+
+/** The world rectangle a context currently shows (from its transform): labels and arrows stay inside it. */
+export function visibleRect(ctx: CanvasRenderingContext2D): ViewRect {
+  const t = ctx.getTransform();
+  return { x: -t.e / t.a, y: -t.f / t.d, w: ctx.canvas.width / t.a, h: ctx.canvas.height / t.d };
+}
 
 export class Simulation {
   engine = Matter.Engine.create();
@@ -28,7 +63,7 @@ export class Simulation {
     private canvas: HTMLCanvasElement,
     readonly scene: BuiltScene,
     private worldW: number,
-    readonly worldH: number,
+    private photoH: number,
   ) {
     this.ctx = canvas.getContext('2d')!;
     Matter.Composite.add(this.engine.world, [...scene.bodies, ...scene.constraints]);
@@ -44,6 +79,12 @@ export class Simulation {
         if (plugin && plugin.inclineMu !== undefined) plugin.inclineMu = p.friction;
       }
     for (const fn of this.paramListeners) fn(p);
+  }
+
+  /** Bottom edge of what is shown, world px (the photo's, or the scene's view). */
+  get worldH(): number {
+    const v = viewOf(this.scene);
+    return v ? v.y + v.h : this.photoH;
   }
 
   /** Current gravity in m/s² (read back from the engine, so there is one source of truth). */
@@ -74,14 +115,20 @@ export class Simulation {
     const { canvas, ctx } = this;
     const dpr = window.devicePixelRatio || 1;
     const cssW = canvas.clientWidth;
-    const cssH = (cssW * this.worldH) / this.worldW;
+    const view = viewOf(this.scene);
+    const cssH = pictureCssHeight(view, this.worldW, this.photoH, cssW);
     if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
       canvas.width = Math.round(cssW * dpr);
       canvas.height = Math.round(cssH * dpr);
       canvas.style.height = `${cssH}px`;
     }
-    const s = canvas.width / this.worldW;
-    ctx.setTransform(s, 0, 0, s, 0, 0);
+    const { S: s, tx, ty } = pictureTransform(view, this.worldW, canvas.width, canvas.height);
+    if (view) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = PAPER_FILL;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    ctx.setTransform(s, 0, 0, s, tx, ty);
     ctx.drawImage(this.scene.background, 0, 0);
     if (this.scene.onDraw) {
       ctx.save();
@@ -118,7 +165,7 @@ export class Simulation {
   }
 }
 
-function drawSprite(ctx: CanvasRenderingContext2D, sp: Sprite) {
+export function drawSprite(ctx: CanvasRenderingContext2D, sp: Sprite) {
   const f = sp.follow;
   ctx.save();
   if (f.kind === 'body') {

@@ -7,6 +7,14 @@ export interface Point {
   y: number;
 }
 
+/** A rectangle in world px. */
+export interface ViewRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface BBox {
   x: number;
   y: number;
@@ -150,6 +158,17 @@ export interface BuiltScene {
   /** Paper with the moving parts erased; drawn as the static background. */
   background: HTMLCanvasElement;
   label: string;
+  /**
+   * What part of the world the picture shows (world px), when it is not just the photo (0, 0, width, height): a ramp
+   * stretched taller than the photo, a shot that flies past its edges. A function is read every frame (it may follow
+   * live gravity) and may return null for "the photo". Past the background the picture is blank paper. See sim.ts.
+   */
+  view?: ViewRect | (() => ViewRect | null);
+  /**
+   * Where a point drawn on the photo sits in the world when the scene starts, for scenes that move the drawing
+   * itself (incline stretched to an entered angle). Absent = the drawing is shown where it was drawn.
+   */
+  drawnAt?: (p: Point) => Point;
   /** Optional per-step hook (after each Engine.update), e.g. to relaunch a projectile. */
   onStep?: (engine: Matter.Engine) => void;
   /** Optional overlay drawn in world coordinates after the background, before the sprites. */

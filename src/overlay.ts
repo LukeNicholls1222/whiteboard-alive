@@ -3,6 +3,7 @@
 
 import type { Analysis, BodyRole, BuiltScene, Contour, Point, Sprite } from './types';
 import { contourMask, deepestPoint, maskBounds } from './scenes/common';
+import { drawSprite, PAPER_FILL, pictureCssHeight, pictureTransform, viewOf, visibleRect } from './sim';
 
 const C = {
   green: '#58cc02',
@@ -64,6 +65,9 @@ export class AIOverlay {
   private visible = false;
   private intro = false;
   private token = 0;
+  /** The view the overlay was last drawn for, and the loop that follows a live one. */
+  private shownView = '';
+  private viewRaf = 0;
 
   constructor(
     private stage: HTMLCanvasElement,
@@ -123,12 +127,30 @@ export class AIOverlay {
     }, FADE_MS);
   }
 
+  /**
+   * The scene was rebuilt for the same photo (a typed number, the launch speed). Only when the drawing itself moved
+   * on screen (a ramp stretched to an entered angle) or the picture shows a different part of the world (a view, now
+   * or before) are the outlines worked out again, so they sit on the drawing.
+   */
+  setScene(scene: BuiltScene) {
+    const d = this.data;
+    const moves = (s: BuiltScene) => !!s.drawnAt || !!s.view;
+    if (!d || d.scene === scene || (!moves(scene) && !moves(d.scene))) return;
+    this.data = { ...d, scene };
+    this.classify(this.data);
+    this.redraw();
+    if (this.visible) this.watchView();
+  }
+
   setVisible(v: boolean) {
     if (!this.data || this.intro) return;
     this.visible = v;
     this.canvas.classList.toggle('show', v);
     this.syncButton();
-    if (v) this.redraw();
+    if (v) {
+      this.redraw();
+      this.watchView();
+    }
   }
 
   private syncButton() {
@@ -140,11 +162,25 @@ export class AIOverlay {
     if (this.data && this.visible && !this.intro) this.draw(1, false);
   }
 
+  /** While shown over a scene whose view follows live values (gravity), redraw when the view changes. */
+  private watchView() {
+    cancelAnimationFrame(this.viewRaf);
+    const tick = () => {
+      const d = this.data;
+      if (!d || !this.visible || typeof d.scene.view !== 'function') return;
+      const v = viewOf(d.scene);
+      const key = v ? `${v.x},${v.y},${v.w},${v.h}` : '';
+      if (key !== this.shownView && !this.intro) this.redraw();
+      this.viewRaf = requestAnimationFrame(tick);
+    };
+    this.viewRaf = requestAnimationFrame(tick);
+  }
+
   /** Make sure the stage has its final height before the simulation's first frame. */
   private sizeStage() {
     const d = this.data!;
     const cssW = this.stage.clientWidth;
-    this.stage.style.height = `${(cssW * d.height) / d.width}px`;
+    this.stage.style.height = `${pictureCssHeight(viewOf(d.scene), d.width, d.height, cssW)}px`;
   }
 
   /**
@@ -196,6 +232,12 @@ export class AIOverlay {
       if (!part.anchor && run.length < 4) continue;
       this.labels.push({ text: part.text, color: part.color, at: part.anchor ?? run[Math.floor(run.length / 2)] });
     }
+    // A scene that moved the drawing (stretched ramp) says where each drawn point is shown now.
+    const at = input.scene.drawnAt;
+    if (at) {
+      for (const r of this.runs) r.points = r.points.map(at);
+      for (const l of this.labels) l.at = at(l.at);
+    }
   }
 
   /** progress 0..1 traces the lines in; withPaper paints the original drawing underneath. */
@@ -205,22 +247,35 @@ export class AIOverlay {
     const { canvas, ctx } = this;
     const dpr = window.devicePixelRatio || 1;
     const cssW = this.stage.clientWidth || canvas.clientWidth;
-    const cssH = (cssW * d.height) / d.width;
+    // Same picture as the simulation: the photo, or the scene's view (a stretched ramp, a long shot).
+    const view = viewOf(d.scene);
+    this.shownView = view ? `${view.x},${view.y},${view.w},${view.h}` : '';
+    const cssH = pictureCssHeight(view, d.width, d.height, cssW);
     const pw = Math.round(cssW * dpr), ph = Math.round(cssH * dpr);
     if (canvas.width !== pw || canvas.height !== ph) {
       canvas.width = pw;
       canvas.height = ph;
     }
     canvas.style.height = `${cssH}px`;
-    const s = canvas.width / d.width;
-    const px = d.width / cssW; // world units per CSS pixel
+    const { S: s, tx, ty } = pictureTransform(view, d.width, canvas.width, canvas.height);
+    const px = dpr / s; // world units per CSS pixel
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.setTransform(s, 0, 0, s, 0, 0);
+    if (withPaper && view) {
+      ctx.fillStyle = PAPER_FILL;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    ctx.setTransform(s, 0, 0, s, tx, ty);
+    const vis = visibleRect(ctx);
     if (withPaper) {
-      ctx.drawImage(d.paper, 0, 0);
+      if (d.scene.drawnAt) {
+        // The drawing as the scene shows it at the start (stretched ramp, blocks on it), not as photographed.
+        ctx.drawImage(d.scene.background, 0, 0);
+        for (const sp of d.scene.sprites) drawSprite(ctx, sp);
+      } else ctx.drawImage(d.paper, 0, 0);
       ctx.fillStyle = 'rgba(255,255,255,0.35)';
-      ctx.fillRect(0, 0, d.width, d.height);
+      if (view) ctx.fillRect(vis.x, vis.y, vis.w, vis.h);
+      else ctx.fillRect(0, 0, d.width, d.height);
     }
 
     ctx.lineJoin = 'round';
@@ -249,8 +304,8 @@ export class AIOverlay {
       const tries = [[0, 0], [0, -dy], [0, dy], [dx, 0], [-dx, 0], [dx, -dy], [-dx, -dy], [dx, dy], [-dx, dy], [0, -2 * dy], [0, 2 * dy]];
       let x = 0, y = 0;
       for (const [ox, oy] of tries) {
-        x = Math.min(d.width - w - 4 * px, Math.max(4 * px, l.at.x + ox - w / 2));
-        y = Math.min(d.height - h - 4 * px, Math.max(4 * px, l.at.y + oy - h / 2));
+        x = Math.min(vis.x + vis.w - w - 4 * px, Math.max(vis.x + 4 * px, l.at.x + ox - w / 2));
+        y = Math.min(vis.y + vis.h - h - 4 * px, Math.max(vis.y + 4 * px, l.at.y + oy - h / 2));
         if (!placed.some((b) => overlap(b, { x, y, w, h }))) break;
       }
       placed.push({ x, y, w, h });

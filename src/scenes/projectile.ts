@@ -7,7 +7,7 @@
 // collision cells, so the ball lands on what was actually drawn.
 
 import Matter from 'matter-js';
-import type { Contour, PartInfo, PartName, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
+import type { Contour, PartInfo, PartName, Point, SceneBuilder, SceneInput, Sprite, ValueSource, ViewRect } from '../types';
 import { contourMask, cutSprite, eraseFromPaper, maskBounds, roleOf } from './common';
 import { STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, EARTH_G, mps, noteFor, pxPerStep, scaleFor } from '../units';
@@ -25,6 +25,12 @@ const TRAIL_EVERY = 2; // steps between trail samples
 const CELL = 5;
 /** Give up on a flight after this long and fire again (never leave the scene stuck). */
 const MAX_FLIGHT_MS = 9000;
+/** After landing the ball's speed is multiplied by this every step, so it rolls to a stop. */
+const ROLL_DECAY = 0.93;
+/** Steps a fast ball may skid along the ground after touching it before it counts as landed (measured ~20 at 10 m/s). */
+const SKID_STEPS = 60;
+/** Smallest ball drawn on a zoomed-out picture (CSS px radius), so a fast shot is still seen flying. */
+const MIN_BALL_CSS = 4;
 /**
  * Drag the air switch aims for: drag = this × weight at the fitted launch speed (the one that lands inside the
  * picture). The arc then visibly leans (steeper fall than rise) and lands clearly short.
@@ -758,14 +764,53 @@ export const buildProjectile: SceneBuilder = (input) => {
     );
   }
 
+  // --- View: a shot that would leave the photo (fast, or on the Moon) widens the picture to its whole flight ---
+  const relaunchSteps = Math.round(RELAUNCH_MS / STEP_MS);
+  const maxSteps = Math.round(MAX_FLIGHT_MS / STEP_MS);
+  /** Gravity the ball feels, px per step², read from the engine every step (the gravity slider and Moon are live). */
+  let gNow = g;
+  // The floor reaches as far as the ball can get within one flight, its skid and its roll.
+  const rollSteps = SKID_STEPS + (1 - Math.pow(ROLL_DECAY, relaunchSteps)) / (1 - ROLL_DECAY);
+  /** Leftmost / rightmost the ball has been (the picture never cuts off where it really went). */
+  let seenX0 = start.x, seenX1 = start.x;
+  const reach = Math.abs(v0.x) * (maxSteps + rollSteps) + W;
+  if (2 * reach > W * 4) Matter.Body.scale(floor, (2 * reach) / (W * 4), 1);
+  /**
+   * Box around the flight: launch point, top of the arc and landing point with a margin, never below the photo's
+   * bottom; at least as tall (for its width) as the photo, growing into the sky. Null while it fits the photo.
+   */
+  const flightView = (): ViewRect | null => {
+    const vx = v0.x, vy = v0.y;
+    let tEnd = maxSteps;
+    if (gNow > 1e-9) {
+      const disc = vy * vy + 2 * gNow * (floorY - bodyR - start.y);
+      if (disc >= 0) tEnd = Math.min(tEnd, (-vy + Math.sqrt(disc)) / gNow);
+    }
+    const tTop = vy < 0 ? (gNow > 1e-9 ? Math.min(-vy / gNow, tEnd) : tEnd) : 0;
+    const yTop = start.y + vy * tTop + (gNow * tTop * tTop) / 2;
+    const box = (xEnd: number) => {
+      const span = Math.max(Math.abs(xEnd - start.x), start.y - yTop);
+      const m = 3 * r + 0.04 * span;
+      return { x0: Math.min(0, Math.min(start.x, xEnd) - m), x1: Math.max(W, Math.max(start.x, xEnd) + m), y0: Math.min(0, yTop - r - m) };
+    };
+    const flight = box(start.x + vx * tEnd);
+    if (flight.x0 >= 0 && flight.x1 <= W && flight.y0 >= 0) return null;
+    // Past the photo anyway: keep the skid and roll after landing on the picture too (an upper bound), and
+    // wherever the ball has actually been.
+    const after = box(start.x + vx * (tEnd + rollSteps));
+    const seenM = 3 * r + 0.04 * (after.x1 - after.x0);
+    const x0 = Math.min(after.x0, seenX0 - seenM), x1 = Math.max(after.x1, seenX1 + seenM);
+    let y0 = flight.y0;
+    y0 = Math.min(y0, H - ((x1 - x0) * H) / W);
+    return { x: x0, y: y0, w: x1 - x0, h: H - y0 };
+  };
+
   // --- Loop: fly, land, wait 1.5 s, fire again. Keep the previous arc as a faint ghost. ---
   let trail: Point[] = [{ ...start }];
   let ghostTrail: Point[] = [];
   let steps = 0;
   let landedSteps = -1;
   let slowSteps = 0;
-  const relaunchSteps = Math.round(RELAUNCH_MS / STEP_MS);
-  const maxSteps = Math.round(MAX_FLIGHT_MS / STEP_MS);
 
   const touchingStatic = (engine: Matter.Engine) =>
     (engine.pairs?.list ?? []).some(
@@ -773,8 +818,11 @@ export const buildProjectile: SceneBuilder = (input) => {
     );
 
   const onStep = (engine: Matter.Engine) => {
+    gNow = engine.gravity.y * engine.gravity.scale * STEP_MS * STEP_MS;
     steps++;
     const p = body.position;
+    seenX0 = Math.min(seenX0, p.x);
+    seenX1 = Math.max(seenX1, p.x);
     if (DEBUG && (steps === 3 || steps === 8))
       console.log(
         `[projectile] step${steps} moved at ${(Math.atan2(-(p.y - start.y), Math.abs(p.x - start.x)) * 180 / Math.PI).toFixed(1)}°`,
@@ -793,7 +841,8 @@ export const buildProjectile: SceneBuilder = (input) => {
       slowSteps = Math.hypot(body.velocity.x, body.velocity.y) < 0.3 ? slowSteps + 1 : 0;
       const landed = !ghost && steps > 5 && moved > 3 * r && body.velocity.y > -0.5 && touchingStatic(engine);
       const stuck = steps > 20 && slowSteps > 30;
-      const gone = p.x < -4 * r || p.x > W + 4 * r || p.y > H + 4 * r;
+      const vb = flightView() ?? { x: 0, y: 0, w: W, h: H };
+      const gone = p.x < vb.x - 4 * r || p.x > vb.x + vb.w + 4 * r || p.y > vb.y + vb.h + 4 * r;
       if (landed || stuck || gone || steps > maxSteps) {
         trail.push({ x: p.x, y: p.y });
         landedSteps = 0;
@@ -801,8 +850,8 @@ export const buildProjectile: SceneBuilder = (input) => {
       return;
     }
     // Landed: roll to a stop instead of rolling off the picture.
-    Matter.Body.setVelocity(body, { x: body.velocity.x * 0.93, y: body.velocity.y });
-    Matter.Body.setAngularVelocity(body, body.angularVelocity * 0.93);
+    Matter.Body.setVelocity(body, { x: body.velocity.x * ROLL_DECAY, y: body.velocity.y });
+    Matter.Body.setAngularVelocity(body, body.angularVelocity * ROLL_DECAY);
     if (++landedSteps < relaunchSteps) return;
     ghostTrail = trail;
     trail = [{ ...start }];
@@ -825,10 +874,23 @@ export const buildProjectile: SceneBuilder = (input) => {
     ctx.stroke();
   };
   const onDraw = (ctx: CanvasRenderingContext2D) => {
+    // Zoomed out to a long flight: the trail keeps its on-screen width and the ball a visible size.
+    const a = ctx.getTransform().a;
+    const zoom = Math.max(1, ctx.canvas.width / W / a);
+    const w = lw * zoom;
+    if (zoom > 1.01) {
+      const minR = (MIN_BALL_CSS * (window.devicePixelRatio || 1)) / a;
+      if (bodyR < minR) {
+        ctx.fillStyle = '#3c3c3c';
+        ctx.beginPath();
+        ctx.arc(body.position.x, body.position.y, minR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.lineWidth = lw;
-    ctx.setLineDash([lw * 0.1, lw * 3]);
+    ctx.lineWidth = w;
+    ctx.setLineDash([w * 0.1, w * 3]);
     ctx.strokeStyle = 'rgba(37,99,235,0.25)';
     strokePath(ctx, ghostTrail);
     ctx.strokeStyle = 'rgba(37,99,235,0.9)';
@@ -866,6 +928,7 @@ export const buildProjectile: SceneBuilder = (input) => {
     sprites: [sprite],
     background: eraseFromPaper(input, masks),
     label: 'Projectile',
+    view: flightView,
     onStep,
     onDraw,
     measures,

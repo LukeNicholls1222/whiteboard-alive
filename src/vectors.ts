@@ -6,8 +6,8 @@
 // "1 m/s" (or 0.2 m/s, ...) is.
 
 import Matter from 'matter-js';
-import { STEP_ACCEL, STEP_MS, type Simulation } from './sim';
-import type { BuiltScene } from './types';
+import { STEP_ACCEL, STEP_MS, visibleRect, type Simulation } from './sim';
+import type { BuiltScene, ViewRect } from './types';
 import { mps, scaleOf } from './units';
 
 const STEP_S = STEP_MS / 1000;
@@ -225,8 +225,10 @@ export class VelocityArrows {
     const scale = scaleOf(scene);
     // World px per CSS px.
     const css = (window.devicePixelRatio || 1) / pxScale;
-    const worldW = ctx.canvas.width / ctx.getTransform().a;
-    const worldH = ctx.canvas.height / ctx.getTransform().d;
+    // What the picture shows (world px): the photo, or the scene's view (sim.ts).
+    const vis = visibleRect(ctx);
+    const worldW = vis.w;
+    const worldH = vis.h;
     const lmax = LMAX_FRACTION * Math.min(worldW, worldH);
 
     // Pass 1: smoothed velocity and speed of every body, and the top speed of the scene so far.
@@ -274,7 +276,7 @@ export class VelocityArrows {
     // Pass 2: arrows first, then every label on top, then the scale bar (labels keep clear of its pill).
     const samples: ArrowSample[] = [];
     ctx.font = `800 ${LABEL_CSS * css}px ${FONT}`;
-    const bar = layoutScaleBar(ctx, css, worldH, k, vRef);
+    const bar = layoutScaleBar(ctx, css, vis, k, vRef);
     const obstacles = this.obstacles(scene, bodies, css);
     // The scale bar and the value labels are text a speed label must never cover, and it keeps a little room from them.
     const space = LABEL_SPACE_CSS * css;
@@ -292,7 +294,7 @@ export class VelocityArrows {
       const speed = t.speed;
       const length = speed * k;
       // Stop the shaft at the picture's edge; the head is then drawn right at the edge.
-      const reach = reachToEdge(p.x, p.y, ux, uy, worldW, worldH, edge);
+      const reach = reachToEdge(p.x - vis.x, p.y - vis.y, ux, uy, worldW, worldH, edge);
       if (!(reach > 0)) continue; // the body itself is off the picture
       const drawn = Math.min(length, reach);
       const tip = { x: p.x + ux * drawn, y: p.y + uy * drawn };
@@ -301,7 +303,7 @@ export class VelocityArrows {
       const tw = ctx.measureText(text).width;
       const bb = b.bounds;
       const site: LabelSite = { tip, ux, uy, headLen, origin: { x: p.x, y: p.y }, body: { x: bb.min.x, y: bb.min.y, w: bb.max.x - bb.min.x, h: bb.max.y - bb.min.y } };
-      const label = placeLabel(site, tw + 6 * css, (LABEL_CSS + 4) * css, css, worldW, worldH, obstacles);
+      const label = placeLabel(site, tw + 6 * css, (LABEL_CSS + 4) * css, css, vis, obstacles);
       labels.push({ text, box: label });
       samples.push({ x: p.x, y: p.y, vx: mps(t.vx, scale), vy: mps(-t.vy, scale), speed, length, k, drawn, clipped: drawn < length, tip, label });
     }
@@ -439,8 +441,10 @@ interface LabelSite {
  * Preference: close to the arrow and clear of everything; then clear of the scale bar at least; then merely
  * inside the picture. The label always stays inside the picture.
  */
-function placeLabel(site: LabelSite, w: number, h: number, css: number, W: number, H: number, obstacles: Obstacle[]): Box {
+function placeLabel(site: LabelSite, w: number, h: number, css: number, vis: ViewRect, obstacles: Obstacle[]): Box {
   const { tip, ux, uy, headLen, origin, body } = site;
+  // Picture edges, world px (the photo: 0, 0, width, height).
+  const X0 = vis.x, Y0 = vis.y, W = vis.x + vis.w, H = vis.y + vis.h;
   const gap = LABEL_GAP_CSS * css;
   const pad = EDGE_PAD_CSS * css;
   // Half-extent of the box along a direction.
@@ -462,15 +466,16 @@ function placeLabel(site: LabelSite, w: number, h: number, css: number, W: numbe
     return { x: base.x + nx * d, y: base.y + ny * d };
   };
   // More room to the picture's edges first; on a tie, the side nearer the middle of the picture.
-  const room = (c: { x: number; y: number }) => Math.min(c.x, W - c.x, c.y, H - c.y);
+  const room = (c: { x: number; y: number }) => Math.min(c.x - X0, W - c.x, c.y - Y0, H - c.y);
+  const midX = (X0 + W) / 2;
   const bySide = (f: (s: number) => { x: number; y: number }) =>
-    [f(1), f(-1)].sort((a, b) => room(b) - room(a) || Math.abs(a.x - W / 2) - Math.abs(b.x - W / 2));
+    [f(1), f(-1)].sort((a, b) => room(b) - room(a) || Math.abs(a.x - midX) - Math.abs(b.x - midX));
   const vertical = Math.abs(uy) > 0.75;
   const order = vertical
     ? [...bySide(beside), bodyAhead, ...bySide(bodyBeside), ahead]
     : [ahead, ...bySide(beside), bodyAhead, ...bySide(bodyBeside)];
   const cands = order.map((c) => ({ x: c.x - w / 2, y: c.y - h / 2, w, h }));
-  const fits = (b: Box) => b.x >= pad && b.y >= pad && b.x + b.w <= W - pad && b.y + b.h <= H - pad;
+  const fits = (b: Box) => b.x >= X0 + pad && b.y >= Y0 + pad && b.x + b.w <= W - pad && b.y + b.h <= H - pad;
   const clearOf = (b: Box, hard: boolean) => !obstacles.some((o) => !!o.hard === hard && hits(o, b));
   const nearLimit = 1.5 * Math.max(w, h);
   const near = (b: Box) => Math.hypot(b.x + b.w / 2 - tip.x, b.y + b.h / 2 - tip.y) <= nearLimit;
@@ -480,7 +485,7 @@ function placeLabel(site: LabelSite, w: number, h: number, css: number, W: numbe
     cands.find(fits);
   if (best) return best;
   const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), Math.max(lo, hi));
-  return { x: clamp(cands[0].x, pad, W - pad - w), y: clamp(cands[0].y, pad, H - pad - h), w, h };
+  return { x: clamp(cands[0].x, X0 + pad, W - pad - w), y: clamp(cands[0].y, Y0 + pad, H - pad - h), w, h };
 }
 
 /** Distance along (dx, dy) from a point inside the box to where the ray leaves it; 0 if the point is outside. */
@@ -559,7 +564,7 @@ const grow = (b: Box, d: number): Box => ({ x: b.x - d, y: b.y - d, w: b.w + 2 *
  * The most room the scale bar can ever take (world px): its line is at most 0.8 × Lmax (a round number of m/s
  * below 0.8 × vRef), its text at most as wide as "0.05 m/s". Other labels keep off this from the first frame.
  */
-export function scaleBarZone(ctx: CanvasRenderingContext2D, css: number, W: number, H: number): Box {
+export function scaleBarZone(ctx: CanvasRenderingContext2D, css: number, W: number, H: number, x0 = 0, y0 = 0): Box {
   ctx.save();
   ctx.font = `800 ${LABEL_CSS * css}px ${FONT}`;
   const tw = ctx.measureText('0.05 m/s').width;
@@ -568,11 +573,11 @@ export function scaleBarZone(ctx: CanvasRenderingContext2D, css: number, W: numb
   const padX = 10 * css, padY = 6 * css, gap = 8 * css;
   const w = padX * 2 + px + gap + tw;
   const h = padY * 2 + LABEL_CSS * css;
-  return { x: BAR_MARGIN_CSS * css, y: H - BAR_MARGIN_CSS * css - h, w, h };
+  return { x: x0 + BAR_MARGIN_CSS * css, y: y0 + H - BAR_MARGIN_CSS * css - h, w, h };
 }
 
 /** Bottom-left pill: a line as long as a round number of m/s at the current factor, and that number. */
-function layoutScaleBar(ctx: CanvasRenderingContext2D, css: number, H: number, k: number, vRef: number): ScaleBar {
+function layoutScaleBar(ctx: CanvasRenderingContext2D, css: number, vis: ViewRect, k: number, vRef: number): ScaleBar {
   const mps = niceBelow(0.8 * vRef);
   const px = k * mps;
   const text = `${fmt(mps)} m/s`;
@@ -580,8 +585,8 @@ function layoutScaleBar(ctx: CanvasRenderingContext2D, css: number, H: number, k
   const padX = 10 * css, padY = 6 * css, gap = 8 * css;
   const w = padX * 2 + px + gap + tw;
   const h = padY * 2 + LABEL_CSS * css;
-  const x = BAR_MARGIN_CSS * css;
-  const y = H - BAR_MARGIN_CSS * css - h;
+  const x = vis.x + BAR_MARGIN_CSS * css;
+  const y = vis.y + vis.h - BAR_MARGIN_CSS * css - h;
   return { mps, px, text, box: { x, y, w, h }, lineX: x + padX, textX: x + padX + px + gap, y: y + h / 2 };
 }
 
