@@ -136,6 +136,8 @@ export class VelocityArrows {
   last: ArrowSample[] = [];
   /** Scale used in the last frame (null while nothing is drawn). */
   scale: ArrowScale | null = null;
+  /** Boxes (world px, this frame) the speed labels should stay off when they can, e.g. the value labels. */
+  avoid: () => Box[] = () => [];
 
   /** Hook into a freshly started simulation. */
   attach(sim: Simulation) {
@@ -251,6 +253,7 @@ export class VelocityArrows {
     const bar = layoutScaleBar(ctx, css, worldH, k, vRef);
     const obstacles = this.obstacles(scene, bodies, css);
     obstacles.push({ box: bar.box, hard: true });
+    for (const box of this.avoid()) obstacles.push({ box });
     const labels: Array<{ text: string; box: Box }> = [];
     const edge = (HEAD_HALF_W_CSS + OUTLINE_CSS) * css;
     for (const b of bodies) {
