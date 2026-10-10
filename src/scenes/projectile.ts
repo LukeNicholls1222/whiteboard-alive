@@ -10,7 +10,7 @@ import Matter from 'matter-js';
 import type { CleanPart, Contour, PartInfo, PartName, Point, SceneBuilder, SceneInput, Sprite, ValueSource, ViewRect } from '../types';
 import { DRAWN_STYLE, inkImage } from '../clean';
 import { contourMask, cutSprite, eraseFromPaper, maskBounds, roleOf } from './common';
-import { STEP_ACCEL, STEP_MS } from '../sim';
+import { MAX_VIEW_ASPECT, MIN_VIEW_ASPECT, STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, EARTH_G, mps, noteFor, pxPerStep, scaleFor } from '../units';
 import { dragConstant, roundFactor } from '../air';
 
@@ -32,6 +32,12 @@ const ROLL_DECAY = 0.93;
 const SKID_STEPS = 60;
 /** Smallest ball drawn on a zoomed-out picture (CSS px radius), so a fast shot is still seen flying. */
 const MIN_BALL_CSS = 4;
+/** On a zoomed-out picture the drawn launcher (cannon, ball, arrow) stays at least this share of its width. */
+const LAUNCHER_SHARE = 0.12;
+/** Room below the ground line on a zoomed-out picture, as a share of its width (the ground's value label goes there). */
+const BELOW_GROUND = 0.12;
+/** Room above the arc on a zoomed-out picture, as a share of its width (the buttons over the picture's top edge). */
+const ABOVE_ARC = 0.14;
 /**
  * Drag the air switch aims for: drag = this × weight at the fitted launch speed (the one that lands inside the
  * picture). The arc then visibly leans (steeper fall than rise) and lands clearly short.
@@ -360,6 +366,49 @@ function makeBall(input: SceneInput, center: Point, rHole: number, stroke: numbe
   return { center, r, stroke, mask };
 }
 
+/**
+ * Share of ink in the ring 1.8 R .. 3 R around a loop (R = its radius). A drawn ball stands on its own (a ground line
+ * or an arrow crosses that ring: under ~10 %); a gap between wheel spokes or a hole in a smudge is surrounded by more ink.
+ */
+function inkAround(ink: Uint8Array, W: number, H: number, c: Point, R: number): number {
+  const r0 = 1.8 * R + 4, r1 = 3 * R;
+  let n = 0, on = 0;
+  for (let y = Math.max(0, Math.floor(c.y - r1)); y <= Math.min(H - 1, Math.ceil(c.y + r1)); y++)
+    for (let x = Math.max(0, Math.floor(c.x - r1)); x <= Math.min(W - 1, Math.ceil(c.x + r1)); x++) {
+      const d2 = (x - c.x) ** 2 + (y - c.y) ** 2;
+      if (d2 <= r0 * r0 || d2 > r1 * r1) continue;
+      n++;
+      if (ink[y * W + x]) on++;
+    }
+  return n ? on / n : 0;
+}
+
+/** A loop this embedded in other ink is not a ball (wheel gap, smudge). */
+const EMBEDDED_INK = 0.2;
+/** A loop this close to the picture's edge (share of its shorter side) and this small is a speck or stain on the paper. */
+const EDGE_SPECK_DIST = 0.18;
+const EDGE_SPECK_R = 0.022;
+
+/** Barrel pointing at a ball: long ink near it whose axis runs through the ball, ending clearly away from its centre. */
+function barrelPointsAt(ball: Ball, ink: Uint8Array, exclude: Uint8Array, W: number, H: number): boolean {
+  const R = ball.r;
+  const reach = Math.max(6 * R, 80);
+  const px: Point[] = [];
+  const x0 = Math.max(0, Math.floor(ball.center.x - reach)), x1 = Math.min(W - 1, Math.ceil(ball.center.x + reach));
+  const y0 = Math.max(0, Math.floor(ball.center.y - reach)), y1 = Math.min(H - 1, Math.ceil(ball.center.y + reach));
+  for (let y = y0; y <= y1; y++)
+    for (let x = x0; x <= x1; x++) {
+      const i = y * W + x;
+      if (ink[i] && !exclude[i] && (x - ball.center.x) ** 2 + (y - ball.center.y) ** 2 <= reach * reach) px.push({ x, y });
+    }
+  if (px.length < 20) return false;
+  const ax = axisOf(px)!;
+  const to = { x: ball.center.x - ax.centroid.x, y: ball.center.y - ax.centroid.y };
+  const n = Math.hypot(to.x, to.y);
+  if (n < 1.5 * R || ax.elongation < 1.5) return false;
+  return Math.abs((to.x * ax.dir.x + to.y * ax.dir.y) / n) > 0.8;
+}
+
 /** Find the drawn ball: AI role first, then a round closed loop, then a filled round dot. */
 function findBall(input: SceneInput, labelled: Contour[]): Ball | null {
   const { width: W, height: H, ink } = input;
@@ -372,16 +421,48 @@ function findBall(input: SceneInput, labelled: Contour[]): Ball | null {
     }
   }
   // Round closed loops. Bridge small pen gaps by dilating a little more on each try.
+  const minDim = Math.min(W, H);
+  /** Best loop that looked like a wheel gap or a speck: used only when nothing better turns up. */
+  let lastResort: HoleCand | null = null;
   for (const d of [2, 4]) {
     const holes = roundHoles(ink, W, H, d);
     if (!holes.length) continue;
-    // Prefer empty loops (a wheel has an axle), then the smallest (a ball is drawn smaller than wheels).
-    holes.sort((a, b) => Number(a.hasInner) - Number(b.hasInner) || a.r - b.r);
-    const h = holes[0];
+    // Loops embedded in other ink (the gaps between wheel spokes, holes in a smudge) and small specks near the
+    // paper's edge are not the ball, unless nothing else was drawn.
+    const ranked = holes.map((h) => {
+      const edge = Math.min(h.center.x, h.center.y, W - h.center.x, H - h.center.y);
+      const bad = inkAround(ink, W, H, h.center, h.r) > EMBEDDED_INK || (edge < EDGE_SPECK_DIST * minDim && h.r < EDGE_SPECK_R * minDim);
+      return { h, bad, launcher: false };
+    });
+    // Among the rest, a loop at the root of an arrow or at a barrel's muzzle is the ball.
+    const good = ranked.filter((c) => !c.bad && !c.h.hasInner);
+    if (good.length > 1) {
+      const cut = new Uint8Array(W * H);
+      const discs = good.map((c) => discMask(W, H, c.h.center, c.h.r + 3));
+      for (const m of discs) for (let i = 0; i < m.length; i++) if (m[i]) cut[i] = 1;
+      const comps = inkComponents(ink, cut, W, H, 15);
+      for (const c of good) {
+        const probe: Ball = { center: c.h.center, r: c.h.r, stroke: 3, mask: cut };
+        c.launcher = !!arrowFromBall(probe, comps) || barrelPointsAt(probe, ink, cut, W, H);
+      }
+    }
+    // Then empty loops (a wheel has an axle), then the smallest (a ball is drawn smaller than wheels).
+    ranked.sort(
+      (a, b) =>
+        Number(a.bad) - Number(b.bad) ||
+        Number(a.h.hasInner) - Number(b.h.hasInner) ||
+        Number(b.launcher) - Number(a.launcher) ||
+        a.h.r - b.h.r,
+    );
+    const h = ranked[0].h;
+    if (DEBUG) console.log('[projectile] loops', ranked.map((c) => `${Math.round(c.h.center.x)},${Math.round(c.h.center.y)} r=${c.h.r.toFixed(1)}${c.bad ? ' bad' : ''}${c.h.hasInner ? ' inner' : ''}${c.launcher ? ' launcher' : ''}`).join(' | '));
+    if (ranked[0].bad) {
+      lastResort ??= h;
+      continue;
+    }
     return makeBall(input, h.center, h.r, ringStroke(ink, W, H, h.center, h.r));
   }
   // Filled dot: a small, compact, solid contour that is not drawn inside something else.
-  const minDim = Math.min(W, H);
   const dots = input.contours.filter((c) => {
     const { w, h } = c.bbox;
     const size = Math.max(w, h);
@@ -396,6 +477,7 @@ function findBall(input: SceneInput, labelled: Contour[]): Ball | null {
     const center = { x: c.bbox.x + c.bbox.w / 2, y: c.bbox.y + c.bbox.h / 2 };
     return { center, r, stroke: r, mask: discMask(W, H, center, r + 1.5) };
   }
+  if (lastResort) return makeBall(input, lastResort.center, lastResort.r, ringStroke(ink, W, H, lastResort.center, lastResort.r));
   return null;
 }
 
@@ -786,9 +868,55 @@ export const buildProjectile: SceneBuilder = (input) => {
   let seenX0 = start.x, seenX1 = start.x;
   const reach = Math.abs(v0.x) * (maxSteps + rollSteps) + W;
   if (2 * reach > W * 4) Matter.Body.scale(floor, (2 * reach) / (W * 4), 1);
+  // The drawing (scenery ink, ball, arrow, ground line) and the launcher: the drawn part right at the launch point
+  // (cannon, ball, arrow). A zoomed-out picture keeps the launcher at least LAUNCHER_SHARE of its width.
+  const groundBand = Math.max(8, Math.round(H * 0.04));
+  const ballInk = ball?.mask;
+  const notScenery = new Uint8Array(W * H);
+  for (let i = 0; i < notScenery.length; i++) {
+    const y = (i / W) | 0;
+    if (arrowInk[i] || (ballInk && ballInk[i]) || (floorY < H && y >= floorY - groundBand && y <= floorY + groundBand / 2)) notScenery[i] = 1;
+  }
+  const sceneryComps = inkComponents(ink, notScenery, W, H, Math.max(30, Math.round(0.0015 * W * H)));
+  const drawing = { x0: start.x - r, y0: start.y - r, x1: start.x + r, y1: start.y + r };
+  /** The drawn cannon near the launch point (the ball and arrow alone when nothing else is there). */
+  const launcher = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+  const add = (b: typeof drawing, x0: number, y0: number, x1: number, y1: number) => {
+    b.x0 = Math.min(b.x0, x0);
+    b.y0 = Math.min(b.y0, y0);
+    b.x1 = Math.max(b.x1, x1);
+    b.y1 = Math.max(b.y1, y1);
+  };
+  const nearLaunch = Math.max(4 * r, 0.12 * Math.min(W, H));
+  for (const comp of sceneryComps) {
+    let x0 = W, y0 = H, x1 = 0, y1 = 0, dmin = Infinity;
+    for (const q of comp) {
+      x0 = Math.min(x0, q.x);
+      y0 = Math.min(y0, q.y);
+      x1 = Math.max(x1, q.x);
+      y1 = Math.max(y1, q.y);
+      dmin = Math.min(dmin, (q.x - start.x) ** 2 + (q.y - start.y) ** 2);
+    }
+    add(drawing, x0, y0, x1, y1);
+    if (dmin <= nearLaunch * nearLaunch) add(launcher, x0, y0, x1, y1);
+  }
+  if (arrowSeg) {
+    const { from: a, to: b } = arrowSeg;
+    for (const box of [drawing, launcher]) add(box, Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y));
+  }
+  // Nothing drawn at the launch point but the ball: the ball is the launcher.
+  if (launcher.x1 < launcher.x0) add(launcher, start.x - r, start.y - r, start.x + r, start.y + r);
+  if (span) add(drawing, span.x0, floorY, span.x1, floorY);
+  const launcherSize = Math.max(launcher.x1 - launcher.x0, launcher.y1 - launcher.y0, 4 * r);
+  /** Widest the picture gets (world px): the launcher stays visible, the drawing is never cut more than the photo cuts it. */
+  const maxViewW = Math.max(launcherSize / LAUNCHER_SHARE, Math.min(W, drawing.x1 - drawing.x0 + 6 * r));
+  /** How far inside the picture's edge (world px, picture `w` wide) a ball that flies out of it is stopped. */
+  const edgeRoom = (w: number) => Math.max(bodyR, 0.015 * w);
   /**
-   * Box around the flight: launch point, top of the arc and landing point with a margin, never below the photo's
-   * bottom; at least as tall (for its width) as the photo, growing into the sky. Null while it fits the photo.
+   * Box around the flight and the drawing: launch point, top of the arc and landing point (plus skid and roll, and
+   * wherever the ball has been) with a margin. Its shape follows the flight (a long flat shot gets a wide, low
+   * picture), between MIN_VIEW_ASPECT and MAX_VIEW_ASPECT. No wider than maxViewW: past that the ball stops at the
+   * picture's edge and fires again (onStep). Null while the flight fits the photo.
    */
   const flightView = (): ViewRect | null => {
     const vx = v0.x, vy = v0.y;
@@ -799,21 +927,67 @@ export const buildProjectile: SceneBuilder = (input) => {
     }
     const tTop = vy < 0 ? (gNow > 1e-9 ? Math.min(-vy / gNow, tEnd) : tEnd) : 0;
     const yTop = start.y + vy * tTop + (gNow * tTop * tTop) / 2;
-    const box = (xEnd: number) => {
-      const span = Math.max(Math.abs(xEnd - start.x), start.y - yTop);
-      const m = 3 * r + 0.04 * span;
-      return { x0: Math.min(0, Math.min(start.x, xEnd) - m), x1: Math.max(W, Math.max(start.x, xEnd) + m), y0: Math.min(0, yTop - r - m) };
+    const xEnd = start.x + vx * tEnd;
+    const m0 = 3 * r + 0.04 * Math.max(Math.abs(xEnd - start.x), start.y - yTop);
+    if (Math.min(start.x, xEnd) - m0 >= 0 && Math.max(start.x, xEnd) + m0 <= W && yTop - r - m0 >= 0) return null;
+    const xRoll = start.x + vx * (tEnd + rollSteps);
+    let x0 = Math.min(drawing.x0, start.x, xRoll, seenX0), x1 = Math.max(drawing.x1, start.x, xRoll, seenX1);
+    const m = 3 * r + 0.04 * Math.min(Math.max(x1 - x0, start.y - yTop), maxViewW);
+    x0 -= m;
+    x1 += m;
+    if (x1 - x0 > maxViewW) {
+      // Keep the launcher and as much of the flight as fits.
+      if (vx >= 0) {
+        x0 = Math.max(x0, Math.min(launcher.x0, start.x - r) - m);
+        x1 = x0 + maxViewW;
+      } else {
+        x1 = Math.min(x1, Math.max(launcher.x1, start.x + r) + m);
+        x0 = x1 - maxViewW;
+      }
+    }
+    // Highest point of the arc inside that width (a shot cut off at the side stops there, before its top).
+    const w = x1 - x0;
+    let tVis = tTop;
+    if (Math.abs(vx) > 1e-9) {
+      const e = edgeRoom(w);
+      const tEdge = ((vx > 0 ? x1 - e : x0 + e) - start.x) / vx;
+      if (tEdge > 0) tVis = Math.min(tVis, tEdge);
+    }
+    const yTopVis = start.y + vy * tVis + (gNow * tVis * tVis) / 2;
+    // Above: clear of the buttons over the top of the picture.
+    let y0 = Math.min(drawing.y0, yTopVis - r) - Math.max(m, ABOVE_ARC * w);
+    // Below the ground: room for the value labels that sit under it.
+    const y1 = Math.max(drawing.y1, floorY) + Math.max(m, BELOW_GROUND * w);
+    if (y1 - y0 < MIN_VIEW_ASPECT * w) y0 = y1 - MIN_VIEW_ASPECT * w; // sky above a flat shot
+    else if (y1 - y0 > MAX_VIEW_ASPECT * w) {
+      // A steep shot: wider (up to the limit, on both sides), then the top of the arc is cut (the ball stops there).
+      const grow = Math.max(0, Math.min(maxViewW, (y1 - y0) / MAX_VIEW_ASPECT) - w) / 2;
+      x0 -= grow;
+      x1 += grow;
+      y0 = Math.max(y0, y1 - MAX_VIEW_ASPECT * (x1 - x0));
+    }
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  };
+  /** Where the ball was stopped at the picture's edge (it flew past what the picture shows), until it fires again. */
+  let hold: Point | null = null;
+  /** True (and the ball stopped at the edge) when the ball is about to leave the picture. */
+  const stopAtEdge = () => {
+    const view = flightView();
+    const vb = view ?? { x: 0, y: 0, w: W, h: H };
+    const e = edgeRoom(vb.w);
+    // A zoomed-out picture keeps the ball below the buttons over its top edge.
+    const eTop = view ? Math.max(e, 0.8 * ABOVE_ARC * vb.w) : e;
+    const p = body.position, v = body.velocity;
+    const out =
+      (p.x > vb.x + vb.w - e && v.x > 0) || (p.x < vb.x + e && v.x < 0) || (p.y < vb.y + eTop && v.y < 0) || (p.y > vb.y + vb.h - e && v.y > 0);
+    if (!out) return false;
+    hold = {
+      x: Math.min(Math.max(p.x, vb.x + e), vb.x + vb.w - e),
+      y: Math.min(Math.max(p.y, vb.y + eTop), vb.y + vb.h - e),
     };
-    const flight = box(start.x + vx * tEnd);
-    if (flight.x0 >= 0 && flight.x1 <= W && flight.y0 >= 0) return null;
-    // Past the photo anyway: keep the skid and roll after landing on the picture too (an upper bound), and
-    // wherever the ball has actually been.
-    const after = box(start.x + vx * (tEnd + rollSteps));
-    const seenM = 3 * r + 0.04 * (after.x1 - after.x0);
-    const x0 = Math.min(after.x0, seenX0 - seenM), x1 = Math.max(after.x1, seenX1 + seenM);
-    let y0 = flight.y0;
-    y0 = Math.min(y0, H - ((x1 - x0) * H) / W);
-    return { x: x0, y: y0, w: x1 - x0, h: H - y0 };
+    Matter.Body.setPosition(body, hold);
+    Matter.Body.setVelocity(body, { x: 0, y: 0 });
+    return true;
   };
 
   // --- Loop: fly, land, wait 1.5 s, fire again. Keep the previous arc as a faint ghost. ---
@@ -852,18 +1026,25 @@ export const buildProjectile: SceneBuilder = (input) => {
       slowSteps = Math.hypot(body.velocity.x, body.velocity.y) < 0.3 ? slowSteps + 1 : 0;
       const landed = !ghost && steps > 5 && moved > 3 * r && body.velocity.y > -0.5 && touchingStatic(engine);
       const stuck = steps > 20 && slowSteps > 30;
-      const vb = flightView() ?? { x: 0, y: 0, w: W, h: H };
-      const gone = p.x < vb.x - 4 * r || p.x > vb.x + vb.w + 4 * r || p.y > vb.y + vb.h + 4 * r;
+      const gone = steps > 2 && stopAtEdge();
       if (landed || stuck || gone || steps > maxSteps) {
-        trail.push({ x: p.x, y: p.y });
+        trail.push({ x: body.position.x, y: body.position.y });
         landedSteps = 0;
       }
       return;
     }
-    // Landed: roll to a stop instead of rolling off the picture.
-    Matter.Body.setVelocity(body, { x: body.velocity.x * ROLL_DECAY, y: body.velocity.y });
-    Matter.Body.setAngularVelocity(body, body.angularVelocity * ROLL_DECAY);
+    if (hold) {
+      // Stopped at the picture's edge: stay there until the next shot.
+      Matter.Body.setPosition(body, hold);
+      Matter.Body.setVelocity(body, { x: 0, y: 0 });
+    } else {
+      // Landed: roll to a stop instead of rolling off the picture.
+      Matter.Body.setVelocity(body, { x: body.velocity.x * ROLL_DECAY, y: body.velocity.y });
+      Matter.Body.setAngularVelocity(body, body.angularVelocity * ROLL_DECAY);
+      stopAtEdge();
+    }
     if (++landedSteps < relaunchSteps) return;
+    hold = null;
     ghostTrail = trail;
     trail = [{ ...start }];
     steps = 0;
@@ -939,15 +1120,7 @@ export const buildProjectile: SceneBuilder = (input) => {
   // arrow where it was drawn; the ball the physics circle. The dotted trail is drawn by onDraw as before.
   const clean: CleanPart[] = [];
   const keep = new Uint8Array(W * H);
-  const groundBand = Math.max(8, Math.round(H * 0.04));
-  const ballInk = ball?.mask;
-  const notScenery = new Uint8Array(W * H);
-  for (let i = 0; i < notScenery.length; i++) {
-    const y = (i / W) | 0;
-    if (arrowInk[i] || (ballInk && ballInk[i]) || (floorY < H && y >= floorY - groundBand && y <= floorY + groundBand / 2)) notScenery[i] = 1;
-  }
-  const minPx = Math.max(30, Math.round(0.0015 * W * H));
-  for (const comp of inkComponents(ink, notScenery, W, H, minPx)) for (const p of comp) keep[p.y * W + p.x] = 1;
+  for (const comp of sceneryComps) for (const p of comp) keep[p.y * W + p.x] = 1;
   const sceneryInk = inkImage(input, (i) => keep[i] === 1);
   if (sceneryInk) clean.push({ kind: 'image', ...sceneryInk });
   clean.push({ kind: 'ground', y: floorY });

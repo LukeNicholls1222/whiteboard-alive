@@ -16,11 +16,14 @@ Matter.Common.setDecomp(decomp);
 
 // ---- View (camera) ------------------------------------------------------------------------------------
 // A scene may show more than the photo (BuiltScene.view): the picture keeps the card's width, its height follows
-// the view's shape up to MAX_VIEW_ASPECT × the width, and a taller view is shrunk to fit and centred. Without a
-// view the photo fills the card exactly as before. The renderer, the overlay and the labels all use these helpers.
+// the view's shape between MIN_VIEW_ASPECT and MAX_VIEW_ASPECT × the width (not the photo's shape: a long flat shot
+// gets a wide, low picture), and a view outside that range is shrunk to fit and centred. Without a view the photo
+// fills the card exactly as before. The renderer, the overlay and the labels all use these helpers.
 
 /** Tallest picture a view may make, as height / width. */
 export const MAX_VIEW_ASPECT = 1.6;
+/** Lowest (widest) picture a view may make, as height / width. */
+export const MIN_VIEW_ASPECT = 0.45;
 /** Paper colour shown where the view reaches past the photo. */
 export const PAPER_FILL = 'rgb(251, 250, 246)';
 
@@ -33,7 +36,7 @@ export function viewOf(scene: BuiltScene): ViewRect | null {
 /** CSS height of the picture for a card `cssW` wide. */
 export function pictureCssHeight(view: ViewRect | null, photoW: number, photoH: number, cssW: number): number {
   if (!view) return (cssW * photoH) / photoW;
-  return Math.min((cssW * view.h) / view.w, MAX_VIEW_ASPECT * cssW);
+  return Math.min(Math.max((cssW * view.h) / view.w, MIN_VIEW_ASPECT * cssW), MAX_VIEW_ASPECT * cssW);
 }
 
 /** Canvas transform for a canvas of the given device-pixel size: world (x, y) -> (S·x + tx, S·y + ty). */
