@@ -10,6 +10,12 @@ export interface ParamSpec extends VoiceParamSpec {
   value: number;
   /** Read only when the scene is built, so changing it rebuilds the scene. */
   rebuild?: boolean;
+  /**
+   * Applied live, and the scene also replays from the start once the finger settles. For values
+   * whose effect is only visible while things move (friction): the block has usually already
+   * stopped at the bottom by the time someone reaches the slider.
+   */
+  replay?: boolean;
   /** Digits shown in the value bubble. */
   digits: number;
 }
@@ -18,11 +24,14 @@ const GRAVITY: ParamSpec = { key: 'gravity', label: 'Gravity', min: 0, max: 25, 
 
 /** Which extra sliders each diagram gets. Only parameters the scene actually reads. */
 const SCENE_PARAMS: Partial<Record<DiagramType, ParamSpec[]>> = {
-  incline: [{ key: 'friction', label: 'Friction', min: 0, max: 1.5, step: 0.05, value: 0.3, digits: 2 }],
+  incline: [{ key: 'friction', label: 'Friction', min: 0, max: 1.5, step: 0.05, value: 0.3, digits: 2, replay: true }],
   projectile: [{ key: 'speed', label: 'Launch speed', min: 2, max: 25, step: 0.5, value: 10, digits: 1, rebuild: true }],
 };
 
-const PRESETS: { name: string; g: number }[] = [
+/** Pause after the last friction tick before the slide replays (long enough to see the live change). */
+const REPLAY_MS = 400;
+
+const PRESETS:{ name: string; g: number }[] = [
   { name: 'Earth', g: PLANETS.earth },
   { name: 'Moon', g: PLANETS.moon },
   { name: 'Jupiter', g: PLANETS.jupiter },
@@ -108,6 +117,7 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
   function set(diff: Record<string, number>, _from: 'slider' | 'chip' | 'voice'): Record<string, number> {
     const changed: Record<string, number> = {};
     let rebuild = false;
+    let replay = false;
     for (const s of specs) {
       if (!(s.key in diff) || !Number.isFinite(diff[s.key])) continue;
       const v = Number(clamp(diff[s.key], s.min, s.max).toFixed(s.digits + 1));
@@ -115,6 +125,7 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
       values[s.key] = v;
       changed[s.key] = v;
       if (s.rebuild) rebuild = true;
+      if (s.replay) replay = true;
     }
     if (!Object.keys(changed).length) return changed;
     syncUI();
@@ -124,8 +135,24 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
       // Rebuilding redoes the scene geometry; wait for the finger to settle instead of rebuilding every tick.
       clearTimeout(rebuildTimer);
       rebuildTimer = window.setTimeout(() => host.apply({ ...values } as Partial<SimParams>, true), 180);
+    } else if (replay) {
+      // Already applied live above; replay from the start so the new value is seen from a fresh slide.
+      clearTimeout(rebuildTimer);
+      rebuildTimer = window.setTimeout(() => host.apply({ ...values } as Partial<SimParams>, true), REPLAY_MS);
     }
     return changed;
+  }
+
+  /** Mirror a change made elsewhere (e.g. the Moon switch) without sending it back to the sim. */
+  function sync(p: Partial<SimParams>) {
+    let any = false;
+    for (const s of specs) {
+      const v = p[s.key];
+      if (typeof v !== 'number' || !Number.isFinite(v) || v === values[s.key]) continue;
+      values[s.key] = v;
+      any = true;
+    }
+    if (any) syncUI();
   }
 
   let toastTimer = 0;
@@ -207,6 +234,7 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
     /** Current values (for tests / debugging). */
     values: () => ({ ...values }),
     set: (diff: Record<string, number>) => set(diff, 'slider'),
+    sync,
     command,
   };
 }
