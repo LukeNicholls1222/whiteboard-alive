@@ -19,6 +19,8 @@ export class Simulation {
   stepListeners: Array<(engine: Matter.Engine) => void> = [];
   /** Called after every setParams, whoever made the change (slider, chip, voice, Moon switch). */
   paramListeners: Array<(p: Partial<SimParams>) => void> = [];
+  /** Called every frame after the sprites, in world coordinates. `pxScale` = canvas px per world px. */
+  drawListeners: Array<(ctx: CanvasRenderingContext2D, scene: BuiltScene, pxScale: number) => void> = [];
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -83,6 +85,11 @@ export class Simulation {
       ctx.restore();
     }
     for (const sp of this.scene.sprites) drawSprite(ctx, sp);
+    for (const fn of this.drawListeners) {
+      ctx.save();
+      fn(ctx, this.scene, s);
+      ctx.restore();
+    }
     if (new URLSearchParams(location.search).has('debug')) this.drawDebug();
   }
 
