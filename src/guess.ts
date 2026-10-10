@@ -14,7 +14,8 @@
 //                      spring needs twice the zigzag score
 // Notebook rules (five or more long thin parallel lines, each its own contour) are taken out of the ink first.
 // Decision order: zigzag -> spring, big triangle -> incline, wheel with a weight on each side below -> pulley,
-// round thing hanging under ink with nothing below -> pendulum, any other round thing or arrow -> projectile.
+// round thing hanging under ink with nothing below -> pendulum, any other ball-sized round thing -> projectile (one
+// big closed curve, e.g. a cloud, is not a ball: fallback).
 
 import type { Contour, DiagramType } from './types';
 
@@ -64,6 +65,7 @@ const ZIG_MOVING = 1; // per scan line of a band, crossings that move sideways t
 const RULED_MIN = 5; // this many long thin parallel lines = notebook rules
 const WHEEL_MIN = 0.03; // spoked wheel radius, at least
 const WHEEL_SPOKES = 3; // radial lines crossed by a circle half way out from the hub
+const BALL_MAX = 0.4; // largest round shape that counts as a projectile's ball or wheel (its longer side)
 
 export function guessDiagram(input: GuessInput): Guess {
   const { width: W, height: H } = input;
@@ -95,7 +97,7 @@ export function guessDiagram(input: GuessInput): Guess {
     .filter((s) => s.kind === 'triangle' && s.area >= TRI_MIN_AREA * minSide * minSide)
     .sort((a, b) => b.area - a.area)[0];
   const desc = `stroke=${stroke.toFixed(1)} zig=${zig.toFixed(2)}${rules ? ` rules=${rules}` : ''}${wheels.length ? ` wheels=${wheels.length}` : ''} shapes=${shapes
-    .map((s) => `${s.solid ? 'solid-' : ''}${s.kind}@${Math.round(s.cx)},${Math.round(s.cy)}(${s.rectFill.toFixed(2)})`)
+    .map((s) => `${s.solid ? 'solid-' : ''}${s.kind}@${Math.round(s.cx)},${Math.round(s.cy)}(${s.rectFill.toFixed(2)})/${Math.round(Math.max(s.x1 - s.x0, s.y1 - s.y0))}`)
     .join(' ')}`;
 
   // A spoked wheel means a cannon or cart: a wheel cut off or half hidden (not recognised as one) still leaves
@@ -117,7 +119,9 @@ export function guessDiagram(input: GuessInput): Guess {
   if (hangingRound.length && round.length === hangingRound.length && shapes.length <= 2)
     return { diagram: 'pendulum', confidence: 0.65, why: `hanging bob; ${desc}` };
 
-  if (round.length) return { diagram: 'projectile', confidence: 0.5, why: `ball not hanging; ${desc}` };
+  // A ball (or a cannon's wheel) is drawn small; one big closed curve (a cloud, a blob) is just a thing that falls.
+  if (round.some((s) => Math.max(s.x1 - s.x0, s.y1 - s.y0) <= BALL_MAX * minSide))
+    return { diagram: 'projectile', confidence: 0.5, why: `ball not hanging; ${desc}` };
   if (hanging.length === 1 && shapes.length === 1)
     return { diagram: 'pendulum', confidence: 0.4, why: `hanging weight; ${desc}` };
   return { diagram: 'fallback', confidence: 0.2, why: `nothing matched; ${desc}` };
