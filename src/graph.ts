@@ -15,6 +15,7 @@ import {
   massesOf,
   meters,
   mps,
+  OMEGA2_PER_STIFFNESS,
   physSeconds,
   scaleOf,
   springK,
@@ -34,6 +35,24 @@ interface Sample {
   pe: number;
 }
 
+/**
+ * Where potential energy is zero. The swap between kinetic and potential should fill the graph, so PE is
+ * measured from the lowest point the moving body can reach, not from the bottom of the picture:
+ *  - pendulum: the bottom of the swing (pivot + string length straight down), fixed;
+ *  - spring:   the rest (equilibrium) position: gravity and spring together give ½ k d², d from rest;
+ *  - window:   anything else, the lowest PE in the last 8 s on screen (subtracted when drawing).
+ */
+type PeRef = { kind: 'pendulum'; bottomY: number } | { kind: 'spring' } | { kind: 'window' };
+
+const PE_REF_TEXT: Record<PeRef['kind'], string> = {
+  pendulum: 'PE from lowest point',
+  spring: 'PE from rest position',
+  window: 'PE from lowest point shown',
+};
+
+/** Upper end of the energy axis: the last 8 s peak times this. */
+const HEADROOM = 1.15;
+
 export class LiveGraph {
   private root: HTMLDivElement;
   private canvas: HTMLCanvasElement;
@@ -50,6 +69,7 @@ export class LiveGraph {
   private kg = new Map<Matter.Body, number>();
   private samples: Sample[] = [];
   private yMax = 0;
+  private peRef: PeRef = { kind: 'window' };
   /** Screen seconds since the drawing started (the period meter works in screen time). */
   private time = 0;
   private period = new PeriodMeter();
@@ -101,6 +121,7 @@ export class LiveGraph {
     this.samples = [];
     this.yMax = 0;
     this.time = 0;
+    this.peRef = peRefOf(sim, diagram);
     // Released from rest = the start is a turning point. A spring (or a pendulum drawn hanging straight) starts
     // with a push through the middle instead, so its first gap to a turning point is only a quarter swing.
     const main = mainBody(Matter.Composite.allBodies(sim.engine.world).filter((b) => !b.isStatic));
@@ -183,14 +204,17 @@ export class LiveGraph {
     // Joules: written or assumed (1 kg) masses, speeds and heights in metres through the scene's scale.
     let ke = 0;
     let pe = 0;
+    const ref = this.peRef;
     for (const b of bodies) {
       const kg = this.kg.get(b) ?? DEFAULT_KG;
       const v = mps(Math.hypot(b.velocity.x, b.velocity.y), this.scale);
-      const h = meters(sim.worldH - b.position.y, this.scale); // above the bottom edge
       ke += 0.5 * kg * v * v;
-      pe += kg * g * h;
+      if (ref.kind === 'spring') continue; // gravity is inside ½ k d² below
+      // Height above the bottom of the swing (pendulum) or the bottom edge (window: offset when drawing).
+      const baseY = ref.kind === 'pendulum' ? ref.bottomY : sim.worldH;
+      pe += kg * g * Math.max(0, meters(baseY - b.position.y, this.scale));
     }
-    pe += springEnergy(engine, this.scale, this.kg);
+    pe += ref.kind === 'spring' ? springEnergyFromRest(engine, this.scale, this.kg) : springEnergy(engine, this.scale, this.kg);
     this.samples.push({ ke, pe });
     if (this.samples.length > MAX_SAMPLES) this.samples.shift();
 
@@ -226,11 +250,21 @@ export class LiveGraph {
     const w = right - left;
     const h = bottom - top;
 
-    // Smooth auto-scale: jump up immediately, ease down slowly.
+    // 'window': PE is zero at the lowest point of the last 8 s (one offset for the whole plotted window, so
+    // the total stays flat where energy is conserved).
+    let peZero = 0;
+    if (this.peRef.kind === 'window' && this.samples.length) {
+      peZero = Infinity;
+      for (const s of this.samples) peZero = Math.min(peZero, s.pe);
+    }
+    const pe = (s: Sample) => Math.max(0, s.pe - peZero);
+
+    // Axis from 0 J to the last 8 s peak × HEADROOM: jumps up at once, eases down slowly (never a sudden shrink).
     let peak = 0;
-    for (const s of this.samples) peak = Math.max(peak, s.ke + s.pe);
-    this.yMax = peak > this.yMax ? peak * 1.1 : this.yMax + (peak * 1.1 - this.yMax) * 0.01;
-    const yMax = this.yMax || 1;
+    for (const s of this.samples) peak = Math.max(peak, s.ke + pe(s));
+    const target = peak * HEADROOM;
+    this.yMax = target > this.yMax ? target : this.yMax + (target - this.yMax) * 0.01;
+    const yMax = this.yMax > 1e-9 ? this.yMax : 1;
 
     // Grid + axes.
     ctx.strokeStyle = '#eeeeee';
@@ -253,6 +287,11 @@ export class LiveGraph {
     // The window is 8 s on screen; the axis is in physical time like every other readout.
     const span = physSeconds(WINDOW_S, this.scale);
     ctx.fillText(`-${span < 10 ? span.toFixed(1) : span.toFixed(0)} s`, left, cssH - 4);
+    // Where PE is zero, small, between the time labels (clear of the curves).
+    ctx.font = '700 10px Nunito, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(PE_REF_TEXT[this.peRef.kind], (left + right) / 2, cssH - 4);
+    ctx.font = '800 11px Nunito, system-ui, sans-serif';
     ctx.save();
     ctx.translate(13, top + h / 2);
     ctx.rotate(-Math.PI / 2);
@@ -276,9 +315,9 @@ export class LiveGraph {
       });
       ctx.stroke();
     };
-    plot(ORANGE, (s) => s.pe);
+    plot(ORANGE, pe);
     plot(BLUE, (s) => s.ke);
-    plot(GREEN, (s) => s.ke + s.pe);
+    plot(GREEN, (s) => s.ke + pe(s));
     // Top of the scale, so the joules can be read off; on a white halo above the curves.
     ctx.font = '800 11px Nunito, system-ui, sans-serif';
     ctx.textAlign = 'left';
@@ -392,6 +431,47 @@ function springEnergy(engine: Matter.Engine, scale: Scale, kg: Map<Matter.Body, 
     const b = Matter.Constraint.pointBWorld(c);
     const stretch = meters(Math.hypot(b.x - a.x, b.y - a.y) - c.length, scale);
     e += 0.5 * springK(c.stiffness, m, scale) * stretch * stretch;
+  }
+  return e;
+}
+
+/** Where PE is zero for this drawing (see PeRef). Falls back to the 8 s window when the scene is not the expected one. */
+function peRefOf(sim: Simulation, diagram: DiagramType): PeRef {
+  const scene = sim.scene;
+  if (diagram === 'pendulum' && scene.label === 'Pendulum') {
+    const swing = scene.sprites.find((s) => s.follow.kind === 'swing')?.follow;
+    const L = scene.measures?.string;
+    if (swing?.kind === 'swing' && L) return { kind: 'pendulum', bottomY: swing.pivot.y + L };
+  }
+  if (diagram === 'spring' && scene.label === 'Spring and mass' && scene.constraints.some((c) => c.stiffness < 0.1))
+    return { kind: 'spring' };
+  return { kind: 'window' };
+}
+
+/**
+ * Potential energy of a mass on a drawn spring measured from its rest position, in joules: ½ k d², d = how far
+ * the spring end is from where gravity and spring balance (rest length + g along the spring / ω²). Gravity's
+ * share is inside this: m g h + ½ k x² is ½ k d² plus a constant.
+ */
+function springEnergyFromRest(engine: Matter.Engine, scale: Scale, kg: Map<Matter.Body, number>): number {
+  const g = engine.gravity;
+  const toStep = g.scale * (STEP_S * 1000) ** 2;
+  let e = 0;
+  for (const c of Matter.Composite.allConstraints(engine.world)) {
+    if (c.stiffness >= 0.1) continue;
+    const ends = [c.bodyA, c.bodyB].filter((b): b is Matter.Body => !!b && !b.isStatic);
+    if (!ends.length) continue;
+    const ms = ends.map((b) => kg.get(b) ?? DEFAULT_KG);
+    const m = ms.length === 2 ? (ms[0] * ms[1]) / (ms[0] + ms[1]) : ms[0];
+    const a = Matter.Constraint.pointAWorld(c);
+    const b = Matter.Constraint.pointBWorld(c);
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 1e-6) continue;
+    // Gravity along the spring (towards the moving end), px per step², over ω² per step² = the sag in px.
+    const ga = ((g.x * (b.x - a.x) + g.y * (b.y - a.y)) / len) * toStep;
+    const rest = c.length + ga / (OMEGA2_PER_STIFFNESS * c.stiffness);
+    const d = meters(len - rest, scale);
+    e += 0.5 * springK(c.stiffness, m, scale) * d * d;
   }
   return e;
 }
