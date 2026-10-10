@@ -5,10 +5,12 @@ import { buildFallback } from './fallback';
 import { buildIncline } from './incline';
 import { buildPendulum } from './pendulum';
 import { buildProjectile } from './projectile';
+import { buildSpring } from './spring';
 import { buildPulley } from './pulley';
 
 const BUILDERS: Partial<Record<DiagramType, SceneBuilder>> = {
   pendulum: buildPendulum,
+  spring: buildSpring,
   incline: buildIncline,
   projectile: buildProjectile,
   pulley: buildPulley,

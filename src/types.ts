@@ -92,7 +92,9 @@ export interface SceneInput {
 /** How a cut-out of the drawing follows the simulation. */
 export type SpriteFollow =
   | { kind: 'body'; body: Matter.Body; origin: Point; originAngle: number }
-  | { kind: 'swing'; pivot: Point; body: Matter.Body; originAngle: number; originLength: number };
+  | { kind: 'swing'; pivot: Point; body: Matter.Body; originAngle: number; originLength: number }
+  /** Stretched/rotated between a fixed anchor and the constraint's moving end (springs). `origin` = moving end as drawn. */
+  | { kind: 'stretch'; anchor: Point; constraint: Matter.Constraint; origin: Point };
 
 export interface Sprite {
   /** Cut-out image; transparent outside the shape. Positioned at `offset` in working-image space. */
@@ -112,6 +114,8 @@ export interface BuiltScene {
   onStep?: (engine: Matter.Engine) => void;
   /** Optional overlay drawn in world coordinates after the background, before the sprites. */
   onDraw?: (ctx: CanvasRenderingContext2D) => void;
+  /** Optional per-step hook, called before each Engine.update (e.g. to keep a spring from dying out). */
+  step?: (engine: Matter.Engine) => void;
 }
 
 export type SceneBuilder = (input: SceneInput) => BuiltScene;
