@@ -52,6 +52,9 @@ const controls = createControls($<HTMLElement>('controls'), {
       if (scene && input === current) showControls(scene, a);
     });
   },
+  showArrows(on) {
+    arrows.setEnabled(on);
+  },
 });
 const arrows = new VelocityArrows();
 arrows.mountToggle($<HTMLElement>('controls'));
