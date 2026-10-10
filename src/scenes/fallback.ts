@@ -5,11 +5,13 @@
 //   - the floor is at the bottom edge of the view, never right under the drawing;
 //   - anything that is close to the floor gets a hop: it starts exactly where it was drawn, rises, and falls back
 //     (visible from the first frame, lands within ~1.5 s);
-//   - every body gets a small spin, so it lands off-balance and tips over instead of settling flat.
+//   - every body gets a small spin, so it lands off-balance and tips over instead of settling flat;
+//   - once everything has come to rest, it waits a moment and falls again from the start.
 
 import Matter from 'matter-js';
 import type { SceneBuilder, Sprite } from '../types';
 import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
+import { replayWhenStopped } from './replay';
 import { STEP_ACCEL } from '../sim';
 
 /** A body whose bottom is closer than this (× view height) to the floor hops first. */
@@ -91,5 +93,12 @@ export const buildFallback: SceneBuilder = (input) => {
     Matter.Body.setAngularVelocity(body, (i % 2 ? -1 : 1) * SPIN);
   });
 
-  return { bodies, constraints: [], sprites, background: eraseFromPaper(input, masks), label: 'Falling objects' };
+  return {
+    bodies,
+    constraints: [],
+    sprites,
+    background: eraseFromPaper(input, masks),
+    label: 'Falling objects',
+    onStep: replayWhenStopped(moving),
+  };
 };
