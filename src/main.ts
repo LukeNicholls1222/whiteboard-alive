@@ -97,7 +97,8 @@ async function startScene(input: SceneInput, opts: StartOptions = {}): Promise<B
   // Value labels first, so the velocity arrows draw on top of them.
   notes.attach(sim, input.analysis);
   arrows.attach(sim);
-  sim.start();
+  // A new photo: the drawing turns into the clean figure first (morph.ts). Rebuilds switch at once.
+  sim.start({ morph: !!opts.intro });
   mark('moving');
   return scene;
 }

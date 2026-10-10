@@ -151,10 +151,57 @@ export interface Sprite {
   follow: SpriteFollow;
 }
 
+/** Colour family of a filled clean shape: the moving masses (orange) or the devices (purple: wheel, spring). */
+export type CleanTone = 'mass' | 'device';
+
+/**
+ * One shape of the clean, textbook-style picture (clean.ts) the app draws instead of moving the hand-drawn ink.
+ * Shapes and positions come only from the physics bodies and what the scene builder worked out (never from the AI).
+ * Invisible helper bodies (walls, rails, collision cells) are simply not listed.
+ */
+export type CleanPart =
+  /** A rigid body drawn as its own convex outline, corners slightly rounded (blocks, weights, falling objects). */
+  | { kind: 'body'; body: Matter.Body; tone: CleanTone }
+  /** A round body (bob, ball) of radius `radius` world px; never smaller than `minCss` CSS px on screen. */
+  | { kind: 'ball'; body: Matter.Body; radius: number; tone: CleanTone; minCss?: number }
+  /** A pulley wheel at a fixed centre, turned by `angle()` (radians), with spokes. */
+  | { kind: 'wheel'; center: Point; radius: number; angle: () => number }
+  /** String / rope: a straight line between two points (read every frame). */
+  | { kind: 'rope'; from: () => Point; to: () => Point }
+  /** Rope lying on a wheel: arc around `center` from angle `from` to `to` (radians, clockwise on screen). */
+  | { kind: 'arc'; center: Point; radius: number; from: number; to: number }
+  /** Zigzag spring between two points (read every frame), `coils` zigzags, `width` world px across. */
+  | { kind: 'spring'; from: () => Point; to: () => Point; coils: number; width: number }
+  /** Fixed support (ceiling, wall): a line with hatching on the side `side` points to (unit vector). */
+  | { kind: 'support'; from: Point; to: Point; side: Point }
+  /** Ground line at height `y`; without x0 / x1 it runs across the whole picture. */
+  | { kind: 'ground'; y: number; x0?: number; x1?: number }
+  /** Fixed solid (ramp, ledge): outlined polygon with a light fill. */
+  | { kind: 'solid'; points: Point[] }
+  /** Launch arrow (fixed): shaft from `from`, head at `to`. */
+  | { kind: 'arrow'; from: Point; to: Point }
+  /** Small dark dot (pivot, axle). */
+  | { kind: 'pin'; at: () => Point }
+  /** A fixed image in world px (drawn scenery kept as ink, recoloured). */
+  | { kind: 'image'; image: HTMLCanvasElement; offset: Point }
+  /** A cut-out of the photo that keeps moving as before (the "no lines found" patch). */
+  | { kind: 'sprite'; sprite: Sprite };
+
 export interface BuiltScene {
   bodies: Matter.Body[];
   constraints: Matter.Constraint[];
+  /** The hand-drawn cut-outs that follow the bodies (drawn style; the intro and the morph start from them). */
   sprites: Sprite[];
+  /**
+   * The clean picture (default style): what is drawn, in order, over the faint original drawing. Absent or empty =
+   * the hand-drawn cut-outs move as before. See clean.ts.
+   */
+  clean?: CleanPart[];
+  /**
+   * Hand-drawn moving parts the scene draws itself (pulley ropes and wheel), in world coordinates. Drawn style:
+   * every frame, after onDraw and before the sprites. Clean style: only once, into the faint picture of the drawing.
+   */
+  drawnOnly?: (ctx: CanvasRenderingContext2D) => void;
   /** Paper with the moving parts erased; drawn as the static background. */
   background: HTMLCanvasElement;
   label: string;
