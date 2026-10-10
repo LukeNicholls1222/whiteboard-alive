@@ -266,13 +266,17 @@ async function run(file: Blob, example?: string) {
     const t0 = performance.now();
     const vision = extractContours(cv, photo);
     console.log(`[vision] ${vision.contours.length} contours in ${Math.round(performance.now() - t0)}ms`, vision.contours);
+    // No lines found: show the photo itself (the cleaned paper would be blank), skip the AI, and the fallback
+    // drops the photo's darkest patch, so something still moves.
+    const blank = !vision.contours.length;
+    if (blank) vision.paper = photo;
 
     setStep('ai');
     const t1 = performance.now();
     const annotated = annotate(vision.paper, vision.contours);
 
     let analysis: Analysis;
-    if (!example && aiPlan().kind === 'gemini') {
+    if (!example && !blank && aiPlan().kind === 'gemini') {
       // Nothing moves before the drawing is understood. Gemini takes 3-15 s (at most 20 s): meanwhile the stage
       // shows the still paper with its lines glowing in turn and the "Understanding" dot pulsing. The shape-based
       // guess is worked out in the meantime, so a failure or timeout can start on it at once.
@@ -309,9 +313,12 @@ async function run(file: Blob, example?: string) {
             console.warn(err);
             return offlineAnalysis(annotated, vision.contours);
           })
-        : await analyze(annotated, vision.contours);
+        : blank
+          ? offlineAnalysis(annotated, vision.contours)
+          : await analyze(annotated, vision.contours);
       if (stale()) return;
     }
+    if (blank) analysis.explanation = 'We could not find clear lines, so here is a guess: the darkest part of the photo falls.';
     console.log(`[ai] ${analysis.source} ${Math.round(performance.now() - t1)}ms`, analysis);
     if (import.meta.env.DEV) (window as any).__wa.last = { analysis: structuredClone(analysis), fingerprint: fingerprint(vision.contours, analysis) };
 

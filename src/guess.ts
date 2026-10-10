@@ -8,6 +8,11 @@
 //   - solid blobs    = ink much thicker than the pen stroke (a filled-in bob or ball)
 //   - zigzag         = a band where scan lines cross the ink many times at a regular spacing, and the band is
 //                      deeper than that spacing (hatching on a ceiling is shallow, a spring is deep)
+//   - spoked wheels  = a filled disc with three or more radial lines inside (cannon or cart wheels). Counted as one
+//                      round shape, and their spokes are left out of the zigzag search (a row through two spoked
+//                      wheels crosses ink as often and as regularly as a spring does); with one in the picture a
+//                      spring needs twice the zigzag score
+// Notebook rules (five or more long thin parallel lines, each its own contour) are taken out of the ink first.
 // Decision order: zigzag -> spring, big triangle -> incline, wheel with a weight on each side below -> pulley,
 // round thing hanging under ink with nothing below -> pendulum, any other round thing or arrow -> projectile.
 
@@ -55,25 +60,47 @@ const SOLID_MIN = 0.025; // solid blob radius
 const ZIG_GAP = 0.09; // max gap between crossings inside one zigzag cluster
 const ZIG_MIN_CROSS = 5; // crossings of one scan line through a spring
 const ZIG_DEPTH = 0.5; // (band depth / crossing spacing) x alternation for a spring; hatching scores ~0
+const ZIG_MOVING = 1; // per scan line of a band, crossings that move sideways to the next line (parallel rules: ~0)
+const RULED_MIN = 5; // this many long thin parallel lines = notebook rules
+const WHEEL_MIN = 0.03; // spoked wheel radius, at least
+const WHEEL_SPOKES = 3; // radial lines crossed by a circle half way out from the hub
 
 export function guessDiagram(input: GuessInput): Guess {
   const { width: W, height: H } = input;
-  const ink = input.ink;
   const minSide = Math.min(W, H);
-  if (!ink.some((v) => v)) return { diagram: 'fallback', confidence: 0, why: 'no ink' };
+  const { ink, rules } = withoutRules(input);
+  if (!ink.some((v) => v))
+    return { diagram: 'fallback', confidence: 0, why: rules ? `only notebook rules (${rules})` : 'no ink' };
 
   const stroke = strokeWidth(ink, W, H);
-  const shapes = [...holes(ink, W, H, minSide), ...solids(ink, W, H, minSide, stroke)];
-  const zig = zigzag(ink, W, H, minSide, stroke);
+  const wheels = spokedWheels(ink, W, H, minSide, stroke);
+  const inWheel = (x: number, y: number, pad = 0) => wheels.some((w) => Math.hypot(x - w.cx, y - w.cy) <= w.r + pad);
+  const shapes = [
+    // Pie slices between the spokes are part of their wheel, not shapes of their own.
+    ...holes(ink, W, H, minSide).filter((s) => !inWheel(s.cx, s.cy)),
+    ...solids(ink, W, H, minSide, stroke).filter((s) => !inWheel(s.cx, s.cy)),
+    ...wheels.map((w): Shape => ({
+      kind: 'round', solid: false, cx: w.cx, cy: w.cy, x0: w.cx - w.r, y0: w.cy - w.r, x1: w.cx + w.r, y1: w.cy + w.r,
+      area: Math.PI * w.r * w.r, rectFill: Math.PI / 4, elong: 1,
+    })),
+  ];
+  let zigInk = ink;
+  if (wheels.length) {
+    zigInk = ink.slice();
+    for (let i = 0; i < zigInk.length; i++) if (zigInk[i] && inWheel(i % W, Math.floor(i / W), 2 * stroke)) zigInk[i] = 0;
+  }
+  const zig = zigzag(zigInk, W, H, minSide, stroke);
   const round = shapes.filter((s) => s.kind === 'round');
   const tri = shapes
     .filter((s) => s.kind === 'triangle' && s.area >= TRI_MIN_AREA * minSide * minSide)
     .sort((a, b) => b.area - a.area)[0];
-  const desc = `stroke=${stroke.toFixed(1)} zig=${zig.toFixed(2)} shapes=${shapes
+  const desc = `stroke=${stroke.toFixed(1)} zig=${zig.toFixed(2)}${rules ? ` rules=${rules}` : ''}${wheels.length ? ` wheels=${wheels.length}` : ''} shapes=${shapes
     .map((s) => `${s.solid ? 'solid-' : ''}${s.kind}@${Math.round(s.cx)},${Math.round(s.cy)}(${s.rectFill.toFixed(2)})`)
     .join(' ')}`;
 
-  if (zig >= ZIG_DEPTH) return { diagram: 'spring', confidence: Math.round(Math.min(0.9, 0.5 + zig / 10) * 100) / 100, why: `zigzag; ${desc}` };
+  // A spoked wheel means a cannon or cart: a wheel cut off or half hidden (not recognised as one) still leaves
+  // spoke crossings, so only a clearly deep zigzag counts as a spring there.
+  if (zig >= ZIG_DEPTH * (wheels.length ? 2 : 1)) return { diagram: 'spring', confidence: Math.round(Math.min(0.9, 0.5 + zig / 10) * 100) / 100, why: `zigzag; ${desc}` };
   if (tri) return { diagram: 'incline', confidence: 0.7, why: `triangle; ${desc}` };
 
   // Pulley: a wheel with closed shapes hanging lower on both its left and right.
@@ -94,6 +121,107 @@ export function guessDiagram(input: GuessInput): Guess {
   if (hanging.length === 1 && shapes.length === 1)
     return { diagram: 'pendulum', confidence: 0.4, why: `hanging weight; ${desc}` };
   return { diagram: 'fallback', confidence: 0.2, why: `nothing matched; ${desc}` };
+}
+
+/**
+ * Ink without notebook rules. Rules = RULED_MIN or more contours that are each one long, thin, nearly horizontal
+ * line (no enclosed paper), all at about the same slant. Each rule's ink is erased (the pieces of ink that lie
+ * inside its bounding box). A drawing never has that many separate parallel long lines; a ground line or two stay.
+ */
+function withoutRules(input: GuessInput): { ink: Uint8Array; rules: number } {
+  const { width: W, height: H, contours } = input;
+  const minSide = Math.min(W, H);
+  const lines = contours.filter((c) => {
+    const { w, h } = c.bbox;
+    return !c.hasHole && w >= 0.15 * minSide && h <= 0.12 * w + 0.02 * minSide && c.inkPixels <= 4 * w;
+  });
+  if (lines.length < RULED_MIN) return { ink: input.ink, rules: 0 };
+  // Slant of each line: its two farthest outline points.
+  const slant = (c: Contour) => {
+    let a = c.points[0], b = c.points[0], best = -1;
+    for (const p of c.points) for (const q of c.points) {
+      const d = (p.x - q.x) ** 2 + (p.y - q.y) ** 2;
+      if (d > best) { best = d; a = p; b = q; }
+    }
+    return a.x === b.x ? Math.PI / 2 : Math.atan((b.y - a.y) / (b.x - a.x));
+  };
+  const angles = lines.map(slant).sort((p, q) => p - q);
+  const mid = angles[angles.length >> 1];
+  const rules = lines.filter((c) => Math.abs(slant(c) - mid) < 0.06);
+  if (rules.length < RULED_MIN) return { ink: input.ink, rules: 0 };
+  const ink = input.ink.slice();
+  const inside = (pix: Int32Array) => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const i of pix) {
+      const x = i % W, y = (i - x) / W;
+      x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+    }
+    return rules.some((c) => x0 >= c.bbox.x - 2 && y0 >= c.bbox.y - 2 && x1 <= c.bbox.x + c.bbox.w + 2 && y1 <= c.bbox.y + c.bbox.h + 2);
+  };
+  components(W, H, (i) => !!input.ink[i], (pix) => {
+    if (inside(pix)) for (const i of pix) ink[i] = 0;
+  });
+  return { ink, rules: rules.length };
+}
+
+interface Wheel {
+  cx: number;
+  cy: number;
+  r: number;
+}
+
+/**
+ * Spoked wheels: closed paper pockets are filled in (a wheel's pie slices become part of one solid disc). The
+ * deepest points of the filled ink, strongest first, are centre candidates (radius R = their depth). One is a wheel if
+ *   - there is a rim: in most directions (80 %; a wheel partly hidden behind its cart still counts), ink lies between 0.85 R and 1.25 R from the centre, and
+ *   - circles at 45 % and 70 % of R each cross WHEEL_SPOKES or more separate ink lines (spokes), while not being
+ *     mostly ink (a coloured-in ball is one solid run).
+ * A plain drawn circle (ball, bob, pulley wheel) has no ink inside and is not counted here.
+ */
+function spokedWheels(ink: Uint8Array, W: number, H: number, minSide: number, stroke: number): Wheel[] {
+  const pocket = (0.25 * minSide) ** 2;
+  const filled = ink.slice();
+  components(W, H, (i) => !ink[i], (pix, n, border) => {
+    if (border || n > pocket) return;
+    for (const i of pix) filled[i] = 255;
+  });
+  const d = distance(filled, W, H);
+  const rMin = Math.max(4 * stroke, WHEEL_MIN * minSide);
+  const out: Wheel[] = [];
+  const inkAt = (x: number, y: number) => {
+    const xi = Math.round(x), yi = Math.round(y);
+    return xi >= 0 && yi >= 0 && xi < W && yi < H && !!ink[yi * W + xi];
+  };
+  const cand: number[] = [];
+  for (let i = 0; i < d.length; i++) if (d[i] >= rMin) cand.push(i);
+  cand.sort((p, q) => d[q] - d[p]);
+  const taken: { x: number; y: number; r: number }[] = [];
+  for (const c of cand) {
+    if (taken.length >= 12) break;
+    const cx = c % W, cy = (c - cx) / W, R = d[c];
+    if (taken.some((t) => Math.hypot(cx - t.x, cy - t.y) < t.r + 0.5 * R)) continue; // overlaps a stronger one
+    taken.push({ x: cx, y: cy, r: R });
+    // Rim.
+    let rim = 0;
+    for (let a = 0; a < 360; a += 5) {
+      const dx = Math.cos((a * Math.PI) / 180), dy = Math.sin((a * Math.PI) / 180);
+      for (let t = 0.85 * R; t <= 1.25 * R; t += 1) if (inkAt(cx + dx * t, cy + dy * t)) { rim++; break; }
+    }
+    if (rim < 0.8 * 72) continue;
+    // Spokes: separate ink runs around circles inside the rim.
+    const spoked = [0.45, 0.7].every((k) => {
+      const rho = k * R;
+      if (rho < 1.5 * stroke) return false;
+      const on: boolean[] = [];
+      for (let a = 0; a < 360; a++) on.push(inkAt(cx + Math.cos((a * Math.PI) / 180) * rho, cy + Math.sin((a * Math.PI) / 180) * rho));
+      const share = on.filter(Boolean).length / on.length;
+      let runs = 0;
+      for (let a = 0; a < 360; a++) if (on[a] && !on[(a + 359) % 360]) runs++;
+      return share <= 0.6 && runs >= WHEEL_SPOKES;
+    });
+    if (spoked) out.push({ cx, cy, r: R });
+  }
+  return out;
 }
 
 /** Typical pen width: median over ink pixels of min(horizontal run, vertical run) through the pixel. */
@@ -362,7 +490,9 @@ function zigzag(ink: Uint8Array, W: number, H: number, minSide: number, stroke: 
     let start = -1, last = -1, spacings: number[] = [], alt = 0, pairs = 0;
     let prev: Cluster | null = null;
     const close = () => {
-      if (start >= 0 && spacings.length >= 3 && pairs >= 6) {
+      // Most crossings of a spring shift sideways from one scan line to the next; rules and other parallel
+      // lines barely move, so the alternation of their few moving crossings means nothing.
+      if (start >= 0 && spacings.length >= 3 && pairs >= 6 && pairs >= ZIG_MOVING * (last - start + 1)) {
         spacings.sort((p, q) => p - q);
         const depth = (last - start + 1) / spacings[spacings.length >> 1];
         best = Math.max(best, depth * (alt / pairs));

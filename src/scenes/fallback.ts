@@ -34,6 +34,69 @@ function insideHull(p: Point, hull: Point[]): boolean {
   return true;
 }
 
+/**
+ * The darkest part of a photo nobody found lines in: a square window (40 % of the short side) that holds the most
+ * "darker than the paper" weight, preferring the middle and keeping off the photo edges (desk, paper border),
+ * then tightened to the dark pixels inside it. Plain paper gives the middle of the photo.
+ */
+function darkestPatch(photo: HTMLCanvasElement): { x: number; y: number; w: number; h: number } {
+  const W = photo.width, H = photo.height, minSide = Math.min(W, H);
+  const d = photo.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, W, H).data;
+  const luma = new Uint8Array(W * H);
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < luma.length; i++) {
+    luma[i] = (d[i * 4] * 77 + d[i * 4 + 1] * 150 + d[i * 4 + 2] * 29) >> 8;
+    const x = i % W, y = (i - x) / W;
+    if (x > W * 0.2 && x < W * 0.8 && y > H * 0.2 && y < H * 0.8) hist[luma[i]]++;
+  }
+  // Paper brightness: the median of the middle of the photo.
+  let total = 0, acc = 0, paper = 255;
+  for (const v of hist) total += v;
+  for (let v = 0; v < 256; v++) if ((acc += hist[v]) >= total / 2) { paper = v; break; }
+  const weight = (i: number) => Math.max(0, paper - 25 - luma[i]);
+  // Integral image of the darkness weight.
+  const S = new Float64Array((W + 1) * (H + 1));
+  for (let y = 0; y < H; y++) {
+    let row = 0;
+    for (let x = 0; x < W; x++) {
+      row += weight(y * W + x);
+      S[(y + 1) * (W + 1) + x + 1] = S[y * (W + 1) + x + 1] + row;
+    }
+  }
+  const sum = (x: number, y: number, w: number, h: number) =>
+    S[(y + h) * (W + 1) + x + w] - S[y * (W + 1) + x + w] - S[(y + h) * (W + 1) + x] + S[y * (W + 1) + x];
+  const side = Math.round(minSide * 0.4), margin = Math.round(minSide * 0.05);
+  const middle = { x: Math.round((W - side) / 2), y: Math.round((H - side) / 2), w: side, h: side };
+  let best = middle, bestScore = 0;
+  const far = Math.hypot(W, H) / 2;
+  for (let y = margin; y + side <= H - margin; y += 8)
+    for (let x = margin; x + side <= W - margin; x += 8) {
+      const off = Math.hypot(x + side / 2 - W / 2, y + side / 2 - H / 2) / far;
+      const score = sum(x, y, side, side) * (1 - 0.5 * off);
+      if (score > bestScore) { bestScore = score; best = { x, y, w: side, h: side }; }
+    }
+  // Too faint to mean anything (blank paper): the middle.
+  if (bestScore < side * side * 0.5) return middle;
+  // Tighten to the dark pixels in the window, keeping a little paper around them and a sensible size.
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let y = best.y; y < best.y + best.h; y++)
+    for (let x = best.x; x < best.x + best.w; x++)
+      if (weight(y * W + x) > 10) {
+        x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+      }
+  if (x1 < 0) return best;
+  const pad = Math.round(minSide * 0.03), minW = Math.round(minSide * 0.15);
+  const grow = (lo: number, hi: number, limit: number) => {
+    let a = lo - pad, b = hi + pad;
+    if (b - a < minW) { const c = (a + b) / 2; a = c - minW / 2; b = c + minW / 2; }
+    a = Math.max(0, Math.round(a));
+    b = Math.min(limit, Math.round(b));
+    return [a, b - a] as const;
+  };
+  const [x, w] = grow(x0, x1, W), [y, h] = grow(y0, y1, H);
+  return { x, y, w, h };
+}
+
 export const buildFallback: SceneBuilder = (input) => {
   const { width: W, height: H } = input;
   const bodies: Matter.Body[] = [];
@@ -86,6 +149,29 @@ export const buildFallback: SceneBuilder = (input) => {
     const isStatic = isStaticContour(c);
     const group = input.contours.filter((k) => rootOf(k) === c);
     addBody(c.hull, c.bbox, isStatic, isStatic ? null : contourMask(input, group));
+  }
+
+  // No lines found at all (faint pencil, an odd photo, blank paper): the darkest patch of the photo, or its middle,
+  // falls as one block, so the screen never stays still.
+  if (!input.contours.length) {
+    const b = darkestPatch(input.paper);
+    const mask = new Uint8Array(W * H);
+    for (let y = b.y; y < b.y + b.h; y++) mask.fill(1, y * W + b.x, y * W + b.x + b.w);
+    const hull = [
+      { x: b.x, y: b.y },
+      { x: b.x + b.w, y: b.y },
+      { x: b.x + b.w, y: b.y + b.h },
+      { x: b.x, y: b.y + b.h },
+    ];
+    addBody(hull, b, false, mask);
+    // A thin edge, so a piece of plain paper is still seen falling over the paper behind it.
+    const piece = sprites[sprites.length - 1]?.image;
+    const pctx = piece?.getContext('2d');
+    if (piece && pctx) {
+      pctx.strokeStyle = 'rgba(60, 60, 60, 0.45)';
+      pctx.lineWidth = Math.max(2, Math.round(Math.min(W, H) / 240));
+      pctx.strokeRect(pctx.lineWidth / 2, pctx.lineWidth / 2, piece.width - pctx.lineWidth, piece.height - pctx.lineWidth);
+    }
   }
 
   // Nothing movable (all lines, or everything marked static): drop the whole drawing as one box.
