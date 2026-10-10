@@ -146,19 +146,37 @@ Reply with JSON only, shaped like:
 {"diagram":"pendulum","confidence":0.9,"bodies":[{"contourId":0,"role":"bob","static":false,"mass":1.0}],"constraints":[{"type":"rope","from":0,"to":1}],"annotations":[],"explanation":"..."}`;
 }
 
-export async function analyze(annotated: HTMLCanvasElement, contours: Contour[]): Promise<Analysis> {
-  const override = new URLSearchParams(location.search).get('diagram') as DiagramType | null;
-  if (override && DIAGRAMS.includes(override)) return heuristic(contours, annotated, override);
-  // ?offline skips Gemini (saves the small free-tier quota during testing and shows the shape-based guess).
-  if (!hasApiKey() || new URLSearchParams(location.search).has('offline')) return heuristic(contours, annotated);
+/**
+ * Where this page's analysis comes from: a diagram forced with ?diagram=..., the shape-based guess only
+ * (?offline or no key), or Gemini (with the guess shown while it thinks, see main.ts).
+ */
+export type AIPlan = { kind: 'forced'; diagram: DiagramType } | { kind: 'offline' } | { kind: 'gemini' };
 
+export function aiPlan(): AIPlan {
+  const q = new URLSearchParams(location.search);
+  const override = q.get('diagram') as DiagramType | null;
+  if (override && DIAGRAMS.includes(override)) return { kind: 'forced', diagram: override };
+  // ?offline skips Gemini (saves the small free-tier quota during testing and shows the shape-based guess).
+  if (!hasApiKey() || q.has('offline')) return { kind: 'offline' };
+  return { kind: 'gemini' };
+}
+
+export async function analyze(annotated: HTMLCanvasElement, contours: Contour[]): Promise<Analysis> {
+  const plan = aiPlan();
+  if (plan.kind === 'forced') return heuristic(contours, annotated, plan.diagram);
+  if (plan.kind === 'offline') return heuristic(contours, annotated);
+  return (await askGemini(annotated, contours)) ?? heuristic(contours, annotated);
+}
+
+/** Gemini's reading of the drawing, or null if every model failed or the time ran out (never throws). */
+export async function askGemini(annotated: HTMLCanvasElement, contours: Contour[]): Promise<Analysis | null> {
   const jpeg = annotated.toDataURL('image/jpeg', 0.85).split(',')[1];
   const text = prompt(contours, annotated.width, annotated.height);
   const deadline = Date.now() + TIMEOUT_MS;
   for (const model of MODELS) {
     // Structured output first; if the API rejects the schema field, retry with plain JSON mode.
     for (const withSchema of [true, false]) {
-      if (Date.now() > deadline) return heuristic(contours, annotated);
+      if (Date.now() > deadline) return null;
       try {
         const raw = await callGemini(model, jpeg, text, withSchema, Math.min(9000, deadline - Date.now()));
         return sanitize(raw, contours);
@@ -170,7 +188,7 @@ export async function analyze(annotated: HTMLCanvasElement, contours: Contour[])
       }
     }
   }
-  return heuristic(contours, annotated);
+  return null;
 }
 
 async function callGemini(model: string, jpeg: string, text: string, withSchema: boolean, timeoutMs: number): Promise<any> {
@@ -261,7 +279,10 @@ export function normalizeNote(a: any): Annotation | null {
   return { text, quantity, value: v, unit: SI_UNIT[quantity], part };
 }
 
-/** Shape-based guess without calling Gemini (used if a built-in example's saved answer cannot be read). */
+/**
+ * Shape-based guess without calling Gemini (~0.2 s): what runs while Gemini thinks, and the answer if it fails
+ * or a built-in example's saved answer cannot be read.
+ */
 export const offlineAnalysis = (annotated: HTMLCanvasElement, contours: Contour[]) => heuristic(contours, annotated);
 
 /**

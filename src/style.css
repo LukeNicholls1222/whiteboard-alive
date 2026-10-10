@@ -32,6 +32,7 @@ h1 { margin: 8px 0 0; font-weight: 900; font-size: 28px; color: var(--green); }
 .step { padding: 5px 12px; border-radius: 999px; background: var(--soft); border: 2px solid var(--line); color: #afafaf; font-size: 13px; }
 .step.active { color: var(--blue); border-color: var(--blue); }
 .step.done { color: var(--green-dark); border-color: var(--green); background: #d7ffb8; }
+.step.warn { color: #cc7800; border-color: #ff9600; background: #fff1db; }
 .step.error { color: #ea2b2b; border-color: #ff4b4b; background: #ffdfe0; }
 .card { border: 2px solid var(--line); border-bottom-width: 4px; border-radius: 20px; overflow: hidden; background: #fbfaf6; min-height: 120px; }
 #stage { display: block; width: 100%; }
