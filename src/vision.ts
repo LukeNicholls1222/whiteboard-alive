@@ -7,16 +7,20 @@
 //   1. Two channels: luma (sees every pen colour) and max(R,G,B) (light coloured printing is almost paper-white).
 //   2. Background = morphological close on a 1/4 size copy (removes thin ink, keeps shadows and light falloff).
 //      darkness = 1 - pixel / background -> shadows, vignetting and lamp gradients cancel out.
-//   3. Paper region: Otsu on the background splits bright paper from the darker desk; largest bright blob ->
-//      convex hull -> shrink a little (drops the paper edge). Only trusted when the blob is solid and clearly
-//      THE bright thing; otherwise (sun stripes, no desk) the whole photo is used and step 7 removes desk bits.
+//   3. Paper region: if a coloured desk is visible (warm + saturated background: wood, cork, cardboard), paper =
+//      the near-grey background, so a shadow on the sheet stays paper and sunlit wood stays desk. Otherwise Otsu on
+//      the background brightness splits bright paper from a darker desk. Largest paper blob -> convex hull ->
+//      shrink a little (drops the paper edge). Only trusted when the blob is solid and clearly THE paper thing;
+//      otherwise (sun stripes, no desk) the whole photo is used and step 7 removes desk bits.
 //   4. Candidate ink = darkness above a weak threshold that follows the paper's own grain, and not "light coloured
-//      printing" (much darker in luma than in max(R,G,B)).
+//      printing" (much darker in luma than in max(R,G,B)) - unless it is clearly dark in luma (blue / red pen).
 //   5. Ruled / grid paper: if several long parallel faint lines exist, erase straight runs as faint as them.
 //      Then hysteresis: a blob survives if it has a dark seed, or is a long thin line; specks are dropped.
 //   6. Gap joining on the skeleton (spurs pruned): endpoint -> endpoint at a corner or on the same broken line,
-//      endpoint -> stroke just ahead. Distances are small so separate objects stay separate.
-//   7. Small close, contours, then filters: specks; desk / paper-edge slivers; binder holes; long printed lines
+//      endpoint -> stroke just ahead. Distances are small so separate objects stay separate. Blobs touching the
+//      photo border (desk, paper-edge shadow) are never joined, so the drawing cannot get glued to them.
+//   7. Small close, contours, then filters: specks; desk / paper-edge slivers (incl. thin lines that run along
+//      the paper / photo border for their whole length); binder holes; long printed lines
 //      (margin) that are much fainter in max(R,G,B) than the drawing; handwriting (rows of small letters, or a
 //      lone small word near the paper border far from the drawing).
 //
@@ -51,6 +55,8 @@ const STRONG_MAX = 0.3;
 const STRONG_OVER_WEAK = 1.8;
 /** A pixel must keep this share of its luma darkness in max(R,G,B) darkness (drops light coloured printing). */
 const COLOR_KEEP = 0.35;
+/** ...unless its luma darkness is at least this (pen ink of any colour; light printing never gets this dark). */
+const INK_SURE = 0.3;
 /** Hysteresis: a blob with no dark seed is still kept if it is a line at least this long... */
 const LINE_KEEP = 0.1;
 /** ...and thin: pixel count <= length * LINE_THIN (i.e. average stroke width below LINE_THIN px). */
@@ -59,6 +65,10 @@ const LINE_THIN = 5;
 const SPECK_AREA = 0.00003;
 /** Paper detection: desk must be at most this bright relative to paper, otherwise the whole photo is "paper". */
 const PAPER_CONTRAST = 0.8;
+/** Paper detection by colour: background with (R-B) and saturation both above this share of max(R,G,B) is desk. */
+const DESK_WARM = 0.3;
+/** Paper detection by colour: non-desk background darker than this share of the paper brightness is not paper. */
+const PAPER_DARKEST = 0.4;
 /** Paper detection: the paper blob must cover at least this fraction of the photo. */
 const PAPER_MIN_FRACTION = 0.25;
 /** Paper detection: the bright blob must fill this much of its convex hull (a sheet is convex). */
@@ -69,6 +79,8 @@ const PAPER_BRIGHT_OUTSIDE = 0.3;
 const PAPER_MARGIN = 0.012;
 /** Contours mostly on the desk side and closer than this to the paper border are desk / paper-edge leftovers. */
 const DESK_EDGE = 0.07;
+/** Thin lines lying entirely within this distance of the paper / photo border are the paper edge, not ink. */
+const EDGE_LINE = 0.045;
 /** Ruled-line removal: a straight run longer than this (ratio of paper width) is a ruled-line candidate. */
 const RULE_SPAN = 0.45;
 /** Ruled-line removal: bridge dots along a rule up to this many half-size px. */
@@ -202,7 +214,7 @@ export function findInk(cv: any, src: any): { ink: Uint8Array; contours: Contour
     const dark = G.dark;
 
     // 3. Paper region.
-    const paper = findPaper(cv, track, G.bgSmall, W, H);
+    const paper = findPaper(cv, track, G.bgSmall, backgroundColor(cv, track, src, minSide), W, H);
 
     // 4. Hysteresis threshold inside the paper. Thresholds follow the paper's own grain / JPEG noise.
     const { weakT, strongT } = thresholds(dark, paper.mask);
@@ -212,7 +224,13 @@ export function findInk(cv: any, src: any): { ink: Uint8Array; contours: Contour
     // Light coloured printing (blue rules, red margin) is dark in luma but nearly white in max(R,G,B); pen ink of
     // any colour keeps a good share of its darkness in both. Mixing with paper scales both, so the ratio holds.
     const vd = V.dark;
-    for (let i = 0; i < N; i++) mask[i] = dark[i] >= weakT && paper.mask[i] && vd[i] >= dark[i] * COLOR_KEEP ? 255 : 0;
+    // Saturated pen (blue / red marker) is also bright in max(R,G,B), but far darker in luma than any light
+    // printing, so pixels past INK_SURE are ink whatever their colour.
+    const inkSure = Math.round(INK_SURE * 255);
+    for (let i = 0; i < N; i++) {
+      const d = dark[i];
+      mask[i] = d >= weakT && paper.mask[i] && (d >= inkSure || vd[i] >= d * COLOR_KEEP) ? 255 : 0;
+    }
     const lineKeep = minSide * LINE_KEEP;
     // 5. Ruled / grid lines (before hysteresis, so faint rules touching the drawing cannot ride along with it).
     removeRuledLines(cv, track, maskMat, dark, paper.width, strongT);
@@ -257,15 +275,21 @@ export function findInk(cv: any, src: any): { ink: Uint8Array; contours: Contour
       if (!tiny && !edgeJunk) {
         // Desk peeking inside the paper hull (curled / rotated paper): outline mostly on desk, hugging the paper edge.
         const pts = c.data32S as Int32Array;
-        let desk = 0, nearEdge = Infinity;
+        let desk = 0, nearEdge = Infinity, farEdge = 0;
         const step = Math.max(2, Math.floor(pts.length / 120) * 2);
         let n = 0;
         for (let k = 0; k < pts.length; k += step) {
           n++;
           if (!paper.bright(pts[k], pts[k + 1])) desk++;
-          nearEdge = Math.min(nearEdge, paper.distToEdge(pts[k], pts[k + 1]));
+          const de = paper.distToEdge(pts[k], pts[k + 1]);
+          nearEdge = Math.min(nearEdge, de);
+          farEdge = Math.max(farEdge, de);
         }
         edgeJunk = desk > n * 0.5 && nearEdge < minSide * DESK_EDGE;
+        // Paper edge / its shadow / the desk line just beyond it: a thin line whose whole length stays within a
+        // narrow band along the paper or photo border. A drawn line never hugs the sheet's edge like that.
+        const across = Math.min(rect.width, rect.height);
+        if (across <= minSide * 0.04 && long >= across * 4 && farEdge < minSide * EDGE_LINE) edgeJunk = true;
       }
       c.delete();
       if (tiny || edgeJunk) continue;
@@ -411,7 +435,46 @@ interface PaperInfo {
   bright: (x: number, y: number) => boolean;
 }
 
-function findPaper(cv: any, track: Track, bgSmall: any, W: number, H: number): PaperInfo {
+/** Background colour (per-channel close on a 1/BG_DOWNSCALE copy, same size as darkness()'s bgSmall). */
+function backgroundColor(cv: any, track: Track, src: any, minSide: number): any {
+  const small = track(new cv.Mat());
+  cv.resize(src, small, new cv.Size(Math.max(16, Math.round(src.cols / BG_DOWNSCALE)), Math.max(16, Math.round(src.rows / BG_DOWNSCALE))), 0, 0, cv.INTER_AREA);
+  const k = odd((minSide * BG_KERNEL) / BG_DOWNSCALE);
+  const kernel = track(cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(k, k)));
+  const bg = track(new cv.Mat());
+  cv.morphologyEx(small, bg, cv.MORPH_CLOSE, kernel);
+  return bg;
+}
+
+/**
+ * Desk by colour: wood / cork / cardboard is warm and saturated, while white paper stays near-grey even in a deep
+ * shadow. Returns a 0/255 "paper-like" mask (small size), or null when there is no clearly coloured desk.
+ */
+function paperByColor(bgSmall: any, colorBg: any): Uint8Array | null {
+  const n = bgSmall.cols * bgSmall.rows;
+  const b = bgSmall.data as Uint8Array;
+  const c = colorBg.data as Uint8Array;
+  const desk = new Uint8Array(n);
+  let nDesk = 0;
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    const r = c[p], g = c[p + 1], bl = c[p + 2];
+    const mx = r > g ? (r > bl ? r : bl) : g > bl ? g : bl;
+    const mn = r < g ? (r < bl ? r : bl) : g < bl ? g : bl;
+    if (mx > 0 && (r - bl) >= mx * DESK_WARM && (mx - mn) >= mx * DESK_WARM) { desk[i] = 1; nDesk++; }
+  }
+  if (nDesk < n * 0.03 || nDesk > n * 0.7) return null;
+  // Paper reference brightness: 90th percentile of the non-desk background. Very dark non-desk areas (black
+  // objects, deep corners) are not paper either.
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < n; i++) if (!desk[i]) hist[b[i]]++;
+  let acc = 0, ref = 255;
+  for (let t = 255; t >= 0; t--) { acc += hist[t]; if (acc >= (n - nDesk) * 0.1) { ref = t; break; } }
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) out[i] = !desk[i] && b[i] >= ref * PAPER_DARKEST ? 255 : 0;
+  return out;
+}
+
+function findPaper(cv: any, track: Track, bgSmall: any, colorBg: any, W: number, H: number): PaperInfo {
   const sw = bgSmall.cols;
   const sh = bgSmall.rows;
   const sx = W / sw;
@@ -423,19 +486,29 @@ function findPaper(cv: any, track: Track, bgSmall: any, W: number, H: number): P
     bright: () => true,
   };
 
-  const bin = track(new cv.Mat());
-  const t = cv.threshold(bgSmall, bin, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
-  // Is the dark class really a desk, or just a shadowed part of the paper?
-  const b = bgSmall.data as Uint8Array;
-  const bm = bin.data as Uint8Array;
-  let hi = 0, nHi = 0, lo = 0, nLo = 0;
-  for (let i = 0; i < b.length; i++) {
-    if (bm[i]) { hi += b[i]; nHi++; } else { lo += b[i]; nLo++; }
+  const bin = track(new cv.Mat(sh, sw, cv.CV_8UC1));
+  const byColor = paperByColor(bgSmall, colorBg);
+  if (byColor) {
+    // A coloured desk is visible: colour separates it from the paper even where a shadow falls on the sheet
+    // (brightness alone calls shadowed paper "desk" and sunlit wood "paper").
+    bin.data.set(byColor);
+    const ok = track(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3)));
+    cv.morphologyEx(bin, bin, cv.MORPH_OPEN, ok); // detach objects touching the sheet by a thin bridge
+  } else {
+    const t = cv.threshold(bgSmall, bin, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+    // Is the dark class really a desk, or just a shadowed part of the paper?
+    const b = bgSmall.data as Uint8Array;
+    const bm0 = bin.data as Uint8Array;
+    let hi = 0, nHi = 0, lo = 0, nLo = 0;
+    for (let i = 0; i < b.length; i++) {
+      if (bm0[i]) { hi += b[i]; nHi++; } else { lo += b[i]; nLo++; }
+    }
+    if (!nHi || !nLo || t <= 0) return whole;
+    hi /= nHi;
+    lo /= nLo;
+    if (lo > PAPER_CONTRAST * hi || nLo < b.length * 0.03) return whole;
   }
-  if (!nHi || !nLo || t <= 0) return whole;
-  hi /= nHi;
-  lo /= nLo;
-  if (lo > PAPER_CONTRAST * hi || nLo < b.length * 0.03) return whole;
+  const bm = bin.data as Uint8Array;
   const brightSmall = new Uint8Array(bm);
   const bright = (x: number, y: number) =>
     brightSmall[Math.min(sh - 1, Math.max(0, Math.floor(y / sy))) * sw + Math.min(sw - 1, Math.max(0, Math.floor(x / sx)))] > 0;
@@ -612,8 +685,14 @@ function joinGaps(cv: any, track: Track, maskMat: any, minSide: number) {
   const skel = thin(m, W, H);
 
   const labels = track(new cv.Mat());
-  cv.connectedComponents(maskMat, labels, 8, cv.CV_32S);
+  const nLab = cv.connectedComponents(maskMat, labels, 8, cv.CV_32S);
   const lab = labels.data32S as Int32Array;
+  // Blobs touching the photo border are desk / paper-edge shadow (the drawing sits inside the sheet). Never join
+  // into or out of them, or a stroke ending near the paper edge gets glued to the desk and is thrown away with it.
+  const border = new Uint8Array(nLab);
+  for (let x = 0; x < W; x++) { border[lab[x]] = 1; border[lab[(H - 1) * W + x]] = 1; }
+  for (let y = 0; y < H; y++) { border[lab[y * W]] = 1; border[lab[y * W + W - 1]] = 1; }
+  border[0] = 0;
 
   // Stroke width ~ ink / skeleton length.
   let inkN = 0, skN = 0;
@@ -633,7 +712,7 @@ function joinGaps(cv: any, track: Track, maskMat: any, minSide: number) {
   for (let y = 1; y < H - 1; y++) {
     for (let x = 1; x < W - 1; x++) {
       const i = y * W + x;
-      if (!skel[i] || crossings(skel, i, W) !== 1) continue;
+      if (!skel[i] || border[lab[i]] || crossings(skel, i, W) !== 1) continue;
       // Walk back along the stroke.
       let cur = i, steps = 0;
       const seen = new Set<number>([i]);
@@ -693,7 +772,7 @@ function joinGaps(cv: any, track: Track, maskMat: any, minSide: number) {
         const x = e.x + ox;
         if (x < 0 || x >= W) continue;
         const j = y * W + x;
-        if (!m[j] || lab[j] === e.label) continue;
+        if (!m[j] || lab[j] === e.label || border[lab[j]]) continue;
         const d = Math.hypot(ox, oy);
         if (d >= best || d > r) continue;
         const cos = (ox * e.dx + oy * e.dy) / d;
