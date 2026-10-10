@@ -1,6 +1,7 @@
 import './style.css';
 import { analyze, hasApiKey } from './ai';
 import { buildScene } from './scenes';
+import { AIOverlay } from './overlay';
 import { Simulation } from './sim';
 import { annotate, extractContours, loadOpenCV, toWorkingCanvas } from './vision';
 
@@ -11,6 +12,7 @@ const stage = $<HTMLCanvasElement>('stage');
 const explain = $<HTMLParagraphElement>('explain');
 
 let sim: Simulation | null = null;
+const overlay = new AIOverlay(stage, $<HTMLButtonElement>('ai-toggle'));
 
 // Start loading OpenCV right away so it is ready by the time a photo is picked.
 const cvPromise = loadOpenCV();
@@ -43,6 +45,7 @@ if (srcParam) fetch(srcParam).then((r) => r.blob()).then(run);
 
 async function run(file: Blob) {
   try {
+    overlay.reset();
     setStep('load');
     const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
     const photo = toWorkingCanvas(bitmap, bitmap.width, bitmap.height);
@@ -63,6 +66,8 @@ async function run(file: Blob) {
     await nextFrame();
     const scene = buildScene({ ...vision, analysis });
     sim?.stop();
+    // Show what the AI understood on top of the paper, then let it come alive.
+    await overlay.playIntro({ ...vision, analysis, scene });
     sim = new Simulation(stage, scene, vision.width, vision.height);
     sim.setParams(analysis.params);
     sim.start();
