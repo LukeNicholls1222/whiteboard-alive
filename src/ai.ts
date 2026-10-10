@@ -17,6 +17,9 @@ const MODELS = import.meta.env.VITE_GEMINI_MODEL ? [import.meta.env.VITE_GEMINI_
       'gemini-3.1-flash-lite',
     ];
 const TIMEOUT_MS = 20000;
+/** Wait per model: the first one tried gets 9 s, later ones 6 s (all within TIMEOUT_MS). */
+const FIRST_MODEL_MS = 9000;
+const NEXT_MODEL_MS = 6000;
 
 export const hasApiKey = () => API_KEY.length > 0;
 
@@ -170,18 +173,29 @@ export async function analyze(annotated: HTMLCanvasElement, contours: Contour[])
 
 /** Gemini's reading of the drawing, or null if every model failed or the time ran out (never throws). */
 export async function askGemini(annotated: HTMLCanvasElement, contours: Contour[]): Promise<Analysis | null> {
+  const models = MODELS.filter((m) => {
+    const s = skipped(m);
+    if (s) debugLog(`skip ${m} (${s.why})`);
+    return !s;
+  });
+  // Every model is out of quota (or missing): don't spend the 20 s, keep the quick guess right away.
+  if (!models.length) return null;
   const jpeg = annotated.toDataURL('image/jpeg', 0.85).split(',')[1];
   const text = prompt(contours, annotated.width, annotated.height);
   const deadline = Date.now() + TIMEOUT_MS;
-  for (const model of MODELS) {
+  for (const [i, model] of models.entries()) {
+    // The first model gets the longest wait; later ones less, so a hung model can't eat the whole budget.
+    const perModel = i === 0 ? FIRST_MODEL_MS : NEXT_MODEL_MS;
     // Structured output first; if the API rejects the schema field, retry with plain JSON mode.
     for (const withSchema of [true, false]) {
       if (Date.now() > deadline) return null;
       try {
-        const raw = await callGemini(model, jpeg, text, withSchema, Math.min(9000, deadline - Date.now()));
+        const raw = await callGemini(model, jpeg, text, withSchema, Math.min(perModel, deadline - Date.now()));
         return sanitize(raw, contours);
       } catch (err: any) {
         console.warn(`[ai] ${model} schema=${withSchema} failed`, err);
+        // 429 (quota) / 404 (no such model): remember it so the next photos skip this model.
+        if (err?.status === 429 || err?.status === 404) markSkip(model, err.status, String(err.body ?? ''));
         // 400 = schema field rejected: retry this model without it. Anything else (busy 503/429,
         // missing model 404/403, timeout, network): move on to the next model while time remains.
         if (err?.status !== 400) break;
@@ -189,6 +203,77 @@ export async function askGemini(annotated: HTMLCanvasElement, contours: Contour[
     }
   }
   return null;
+}
+
+// ---- Models to skip: out of free-tier quota (429) or missing (404), remembered across reloads --------------
+
+/** Free-tier quota is per model, ~20 requests/day, reset at 00:00 Pacific time. */
+const SKIP_KEY = 'wa.ai.skip';
+type Skip = { until: number; why: string };
+const skipMemory: Record<string, Skip> = loadSkips();
+
+const debugLog = (msg: string) => {
+  if (new URLSearchParams(location.search).has('debug')) console.log(`[ai] ${msg}`);
+};
+
+function loadSkips(): Record<string, Skip> {
+  try {
+    if (new URLSearchParams(location.search).has('resetai')) {
+      localStorage.removeItem(SKIP_KEY);
+      console.log('[ai] resetai: forgot the skipped models');
+      return {};
+    }
+    const raw = JSON.parse(localStorage.getItem(SKIP_KEY) ?? '{}');
+    const out: Record<string, Skip> = {};
+    for (const [m, s] of Object.entries(raw ?? {}))
+      if (s && typeof (s as Skip).until === 'number' && (s as Skip).until > Date.now()) out[m] = s as Skip;
+    return out;
+  } catch {
+    return {}; // no localStorage (private mode etc.): memory only
+  }
+}
+
+function skipped(model: string): Skip | null {
+  const s = skipMemory[model];
+  if (!s) return null;
+  if (s.until > Date.now()) return s;
+  delete skipMemory[model];
+  return null;
+}
+
+function markSkip(model: string, status: number, body: string) {
+  let s: Skip;
+  if (status === 404) s = { until: Date.now() + 24 * 3600_000, why: 'not found, 24 h' };
+  else if (/PerDay/i.test(body)) s = { until: nextPacificMidnight(), why: 'quota until 00:00 PDT' };
+  else if (/PerMinute/i.test(body)) s = { until: Date.now() + 60_000, why: 'per-minute quota, 60 s' };
+  else s = { until: Date.now() + 10 * 60_000, why: '429, 10 min' };
+  skipMemory[model] = s;
+  debugLog(`${model} ${status}: skipping (${s.why})`);
+  try {
+    localStorage.setItem(SKIP_KEY, JSON.stringify(skipMemory));
+  } catch {
+    /* memory only */
+  }
+}
+
+/** Next 00:00 in America/Los_Angeles (when the free-tier daily quota resets), as epoch ms. */
+export function nextPacificMidnight(now = Date.now()): number {
+  let msIntoDay: number;
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Los_Angeles',
+      hourCycle: 'h23',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+    }).formatToParts(new Date(now));
+    const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? NaN);
+    msIntoDay = ((get('hour') * 60 + get('minute')) * 60 + get('second')) * 1000 + (now % 1000);
+    if (!Number.isFinite(msIntoDay)) throw new Error('bad time parts');
+  } catch {
+    msIntoDay = (((now - 7 * 3600_000) % 86400_000) + 86400_000) % 86400_000; // PDT = UTC-7
+  }
+  return now - msIntoDay + 86400_000;
 }
 
 async function callGemini(model: string, jpeg: string, text: string, withSchema: boolean, timeoutMs: number): Promise<any> {
@@ -209,7 +294,10 @@ async function callGemini(model: string, jpeg: string, text: string, withSchema:
       body: JSON.stringify(body),
       signal: ctrl.signal,
     });
-    if (!res.ok) throw Object.assign(new Error(`Gemini ${res.status}: ${(await res.text()).slice(0, 300)}`), { status: res.status });
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      throw Object.assign(new Error(`Gemini ${res.status}: ${errBody.slice(0, 300)}`), { status: res.status, body: errBody });
+    }
     const json = await res.json();
     const out: string = json.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? '').join('') ?? '';
     return JSON.parse(out.replace(/^```(?:json)?|```$/g, '').trim());
