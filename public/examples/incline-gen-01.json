@@ -1,0 +1,18 @@
+{
+  "diagram": "incline",
+  "confidence": 0.98,
+  "bodies": [
+    {
+      "contourId": 0,
+      "role": "incline",
+      "static": true,
+      "mass": 1
+    }
+  ],
+  "constraints": [],
+  "params": {
+    "gravity": 9.8
+  },
+  "explanation": "A block rests on an inclined plane.",
+  "source": "cached"
+}

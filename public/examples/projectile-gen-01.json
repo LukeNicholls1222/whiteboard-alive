@@ -1,0 +1,30 @@
+{
+  "diagram": "projectile",
+  "confidence": 0.95,
+  "bodies": [
+    {
+      "contourId": 0,
+      "role": "pivot",
+      "static": true,
+      "mass": 1
+    },
+    {
+      "contourId": 1,
+      "role": "cannon",
+      "static": true,
+      "mass": 1
+    },
+    {
+      "contourId": 2,
+      "role": "projectile",
+      "static": false,
+      "mass": 1
+    }
+  ],
+  "constraints": [],
+  "params": {
+    "gravity": 9.8
+  },
+  "explanation": "A projectile is fired from the cannon and follows a parabolic path.",
+  "source": "cached"
+}

@@ -1,0 +1,11 @@
+{
+  "diagram": "pulley",
+  "confidence": 0.7,
+  "bodies": [],
+  "constraints": [],
+  "params": {
+    "gravity": 9.8
+  },
+  "explanation": "The heavier weight sinks and pulls the lighter one up over the wheel.",
+  "source": "cached"
+}
