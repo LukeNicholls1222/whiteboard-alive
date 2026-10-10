@@ -3,7 +3,7 @@
 Total: 180 seconds. Times are targets; the live parts have a little slack built in.
 Props: paper, two thick black markers, phone with the live site open (https://lukenicholls1222.github.io/whiteboard-alive/), laptop showing the phone screen or a mirrored tab, one "how it works" slide.
 
-<!-- TODO: lines marked PLANNED depend on features that aren't live yet. If a feature doesn't ship, use the fallback line instead. -->
+Every feature used below is live, except the example gallery (marked IN PROGRESS). If something goes wrong on stage, jump to "Backup plans" at the end.
 
 ---
 
@@ -28,19 +28,19 @@ Props: paper, two thick black markers, phone with the live site open (https://lu
 > "That's not a cartoon pendulum. That's *my* ink. The exact line I drew is now a rope, and my circle is the weight.
 > It knows the dot is the pivot, the line is the string, the circle is the mass."
 
-<!-- TODO: if the colour overlay ships, show it here: "Here's what it understood — blue is the string, orange is the weight." -->
+*Tap **Show what AI saw**.*
+> "And here's what it understood. Each colour is a role: this is the string, this is the weight."
+*Tap again to hide it.*
 
 ## 4. Change it with your voice (1:00–1:25, 25s)
 
-PLANNED (voice control):
-> "Now let's take it to the Moon." *(say it to the phone)*
-> *Gravity drops, the swing slows down. Point at the period graph.*
-> "Lower gravity, longer period — and you can watch that happen on the graph."
+*Tap **Talk**, then say to the phone:*
+> "Make gravity weaker."
+*The gravity slider moves and the swing slows down. Point at the period readout and the energy graph.*
+> "Lower gravity, longer period. You can watch it happen on the graph."
 
-Fallback if voice / graphs are not live:
-> "And it's not just pendulums." *Snap a second pre-drawn sheet (spring or incline, whichever is most reliable) and let it run.*
-
-<!-- TODO: pick the final version of this part after Phase 2 -->
+If voice doesn't respond within ~3 seconds (noisy room, mic permission), don't retry. Tap the **Moon** preset instead:
+> "Or one tap: we're on the Moon now." *(same point about the period)*
 
 ## 5. A judge draws (1:25–2:15, 50s)
 
@@ -83,4 +83,18 @@ If recognition misses:
 - [ ] Two blank sheets + one backup pre-drawn pendulum in case the live drawing fails
 - [ ] Markers are thick and dark (thin pens are harder to detect)
 - [ ] Good light on the paper, no strong shadow from the phone
-- [ ] <!-- TODO: offline sample results ready in case the venue Wi-Fi is down -->
+- [ ] Keep a second tab open on the site with `?offline`, already loaded (OpenCV ready), as the backup tab
+- [ ] Test Talk once in the venue (mic permission granted in the browser)
+
+## Backup plans
+
+**If the AI is slow** (the steps sit on "Understanding the drawing" for more than ~10 seconds):
+1. Don't wait it out. Say: "Venue Wi-Fi — let me show you it works even without the AI."
+2. Switch to the backup tab (https://lukenicholls1222.github.io/whiteboard-alive/?offline) and take the same photo again.
+3. Say: "With no AI at all, it guesses from the shapes alone: triangles, circles, zig-zags. That got 15 out of 15 of our test drawings right."
+4. The "Show what AI saw" colours and the sliders still work in this mode.
+
+**If the Wi-Fi is dead** (the page won't load or nothing responds):
+1. Use the example gallery and run one of the saved examples. It needs no network. (IN PROGRESS: check it's live before going on stage. If it isn't, switch to the backup `?offline` tab, which is already loaded, and snap the backup pre-drawn pendulum.)
+2. Say: "The Wi-Fi died, but this is a saved run of exactly the same pipeline."
+3. Then carry on from section 4 (sliders / Moon) as normal.
