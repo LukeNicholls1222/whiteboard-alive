@@ -1,6 +1,6 @@
 import './style.css';
 import { analyze, hasApiKey, offlineAnalysis } from './ai';
-import { cachedAnalysis, EXAMPLES, exampleImage, exampleThumb, fingerprint } from './examples';
+import { cachedAnalysis, EXAMPLES, exampleBlob, exampleThumb, fingerprint, preloadExamples } from './examples';
 import { createControls } from './controls';
 import { LiveGraph } from './graph';
 import { buildScene } from './scenes';
@@ -51,6 +51,8 @@ const graph = new LiveGraph(stage.parentElement!);
 
 // Start loading OpenCV right away so it is ready by the time a photo is picked.
 const cvPromise = loadOpenCV();
+// Once OpenCV is in, keep the example photos and answers in memory so the gallery works offline.
+cvPromise.then(preloadExamples, preloadExamples);
 
 type Step = 'load' | 'contours' | 'ai' | 'run';
 const STEPS: Record<Step, string> = {
@@ -96,10 +98,7 @@ gallery.addEventListener('click', async (ev) => {
   selectExample(name);
   stage.parentElement!.scrollIntoView({ behavior: 'smooth', block: 'center' });
   try {
-    const blob = await fetch(exampleImage(name)).then((r) => {
-      if (!r.ok) throw new Error(`example image ${r.status}`);
-      return r.blob();
-    });
+    const blob = await exampleBlob(name);
     await run(blob, name);
   } catch (err) {
     console.error(err);

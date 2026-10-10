@@ -49,6 +49,42 @@ export function sameContours(fp: Fingerprint, contours: Contour[]): boolean {
 }
 
 let fingerprints: Promise<Record<string, Fingerprint>> | null = null;
+const images = new Map<string, Promise<Blob>>();
+const answers = new Map<string, Promise<Analysis>>();
+
+const loadImage = (name: string) => {
+  if (!images.has(name)) {
+    const p = fetch(exampleImage(name)).then((r) => {
+      if (!r.ok) throw new Error(`example image ${r.status}`);
+      return r.blob();
+    });
+    p.catch(() => images.delete(name)); // allow a retry later
+    images.set(name, p);
+  }
+  return images.get(name)!;
+};
+const loadAnswer = (name: string) => {
+  if (!answers.has(name)) {
+    const p = fetch(`${BASE}${name}.json`).then((r) => {
+      if (!r.ok) throw new Error(`example ${name}: ${r.status}`);
+      return r.json() as Promise<Analysis>;
+    });
+    p.catch(() => answers.delete(name));
+    answers.set(name, p);
+  }
+  return answers.get(name)!;
+};
+
+/** Pull every example photo and answer into memory (~1 MB) so the gallery still works if Wi-Fi drops later. */
+export function preloadExamples() {
+  fingerprints ??= fetch(`${BASE}fingerprints.json`).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
+  for (const e of EXAMPLES) {
+    loadImage(e.name).catch(() => {});
+    loadAnswer(e.name).catch(() => {});
+  }
+}
+
+export const exampleBlob = (name: string) => loadImage(name);
 
 /**
  * The saved answer for an example. If the contour ids no longer match (different OpenCV build, changed vision code),
@@ -57,10 +93,7 @@ let fingerprints: Promise<Record<string, Fingerprint>> | null = null;
 export async function cachedAnalysis(name: string, contours: Contour[]): Promise<Analysis> {
   fingerprints ??= fetch(`${BASE}fingerprints.json`).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
   const [saved, fps] = await Promise.all([
-    fetch(`${BASE}${name}.json`).then((r) => {
-      if (!r.ok) throw new Error(`example ${name}: ${r.status}`);
-      return r.json() as Promise<Analysis>;
-    }),
+    loadAnswer(name),
     fingerprints,
   ]);
   const analysis: Analysis = structuredClone({ ...saved, source: 'cached' as const });
