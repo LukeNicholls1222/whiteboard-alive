@@ -1,8 +1,10 @@
 // Pulley (Atwood machine): a wheel with a rope over it and a weight on each side. The heavier weight falls.
 //
 // Geometry comes only from the contours and the ink mask:
-//   wheel  = AI 'wheel' contour, else the topmost round closed contour, else the thickest blob near the top
-//   junk   = thin strokes on the photo border (paper edge, table) and strokes nowhere near the wheel: never move
+//   wheel  = AI 'wheel' contour, else the topmost closed contour that fits a circle, else the thickest blob near
+//            the top, else (open circle, e.g. pencil not closed) a circle found in the ink of the upper drawing
+//   junk   = thin strokes on the photo border (paper edge, table), tiny specks (dirt, creases) and strokes nowhere
+//            near the wheel: never move
 //   ropes/weights = everything that is not the wheel, below the wheel centre, split left/right of the axle
 //     per connected stroke (so a weight drawn across the centre line stays whole).
 //     On each side the weight starts at the first row that is "wide" (rope rows are thin), so a rope that
@@ -14,7 +16,7 @@
 // engine each step, so slider/voice/moon-mode gravity changes apply instantly.
 
 import Matter from 'matter-js';
-import type { Contour, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
+import type { Contour, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
 import { STEP_ACCEL, STEP_MS } from '../sim';
 import { noteFor } from '../units';
 import { buildFallback } from './fallback';
@@ -51,6 +53,19 @@ const DEFAULT_PX_PER_M = 1000 / 9.8;
 const BORDER_FRAC = 0.03;
 /** A stroke this many times longer than it is thick is a line (bar, edge), not a weight. */
 const THIN_ASPECT = 6;
+/**
+ * A stroke with less ink and less area than this fraction of the biggest stroke is a speck (dirt, crease, shadow
+ * edge), not part of the machine. It stays in the background. A separately drawn small weight is well above this.
+ */
+const SPECK_FRAC = 0.03;
+/** A separate stroke is a circle when its outline is this close to the best-fit circle (RMS / radius). */
+const CIRCLE_RMS = 0.15;
+/** Angles sampled when checking how much of a circle is drawn. */
+const RING_SAMPLES = 72;
+/** At least this much of the circle must have ink for it to count as the drawn wheel (an open circle still passes). */
+const MIN_RING_COVER = 0.6;
+/** contourMask() margin: the filled disk is this much bigger than the drawn circle. */
+const JOIN_MARGIN = 4;
 
 interface Side {
   weight: Uint8Array;
@@ -67,19 +82,155 @@ const isRoundBox = (c: Contour) => {
   return r > 0.6 && r < 1.6;
 };
 
-function findWheel(input: SceneInput, all: Uint8Array) {
+/** Least-squares (Kåsa) circle through the points; `rms` = RMS distance of the points from it, px. */
+function fitCircle(pts: Point[]): { center: Point; r: number; rms: number } | null {
+  const n = pts.length;
+  if (n < 5) return null;
+  let mx = 0, my = 0;
+  for (const p of pts) {
+    mx += p.x;
+    my += p.y;
+  }
+  mx /= n;
+  my /= n;
+  let suu = 0, svv = 0, suv = 0, suuu = 0, svvv = 0, suvv = 0, svuu = 0;
+  for (const p of pts) {
+    const u = p.x - mx, v = p.y - my;
+    suu += u * u;
+    svv += v * v;
+    suv += u * v;
+    suuu += u * u * u;
+    svvv += v * v * v;
+    suvv += u * v * v;
+    svuu += v * u * u;
+  }
+  const det = suu * svv - suv * suv;
+  if (Math.abs(det) < 1e-9) return null;
+  const b1 = 0.5 * (suuu + suvv), b2 = 0.5 * (svvv + svuu);
+  const uc = (b1 * svv - b2 * suv) / det;
+  const vc = (suu * b2 - suv * b1) / det;
+  const r = Math.sqrt(uc * uc + vc * vc + (suu + svv) / n);
+  const center = { x: mx + uc, y: my + vc };
+  let e = 0;
+  for (const p of pts) e += (Math.hypot(p.x - center.x, p.y - center.y) - r) ** 2;
+  return { center, r, rms: Math.sqrt(e / n) };
+}
+
+/** A separate stroke counts as the wheel only if its outline really is a circle (not a whole drawing that happens to be roundish). */
+function isCircleStroke(c: Contour) {
+  if (!isRoundBox(c)) return false;
+  const fit = fitCircle(c.points);
+  return !!fit && fit.r > 6 && fit.rms < fit.r * CIRCLE_RMS;
+}
+
+/** Ring tolerance (px) used when matching a circle against the ink. */
+const ringTol = (r: number) => Math.max(4, r * 0.12);
+
+/** Fraction of the circle (c, r) that has ink on it (within ringTol), sampled at RING_SAMPLES angles. */
+function ringCoverage(ink: Uint8Array, W: number, H: number, c: Point, r: number): number {
+  const tol = Math.round(ringTol(r));
+  let hit = 0;
+  for (let k = 0; k < RING_SAMPLES; k++) {
+    const a = (k / RING_SAMPLES) * Math.PI * 2;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    for (let d = -tol; d <= tol; d++) {
+      const x = Math.round(c.x + (r + d) * cos), y = Math.round(c.y + (r + d) * sin);
+      if (x >= 0 && y >= 0 && x < W && y < H && ink[y * W + x]) {
+        hit++;
+        break;
+      }
+    }
+  }
+  return hit / RING_SAMPLES;
+}
+
+/**
+ * The drawn wheel as a circle in the ink, even when it is open (pencil not closed, a gap where the rope leaves)
+ * or joined to the ropes: a coarse circle Hough transform over the upper part of the drawing gives candidates,
+ * each is scored by how much of its ring has ink, and the best one is refined with a least-squares fit.
+ */
+function circleInInk(ink: Uint8Array, W: number, H: number, box: { x: number; y: number; w: number; h: number }) {
+  const f = Math.max(2, Math.round(Math.max(W, H) / 240)); // coarse grid cell, px
+  const gw = Math.ceil(W / f), gh = Math.ceil(H / f);
+  const y0 = Math.max(0, box.y), y1 = Math.min(H, Math.round(box.y + box.h * 0.6));
+  const x0 = Math.max(0, box.x), x1 = Math.min(W, box.x + box.w);
+  const pts: number[] = [];
+  const seen = new Uint8Array(gw * gh);
+  for (let y = y0; y < y1; y++)
+    for (let x = x0; x < x1; x++)
+      if (ink[y * W + x]) {
+        const g = Math.floor(y / f) * gw + Math.floor(x / f);
+        if (!seen[g]) {
+          seen[g] = 1;
+          pts.push(g);
+        }
+      }
+  if (pts.length < 20) return null;
+  const size = Math.max(box.w, box.h);
+  const rMin = Math.max(3, Math.round((size * 0.05) / f));
+  const rMax = Math.max(rMin + 1, Math.round(Math.min(box.w * 0.45, box.h * 0.35) / f));
+  const acc = new Uint16Array(gw * gh);
+  const cands: { center: Point; r: number }[] = [];
+  for (let r = rMin; r <= rMax; r++) {
+    acc.fill(0);
+    const n = Math.max(24, Math.round(r * 4.5));
+    const dx = new Int32Array(n), dy = new Int32Array(n);
+    for (let k = 0; k < n; k++) {
+      dx[k] = Math.round(r * Math.cos((k / n) * Math.PI * 2));
+      dy[k] = Math.round(r * Math.sin((k / n) * Math.PI * 2));
+    }
+    let best = 0, bi = -1;
+    for (const g of pts) {
+      const gx = g % gw, gy = (g - gx) / gw;
+      for (let k = 0; k < n; k++) {
+        const cx = gx - dx[k], cy = gy - dy[k];
+        if (cx < 0 || cy < 0 || cx >= gw || cy >= gh) continue;
+        const i = cy * gw + cx;
+        const v = ++acc[i];
+        if (v > best) {
+          best = v;
+          bi = i;
+        }
+      }
+    }
+    if (bi >= 0) cands.push({ center: { x: ((bi % gw) + 0.5) * f, y: (Math.floor(bi / gw) + 0.5) * f }, r: r * f });
+  }
+  let best: { center: Point; r: number; cover: number } | null = null;
+  for (const c of cands) {
+    const cover = ringCoverage(ink, W, H, c.center, c.r);
+    // Coverage ties (a thick stroke matches at several radii): the larger circle is the wheel's outer edge.
+    if (!best || cover > best.cover + 0.03 || (cover > best.cover - 0.03 && c.r > best.r)) best = { ...c, cover };
+  }
+  if (!best || best.cover < MIN_RING_COVER) return null;
+  // Refine on the ink pixels that lie on the found ring.
+  const tol = ringTol(best.r);
+  const near: Point[] = [];
+  const bx0 = Math.max(0, Math.floor(best.center.x - best.r - tol)), bx1 = Math.min(W, Math.ceil(best.center.x + best.r + tol));
+  const by0 = Math.max(0, Math.floor(best.center.y - best.r - tol)), by1 = Math.min(H, Math.ceil(best.center.y + best.r + tol));
+  for (let y = by0; y < by1; y++)
+    for (let x = bx0; x < bx1; x++)
+      if (ink[y * W + x] && Math.abs(Math.hypot(x - best.center.x, y - best.center.y) - best.r) <= tol) near.push({ x, y });
+  const fit = fitCircle(near);
+  if (fit && Math.abs(fit.r - best.r) < tol * 2 && Math.hypot(fit.center.x - best.center.x, fit.center.y - best.center.y) < tol * 2) {
+    const cover = ringCoverage(ink, W, H, fit.center, fit.r);
+    if (cover >= best.cover - 0.05) return { center: fit.center, r: fit.r, cover };
+  }
+  return best;
+}
+
+function findWheel(input: SceneInput, parts: Contour[], all: Uint8Array) {
   const { width: W, height: H } = input;
-  const byRole = input.contours.filter((c) => roleOf(input, c.id)?.role === 'wheel');
+  const byRole = parts.filter((c) => roleOf(input, c.id)?.role === 'wheel');
   let separate: Contour | null = null;
   if (byRole.length) {
     const best = byRole.sort((a, b) => b.area - a.area)[0];
-    if (isRoundBox(best)) separate = best;
+    if (isCircleStroke(best)) separate = best;
   } else {
     // No AI hint: topmost round closed stroke in the upper half of the drawing.
     const b = maskBounds(all, W, H);
     const limit = b ? b.y + b.h * 0.55 : H / 2;
-    const cands = input.contours
-      .filter((c) => c.hasHole && isRoundBox(c) && c.centroid.y < limit && c.bbox.w > 12)
+    const cands = parts
+      .filter((c) => c.hasHole && c.centroid.y < limit && c.bbox.w > 12 && isCircleStroke(c))
       .sort((a, b) => a.centroid.y - b.centroid.y);
     separate = cands[0] ?? null;
   }
@@ -93,6 +244,15 @@ function findWheel(input: SceneInput, all: Uint8Array) {
   const cut = Math.round(b.y + b.h * 0.45);
   top.fill(0, Math.max(0, cut) * W);
   const { point, radius } = deepestPoint(top, W, H);
+  // That only works for a closed wheel (a filled disk). Check it against the ink; if no drawn circle is there
+  // (open circle, wheel drawn as an arc), look for the circle in the ink itself.
+  const ink = new Uint8Array(W * H);
+  for (let i = 0; i < ink.length; i++) ink[i] = input.ink[i] && all[i] ? 1 : 0;
+  const ringR = Math.max(4, radius - JOIN_MARGIN);
+  if (ringCoverage(ink, W, H, point, ringR) < MIN_RING_COVER) {
+    const found = circleInInk(ink, W, H, b);
+    if (found) return { center: found.center, radius: found.r + JOIN_MARGIN, contour: null as Contour | null };
+  }
   return { center: point, radius: Math.max(10, radius), contour: null as Contour | null };
 }
 
@@ -198,11 +358,14 @@ export const buildPulley: SceneBuilder = (input) => {
     const r = roleOf(input, c.id);
     return r && r.role !== 'other' ? r : null;
   };
+  const biggest = input.contours.reduce((m, c) => (c.inkPixels > m.inkPixels ? c : m), input.contours[0]);
+  const speck = (c: Contour) =>
+    c !== biggest && c.inkPixels < biggest.inkPixels * SPECK_FRAC && c.area < biggest.area * SPECK_FRAC;
   const junk = input.contours.filter((c) => !knownRole(c) && isThin(c) && nearBorder(c));
 
   // Moving candidates: everything except junk and things the AI says are fixed scenery.
   const scenery = (c: Contour) => {
-    if (junk.includes(c)) return true;
+    if (junk.includes(c) || (!knownRole(c) && speck(c))) return true;
     const r = knownRole(c);
     if (r) return r.role === 'ground' || r.role === 'pivot' || r.role === 'incline';
     // No AI role: a flat open stroke is a floor/ceiling bar, not a weight. It stays in the background.
@@ -211,7 +374,7 @@ export const buildPulley: SceneBuilder = (input) => {
   let parts = input.contours.filter((c) => !scenery(c));
   if (!parts.length) parts = input.contours;
 
-  const wheel = findWheel(input, contourMask(input, parts));
+  const wheel = findWheel(input, parts, contourMask(input, parts));
   const { center: C, radius: R } = wheel;
 
   // Ropes leave the wheel at C.x ± R and the weights hang from them, so every moving stroke crosses the
