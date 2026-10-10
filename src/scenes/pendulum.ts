@@ -125,6 +125,8 @@ export const buildPendulum: SceneBuilder = (input) => {
       bob: { at: () => body.position, clear: bobRadius, body, kg: kg ?? DEFAULT_KG, kgFrom: kg ? 'note' : 'assumed' },
     },
     physics: { airDrag: airFactor },
+    // Fastest at the bottom of the swing: v² = (L·ω₀)² + 2gL(1 − cos θ₀) (evaluated now, from the starting state).
+    speedHint: Math.hypot(length * omega, Math.sqrt(2 * STEP_ACCEL * ((params.gravity || 9.8) / 9.8) * length * (1 - Math.cos(theta)))),
   };
 };
 

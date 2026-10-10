@@ -162,6 +162,12 @@ export interface BuiltScene {
   parts?: Partial<Record<PartName, PartInfo>>;
   /** The scene integrates gravity × this (the pulley runs its own slower gravity). Default 1. */
   gravityScale?: number;
+  /**
+   * Top speed the motion is expected to reach, engine px per step, worked out from the scene's own physics at build
+   * time (energy, amplitude × ω, ...). The velocity arrows are scaled to it from the very first frame, so an arrow
+   * grows with the speed on the first run too; a faster motion than expected still rescales them.
+   */
+  speedHint?: number;
   /** Values the scene settled itself, in physical units. */
   physics?: {
     /** Spring: how the engine stiffness was chosen (from a written k, or the tuned default). */

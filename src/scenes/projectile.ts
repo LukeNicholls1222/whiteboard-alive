@@ -871,5 +871,7 @@ export const buildProjectile: SceneBuilder = (input) => {
     measures,
     parts,
     physics: { launchSpeed: { value: mps(speed, scale), fit: mps(fit, scale), from: speedFrom }, airDrag: airFactor },
+    // The larger of the launch speed and the landing speed: v² = v₀² + 2g·(drop to the ground).
+    speedHint: Math.sqrt(speed * speed + 2 * g * fall),
   };
 };

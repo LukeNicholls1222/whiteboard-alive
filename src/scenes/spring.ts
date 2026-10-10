@@ -410,5 +410,7 @@ export const buildSpring: SceneBuilder = (input) => {
       },
     },
     physics: { springK: { from: kFrom, note: kNote } },
+    // Fastest through the middle of the swing: amplitude × ω (the energy top-up keeps it there).
+    speedHint: amp * omega,
   };
 };
