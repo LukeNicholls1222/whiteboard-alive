@@ -87,7 +87,7 @@ export async function analyze(annotated: HTMLCanvasElement, contours: Contour[])
     for (const withSchema of [true, false]) {
       if (Date.now() > deadline) return heuristic(contours);
       try {
-        const raw = await callGemini(model, jpeg, text, withSchema, deadline - Date.now());
+        const raw = await callGemini(model, jpeg, text, withSchema, Math.min(11000, deadline - Date.now()));
         return sanitize(raw, contours);
       } catch (err: any) {
         console.warn(`[ai] ${model} schema=${withSchema} failed`, err);
