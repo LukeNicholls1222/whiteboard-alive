@@ -38,7 +38,7 @@ export function buildScene(full: SceneInput): BuiltScene {
 }
 
 /**
- * Handwritten values ("1 m", "2 kg") are read by the AI, not simulated: their contours are taken out of what the
+ * Handwriting ("1 m", "2 kg") is never simulated (numbers are typed into "Your numbers"): its contours are taken out of what the
  * builders see, and so is their ink (a "0" would otherwise look like a ball, digits like scenery to land on).
  * They stay on the paper image, so the background still shows them.
  */

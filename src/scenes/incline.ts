@@ -1,8 +1,9 @@
 // Incline: a drawn triangle becomes a static ramp, the drawn block on it slides down (and may stop by friction).
 // Once it has stopped, it waits a moment and slides again from the start.
+// An entered angle (Your numbers) stretches the drawn triangle up or down to that slope, base kept as drawn.
 
 import Matter from 'matter-js';
-import type { Contour, Point, SceneBuilder, SceneInput, Sprite } from '../types';
+import type { Contour, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
 import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
 import { replayWhenStopped } from './replay';
 import { STEP_ACCEL } from '../sim';
@@ -141,6 +142,11 @@ function slopeOf(tri: Tri): Slope {
   }
   const p = tri[best], q = tri[(best + 1) % 3], third = tri[(best + 2) % 3];
   const [top, bottom] = p.y <= q.y ? [p, q] : [q, p];
+  return slopeFrom(top, bottom, third);
+}
+
+/** The slope from its upper and lower end; `third` = the ramp's other corner (the normal points away from it). */
+function slopeFrom(top: Point, bottom: Point, third: Point): Slope {
   const length = Math.max(1, Math.hypot(bottom.x - top.x, bottom.y - top.y));
   const dir = { x: (bottom.x - top.x) / length, y: (bottom.y - top.y) / length };
   let normal = { x: -dir.y, y: dir.x };
@@ -516,6 +522,69 @@ function pickBlocks(input: SceneInput, usable: Contour[], incline: Contour, ink:
   return best ? [best] : [];
 }
 
+// ---- Entered angle: stretch the drawing ----------------------------------------------------------
+
+/** Angles an entered value may take (the input box takes the same range). */
+const MIN_ANGLE_DEG = 5;
+const MAX_ANGLE_DEG = 75;
+/** Room kept above a stretched ramp's top corner (clear of the badges over the picture), share of its height. */
+const TOP_MARGIN = 0.1;
+
+/**
+ * Vertical-only stretch of the ramp: rows above `anchorY` move away from it by ×k, rows below it (the base stroke)
+ * stay as drawn, so the base keeps its place and its line width while the high corner rises or sinks.
+ */
+interface Stretch {
+  anchorY: number;
+  k: number;
+}
+const stretchY = (y: number, st: Stretch) => (y < st.anchorY ? st.anchorY - (st.anchorY - y) * st.k : y);
+const stretchPt = (p: Point, st: Stretch): Point => ({ x: p.x, y: stretchY(p.y, st) });
+const deg = (rad: number) => (rad * 180) / Math.PI;
+
+/**
+ * The stretch that makes the slope edge rise at `want` degrees (base length unchanged: height = base × tan θ), and
+ * the steepest angle this drawing takes before its top corner leaves the picture. No `want` = as drawn.
+ */
+function stretchFor(tri: Tri, slope: Slope, stroke: number, H: number, want: number | undefined) {
+  const floorY = Math.max(...tri.map((p) => p.y));
+  const apexY = Math.min(...tri.map((p) => p.y));
+  const anchorY = floorY - Math.max(2, stroke) - 2;
+  const { top, bottom } = slope;
+  const dx = Math.abs(bottom.x - top.x);
+  const angleAt = (k: number) => deg(Math.atan2(Math.abs(stretchY(bottom.y, { anchorY, k }) - stretchY(top.y, { anchorY, k })), dx));
+  // Rise of the slope edge after the stretch: a + b·k (its lower end may sit in the unstretched base band).
+  const a = bottom.y >= anchorY ? bottom.y - anchorY : 0;
+  const b = bottom.y >= anchorY ? anchorY - top.y : bottom.y - top.y;
+  const kMax = (anchorY - TOP_MARGIN * H) / Math.max(1, anchorY - apexY);
+  const canStretch = dx >= 1 && b > 1 && kMax > 0;
+  const maxDeg = canStretch ? Math.max(MIN_ANGLE_DEG, Math.min(MAX_ANGLE_DEG, Math.floor(angleAt(kMax)))) : MAX_ANGLE_DEG;
+  if (want === undefined || !canStretch) return { st: { anchorY, k: 1 }, maxDeg, angle: deg(slope.angle), adjusted: false };
+  const target = Math.min(Math.max(want, MIN_ANGLE_DEG), maxDeg);
+  const k = Math.max(0.02, (dx * Math.tan((target * Math.PI) / 180) - a) / b);
+  return { st: { anchorY, k }, maxDeg, angle: angleAt(k), adjusted: target < want - 1e-9 };
+}
+
+/**
+ * The background with the ramp's hand-drawn lines stretched (`rampMask` = the ramp's ink and inside, without the
+ * blocks): erased where they were, redrawn in two slices, the base band as drawn and everything above it ×k.
+ */
+function stretchedBackground(input: SceneInput, masks: Uint8Array[], rampMask: Uint8Array, st: Stretch): HTMLCanvasElement {
+  const bg = eraseFromPaper(input, [...masks, rampMask]);
+  const cut = cutSprite(input, rampMask);
+  const ctx = bg.getContext('2d')!;
+  const { image, offset } = cut;
+  const split = Math.min(image.height, Math.max(0, Math.round(st.anchorY - offset.y)));
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  if (image.height > split) ctx.drawImage(image, 0, split, image.width, image.height - split, offset.x, offset.y + split, image.width, image.height - split);
+  if (split > 0) {
+    const h = split * st.k;
+    ctx.drawImage(image, 0, 0, image.width, split, offset.x, offset.y + split - h, image.width, h);
+  }
+  return bg;
+}
+
 const boundsOf = (pts: Point[]) => {
   const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
   const x = Math.min(...xs), y = Math.min(...ys);
@@ -530,9 +599,31 @@ export const buildIncline: SceneBuilder = (input) => {
   const ink = contourInk(input, incline);
   const rampShape = findRamp(input, incline, ink);
   if (!rampShape) throw new Error('incline: no ramp-like contour');
-  const slope = slopeOf(rampShape.tri);
-  const blocks = pickBlocks(input, usable, incline, ink, rampShape, slope);
+  const drawnSlope = slopeOf(rampShape.tri);
+  const blocks = pickBlocks(input, usable, incline, ink, rampShape, drawnSlope);
   if (!blocks.length) throw new Error('incline: no block found');
+
+  // An entered angle stretches the ramp vertically (base as drawn), up to the steepest that fits on the picture.
+  const asked = noteFor(input.analysis, 'angle', ['ramp'])?.value;
+  const fit = stretchFor(rampShape.tri, drawnSlope, rampShape.stroke, H, asked);
+  const stretched = Math.abs(fit.st.k - 1) > 1e-6;
+  const tri = rampShape.tri.map((p) => stretchPt(p, fit.st)) as Tri;
+  // slopeOf returns the triangle's own corner objects: the third corner is the one that is neither end.
+  const third = rampShape.tri.find((p) => p !== drawnSlope.top && p !== drawnSlope.bottom) ?? rampShape.tri[0];
+  const slope = stretched
+    ? slopeFrom(stretchPt(drawnSlope.top, fit.st), stretchPt(drawnSlope.bottom, fit.st), stretchPt(third, fit.st))
+    : drawnSlope;
+  // Drawn blocks are carried over to the new slope: same share of the way along it, same height above it, turned with it.
+  const turn = Math.atan2(slope.dir.y, slope.dir.x) - Math.atan2(drawnSlope.dir.y, drawnSlope.dir.x);
+  const cosT = Math.cos(turn), sinT = Math.sin(turn);
+  const onNewSlope = (p: Point): Point => {
+    const u = dot(sub(p, drawnSlope.top), drawnSlope.dir) / drawnSlope.length;
+    const h = dot(sub(p, drawnSlope.top), drawnSlope.normal);
+    return {
+      x: slope.top.x + u * slope.length * slope.dir.x + h * slope.normal.x,
+      y: slope.top.y + u * slope.length * slope.dir.y + h * slope.normal.y,
+    };
+  };
 
   const mu = Math.max(0, Math.min(1.5, input.analysis.params.friction ?? DEFAULT_FRICTION));
   // Matter's own friction is off on every incline surface; applyFriction() does the real work.
@@ -540,7 +631,7 @@ export const buildIncline: SceneBuilder = (input) => {
   hookFriction();
 
   // Static ramp built from the 3 corners (a triangle's centre of mass is its vertex mean).
-  const [a, b, c] = rampShape.tri;
+  const [a, b, c] = tri;
   const ramp = Matter.Bodies.fromVertices((a.x + b.x + c.x) / 3, (a.y + b.y + c.y) / 3, [[a, b, c]], {
     isStatic: true,
     ...surface,
@@ -568,17 +659,32 @@ export const buildIncline: SceneBuilder = (input) => {
     const bbox = boundsOf(blk.hull);
     Matter.Body.translate(body, { x: bbox.x - hb.min.x, y: bbox.y - hb.min.y });
     Matter.Body.setInertia(body, body.inertia * INERTIA_SCALE);
+    // The cut-out follows the body from here on: moving or turning the body below takes the drawing with it.
+    const origin = { ...body.position };
+    const originAngle = body.angle;
+
+    // On a stretched ramp the block itself is not stretched: it is put on the new slope, turned to it.
+    let hull = blk.hull;
+    let centroid = blk.centroid;
+    if (stretched) {
+      const to = onNewSlope(origin);
+      const move = (p: Point): Point => {
+        const dx = p.x - origin.x, dy = p.y - origin.y;
+        return { x: to.x + dx * cosT - dy * sinT, y: to.y + dx * sinT + dy * cosT };
+      };
+      hull = hull.map(move);
+      centroid = move(centroid);
+      Matter.Body.rotate(body, turn);
+      Matter.Body.setPosition(body, to);
+    }
 
     // Snap a block that floats a little above / sinks a little into the slope onto it.
-    // Body and sprite are shifted by the same vector so the drawing stays glued to the physics.
-    let shift = { x: 0, y: 0 };
-    const gap = clearance(blk.hull, slope);
+    const gap = clearance(hull, slope);
     const size = Math.max(bbox.w, bbox.h);
-    const t = along(blk.centroid, slope);
+    const t = along(centroid, slope);
     if (t > -0.1 && t < 1.1 && Math.abs(gap) <= Math.max(SNAP_PX, size * SNAP_BLOCK_FRACTION)) {
       const d = 1 - gap; // leave 1 px of air so it does not start interpenetrating
-      shift = { x: slope.normal.x * d, y: slope.normal.y * d };
-      Matter.Body.translate(body, shift);
+      Matter.Body.translate(body, { x: slope.normal.x * d, y: slope.normal.y * d });
     }
 
     // Never a still scene: on a gentle ramp (tanθ ≤ μ) static friction would hold the block from frame 0,
@@ -594,11 +700,7 @@ export const buildIncline: SceneBuilder = (input) => {
     moving.push(body);
     masks.push(blk.erase);
     const cut = cutSprite(input, blk.sprite);
-    sprites.push({
-      image: cut.image,
-      offset: { x: cut.offset.x + shift.x, y: cut.offset.y + shift.y },
-      follow: { kind: 'body', body, origin: { ...body.position }, originAngle: body.angle },
-    });
+    sprites.push({ image: cut.image, offset: cut.offset, follow: { kind: 'body', body, origin, originAngle } });
   }
   if (bodies.length < 2) throw new Error('incline: block bodies could not be built');
   const block = bodies[1];
@@ -618,12 +720,19 @@ export const buildIncline: SceneBuilder = (input) => {
   const la = Math.hypot(b.x - c.x, b.y - c.y), lb = Math.hypot(a.x - c.x, a.y - c.y), lc = Math.hypot(a.x - b.x, a.y - b.y);
   const per = la + lb + lc || 1;
   const inner = { x: (la * a.x + lb * b.x + lc * c.x) / per, y: (la * a.y + lb * b.y + lc * c.y) / per };
-  // The ramp stays in the background exactly as drawn; only the moving blocks are erased.
+  // The ramp stays in the background as drawn (stretched to an entered angle); only the moving blocks are erased.
+  let background: HTMLCanvasElement;
+  if (stretched) {
+    const rampMask = contourMask(input, [incline], 3);
+    for (const m of masks) for (let i = 0; i < rampMask.length; i++) if (m[i]) rampMask[i] = 0;
+    background = stretchedBackground(input, masks, rampMask, fit.st);
+  } else background = eraseFromPaper(input, masks);
+  const angleFrom: ValueSource = asked === undefined ? 'drawn' : fit.adjusted ? 'adjusted' : 'input';
   return {
     bodies,
     constraints: [],
     sprites,
-    background: eraseFromPaper(input, masks),
+    background,
     label: 'Incline',
     onStep: replayWhenStopped(moving),
     measures: { ramp: slope.length, ground: x1 - x0 },
@@ -637,10 +746,13 @@ export const buildIncline: SceneBuilder = (input) => {
         side: 'above',
         body: block,
         kg: kg ?? DEFAULT_KG,
-        kgFrom: kg ? 'note' : 'assumed',
+        kgFrom: kg ? 'input' : 'assumed',
       },
     },
-    physics: { rampAngle: (slope.angle * 180) / Math.PI },
+    physics: {
+      rampAngle: deg(drawnSlope.angle),
+      rampAngleUsed: { value: deg(slope.angle), from: angleFrom, max: fit.maxDeg },
+    },
     // Fastest at the foot of the ramp: v² = v₀² + 2·g(sin θ − μ cos θ)·(slope left below the block) (v₀ = the starting push above).
     speedHint: Math.hypot(Math.max(MIN_START_SPEED, Math.sqrt(2 * Math.max(0, STEP_ACCEL * (mu * Math.cos(slope.angle) - Math.sin(slope.angle))) * slope.length * MIN_SLIDE_FRACTION)), Math.sqrt(2 * Math.max(0, STEP_ACCEL * ((input.analysis.params.gravity || 9.8) / 9.8) * (Math.sin(slope.angle) - mu * Math.cos(slope.angle))) * slope.length * Math.min(1, Math.max(0, 1 - along(block.position, slope))))),
   };

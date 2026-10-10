@@ -640,7 +640,7 @@ export const buildProjectile: SceneBuilder = (input) => {
   }
   if (floorY < start.y + r) floorY = H;
 
-  // Drawn ground length (a handwritten "5 m" under it sets the scale): the AI's ground stroke, else the ink on the line.
+  // Drawn ground length (an entered ground length sets the scale): the AI's ground stroke, else the ink on the line.
   let span: { x0: number; x1: number } | null = null;
   if (floorY < H) {
     const g = grounds.length ? grounds.reduce((a, b) => (b.bbox.w > a.bbox.w ? b : a)) : null;
@@ -720,14 +720,14 @@ export const buildProjectile: SceneBuilder = (input) => {
   const vUp0 = -unit.y * speed;
   if (vUp0 > 0 && (vUp0 * vUp0) / (2 * g) > headroom)
     speed = Math.max(speed * 0.5, Math.sqrt(2 * g * Math.max(0, headroom)) / -unit.y);
-  // A handwritten launch speed or the slider (params.speed, m/s) replaces the fitted one, converted to px per step.
+  // An entered launch speed or the slider (params.speed, m/s) replaces the fitted one, converted to px per step.
   const fit = speed;
   const userSpeed = input.analysis.params.speed;
   const speedNote = noteFor(input.analysis, 'speed');
   let speedFrom: ValueSource = 'auto';
   if (typeof userSpeed === 'number' && userSpeed > 0) {
     speed = pxPerStep(userSpeed, scale);
-    speedFrom = speedNote && Math.abs(speedNote.value - userSpeed) < 1e-6 ? 'note' : 'slider';
+    speedFrom = speedNote && Math.abs(speedNote.value - userSpeed) < 1e-6 ? 'input' : 'slider';
   }
   const v0 = { x: unit.x * speed, y: unit.y * speed };
   Matter.Body.setVelocity(body, v0);
@@ -737,7 +737,7 @@ export const buildProjectile: SceneBuilder = (input) => {
   const mass = kg ?? DEFAULT_KG;
   const cReal = dragConstant(bodyR / scale.pxPerMeter);
   // Factor that makes drag AIR_DRAG_TARGET × weight at the fitted launch speed on Earth: N·c·v² = target·m·g. The fit
-  // comes from the drawing only (the slider and a written speed do not change it), so the factor stays the same when
+  // comes from the drawing only (the slider and an entered speed do not change it), so the factor stays the same when
   // the launch speed slider rebuilds the scene.
   const vRef = mps(fit, scale) * Math.sqrt(EARTH_G / Math.min(50, Math.max(0.5, input.analysis.params.gravity || EARTH_G)));
   const airFactor = roundFactor((AIR_DRAG_TARGET * mass * EARTH_G) / Math.max(1e-12, cReal * vRef * vRef));
@@ -855,7 +855,7 @@ export const buildProjectile: SceneBuilder = (input) => {
   const launchAt = { ...start };
   const parts: Partial<Record<PartName, PartInfo>> = {
     arrow: { at: () => launchAt, clear: r * 1.5, side: 'above' },
-    ball: { at: () => body.position, clear: r, body, kg: kg ?? DEFAULT_KG, kgFrom: kg ? 'note' : 'assumed' },
+    ball: { at: () => body.position, clear: r, body, kg: kg ?? DEFAULT_KG, kgFrom: kg ? 'input' : 'assumed' },
   };
   const ground = span;
   if (ground) parts.ground = { at: () => ({ x: (ground.x0 + ground.x1) / 2, y: floorY }), side: 'below' };

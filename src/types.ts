@@ -45,11 +45,11 @@ export type BodyRole =
   | 'cannon'
   | 'arrow'
   | 'projectile'
-  /** Handwritten text / numbers ("1 m", "2 kg"): read as annotations, never simulated. */
+  /** Handwritten text / numbers ("1 m", "2 kg"): never simulated (the numbers are typed into the app instead). */
   | 'label'
   | 'other';
 
-/** Parts of a drawing a handwritten value can refer to. */
+/** Parts of a drawing a value the user enters can refer to. */
 export type PartName =
   | 'string'
   | 'bob'
@@ -65,20 +65,25 @@ export type PartName =
 
 export type Quantity = 'length' | 'mass' | 'angle' | 'speed' | 'friction' | 'spring_constant';
 
-/** A value written on the paper next to a part (read by the AI; never a coordinate). */
+/**
+ * A value the user typed into "Your numbers" for a part of the drawing (entries.ts). Scenes read them with
+ * noteFor (units.ts). The AI never reads numbers off the paper.
+ */
 export interface Annotation {
-  /** As written, e.g. "30 cm". */
+  /** As shown, e.g. "1 m". */
   text: string;
   quantity: Quantity;
-  /** Normalised in ai.ts: m, kg, degrees, m/s, μ (no unit), N/m. */
+  /** In this app's units: m, kg, degrees, m/s, μ (no unit), N/m. */
   value: number;
-  /** Unit of `value` after normalising ('m', 'kg', '°', 'm/s', '', 'N/m'). */
+  /** Unit of `value` ('m', 'kg', '°', 'm/s', '', 'N/m'). */
   unit: string;
   part: PartName;
+  /** Where it came from: typed into the app. */
+  from: 'input';
 }
 
-/** Where a value shown on the drawing came from. */
-export type ValueSource = 'note' | 'assumed' | 'drawn' | 'auto' | 'slider' | 'adjusted' | 'scaled';
+/** Where a value shown on the drawing came from ('input' = typed into "Your numbers"). */
+export type ValueSource = 'input' | 'assumed' | 'drawn' | 'auto' | 'slider' | 'adjusted' | 'scaled';
 
 export interface AIBody {
   contourId: number;
@@ -102,7 +107,7 @@ export interface Analysis {
   explanation: string;
   /** Where the analysis came from (for the debug/status line). */
   source: 'gemini' | 'heuristic' | 'cached';
-  /** Handwritten values (only from Gemini; offline analyses have none). */
+  /** Values typed into "Your numbers" (never from the AI). Empty for a fresh photo. */
   annotations?: Annotation[];
 }
 
@@ -170,12 +175,17 @@ export interface BuiltScene {
   speedHint?: number;
   /** Values the scene settled itself, in physical units. */
   physics?: {
-    /** Spring: how the engine stiffness was chosen (from a written k, or the tuned default). */
+    /** Spring: how the engine stiffness was chosen (from an entered k, or the tuned default). */
     springK?: { from: ValueSource; note?: number };
     /** Projectile: launch speed actually used and the auto-fitted one (lands inside the picture), m/s. */
     launchSpeed?: { value: number; fit: number; from: ValueSource };
     /** Incline: slope angle as drawn, degrees. */
     rampAngle?: number;
+    /**
+     * Incline: the slope angle the scene runs (degrees), where it came from ('drawn', 'input', or 'adjusted' when the
+     * entered angle would not fit on the picture), and the steepest angle this drawing can be stretched to.
+     */
+    rampAngleUsed?: { value: number; from: ValueSource; max: number };
     /** Pendulum / projectile: the scene reads air drag; the factor ×N on real air the switch sets (air.ts). */
     airDrag?: number;
   };
@@ -202,7 +212,7 @@ export interface Scale {
   pxPerMeter: number;
   /** Physical seconds per screen second (< 1 = slow motion). */
   timeFactor: number;
-  /** The handwritten length that set the scale, if any (else the paper's long side is 1 m). */
+  /** The entered length that set the scale, if any (else the paper's long side is 1 m). */
   note?: Annotation;
 }
 

@@ -8,14 +8,14 @@ import { contourMask, cutSprite, deepestPoint, eraseFromPaper, maskBounds, roleO
 import { STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, noteFor, scaleFor, stiffnessFor } from '../units';
 
-// Fixed per diagram type; never chosen by the AI (a handwritten k may move it within the stable range below).
+// Fixed per diagram type; never chosen by the AI (an entered k may move it within the stable range below).
 const STIFFNESS = 0.0015;
 const DAMPING = 0;
 const FRICTION_AIR = 0.001;
 /** Measured for Matter 0.20 (2 constraint iterations): omega² per step² ≈ 6.6 × stiffness. Period ≈ 1 s here. */
 const OMEGA2_PER_STIFFNESS = 6.6;
 /**
- * Engine stiffness allowed for a handwritten k: screen period about 0.4-2.9 s. Matter stays stable well past both
+ * Engine stiffness allowed for an entered k: screen period about 0.4-2.9 s. Matter stays stable well past both
  * ends; softer would make a hanging block sag far below the drawing, stiffer would blur into a buzz.
  */
 const MIN_STIFFNESS = 0.0002;
@@ -310,7 +310,7 @@ export const buildSpring: SceneBuilder = (input) => {
   const L0 = Math.hypot(attach.x - anchor.x, attach.y - anchor.y);
   const dir = { x: (attach.x - anchor.x) / L0, y: (attach.y - anchor.y) / L0 };
 
-  // A handwritten k (with the block's written or assumed mass) sets the stiffness so the screen period is the
+  // An entered k (with the block's entered or assumed mass) sets the stiffness so the screen period is the
   // physical 2π√(m/k) played at this drawing's slow-motion factor, kept inside the stable range.
   const kg = noteFor(input.analysis, 'mass', ['block', 'bob', 'ball'])?.value;
   const kNote = noteFor(input.analysis, 'spring_constant')?.value;
@@ -321,7 +321,7 @@ export const buildSpring: SceneBuilder = (input) => {
   if (kNote) {
     const want = stiffnessFor(kNote, kg ?? DEFAULT_KG, scaleFor(input, measures));
     stiffness = Math.min(MAX_STIFFNESS, Math.max(MIN_STIFFNESS, want));
-    kFrom = stiffness === want ? 'note' : 'adjusted';
+    kFrom = stiffness === want ? 'input' : 'adjusted';
   }
   const OMEGA2 = OMEGA2_PER_STIFFNESS * stiffness;
 
@@ -406,7 +406,7 @@ export const buildSpring: SceneBuilder = (input) => {
         clear: Math.max(bb.max.x - bb.min.x, bb.max.y - bb.min.y) / 2,
         body: block,
         kg: kg ?? DEFAULT_KG,
-        kgFrom: kg ? 'note' : 'assumed',
+        kgFrom: kg ? 'input' : 'assumed',
       },
     },
     physics: { springK: { from: kFrom, note: kNote } },

@@ -1,5 +1,5 @@
 // Values on the drawing: a small card next to each part with its physical value and, underneath, where that
-// value came from ("L = 0.42 m / assumed", "m = 2 kg / your note"), plus the slow-motion badge on the picture.
+// value came from ("L = 0.42 m / assumed", "m = 2 kg / you entered"), plus the slow-motion badge on the picture.
 // Everything is read from the scene (measures, parts, physics) and converted by units.ts.
 //
 // Where a card goes: next to its part, but off the way of everything that moves. When the scene starts, the
@@ -510,17 +510,17 @@ function pillsFor(scene: BuiltScene, analysis: Analysis): Pill[] {
     if (parts[part]) out.push({ part, value, from });
   };
   const text = (src: ValueSource) => SOURCE_TEXT[src];
-  // A length is "your note" on the part that set the scale, "to scale" elsewhere, else from paper = 1 m.
+  // A length is "you entered" on the part that set the scale, "to scale" elsewhere, else from paper = 1 m.
   const length = (part: PartName, symbol = 'L') => {
     const px = measures[part];
     if (!px) return;
-    const from: ValueSource = s.note ? (s.note.part === part ? 'note' : 'scaled') : 'assumed';
+    const from: ValueSource = s.note ? (s.note.part === part ? 'input' : 'scaled') : 'assumed';
     add(part, () => `${symbol} = ${formatLength(meters(px, s))}`, () => text(from));
   };
-  // Masses: always where they change the motion or energy story; elsewhere only when written.
+  // Masses: always where they change the motion or energy story; elsewhere only when entered.
   const mass = (part: PartName, always: boolean) => {
     const p = parts[part];
-    if (!p?.kg || (!always && p.kgFrom !== 'note')) return;
+    if (!p?.kg || (!always && p.kgFrom !== 'input')) return;
     const kg = p.kg;
     add(part, () => `m = ${formatMass(kg)}`, () => text(p.kgFrom ?? 'assumed'));
   };
@@ -546,22 +546,18 @@ function pillsFor(scene: BuiltScene, analysis: Analysis): Pill[] {
       break;
     }
     case 'Incline': {
+      // The angle the ramp runs: as drawn, or the entered one (the drawing is stretched to it, see incline.ts).
+      const used = scene.physics?.rampAngleUsed;
       const drawn = scene.physics?.rampAngle;
-      const angle = noteFor(analysis, 'angle');
-      if (drawn !== undefined) {
-        const shown = angle ? angle.value : drawn;
-        const off = angle && Math.abs(angle.value - drawn) > 5;
-        add('ramp', () => `θ = ${Math.round(shown)}°`, () => (angle ? (off ? `your note, drawn ${Math.round(drawn)}°` : text('note')) : text('drawn')));
-      }
+      const asked = noteFor(analysis, 'angle', ['ramp']);
+      if (used) {
+        const from = used.from === 'adjusted' && asked ? `most that fits (not ${Math.round(asked.value)}°)` : text(used.from);
+        add('ramp', () => `θ = ${Math.round(used.value)}°`, () => from);
+      } else if (drawn !== undefined) add('ramp', () => `θ = ${Math.round(drawn)}°`, () => text('drawn'));
       const block = parts.block?.body;
       if (block) {
-        const written = noteFor(analysis, 'friction');
         const mu = () => Number((block.plugin as { inclineMu?: number }).inclineMu ?? DEFAULT_FRICTION);
-        add('ramp', () => `μ = ${mu().toFixed(2)}`, () => {
-          const v = mu();
-          if (written) return text(Math.abs(v - written.value) < 1e-6 ? 'note' : 'slider');
-          return text(Math.abs(v - DEFAULT_FRICTION) < 1e-6 ? 'assumed' : 'slider');
-        });
+        add('ramp', () => `μ = ${mu().toFixed(2)}`, () => text(Math.abs(mu() - DEFAULT_FRICTION) < 1e-6 ? 'assumed' : 'slider'));
       }
       const n = notedLength();
       if (n === 'ramp' || n === 'ground') length(n);
