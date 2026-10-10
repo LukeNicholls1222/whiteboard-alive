@@ -6,6 +6,7 @@ import { LiveGraph } from './graph';
 import { buildScene } from './scenes';
 import { AIOverlay } from './overlay';
 import { Simulation } from './sim';
+import { VelocityArrows } from './vectors';
 import type { BuiltScene, SceneInput } from './types';
 import { annotate, extractContours, loadOpenCV, toWorkingCanvas } from './vision';
 
@@ -28,7 +29,9 @@ const controls = createControls($<HTMLElement>('controls'), {
     else sim?.setParams(set);
   },
 });
-if (import.meta.env.DEV) (window as any).__wa = { controls, get sim() { return sim; } };
+const arrows = new VelocityArrows();
+arrows.mountToggle($<HTMLElement>('controls'));
+if (import.meta.env.DEV) (window as any).__wa = { controls, arrows, get sim() { return sim; } };
 
 async function startScene(input: SceneInput, intro = false): Promise<BuiltScene> {
   const scene = buildScene(input);
@@ -44,6 +47,7 @@ async function startScene(input: SceneInput, intro = false): Promise<BuiltScene>
   });
   sim.setParams(input.analysis.params);
   graph.attach(sim, input.analysis.diagram);
+  arrows.attach(sim);
   sim.start();
   return scene;
 }
