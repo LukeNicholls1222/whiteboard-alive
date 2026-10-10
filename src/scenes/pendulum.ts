@@ -1,13 +1,21 @@
 // Pendulum: the drawn string and bob swing rigidly around the pivot, exactly as drawn.
+//
+// Physics: a rigid pendulum has one degree of freedom, the string angle θ. Matter's position-based rope
+// constraint bled about a fifth of the swing every 10 s (numerical damping), so like the pulley scene we
+// integrate the equation of motion ourselves every step,
+//   θ'' = −(g/L)·sin θ − k·θ'·|θ'|      (θ = 0 straight down, k = params.airDrag, default 0 = no drag),
+// with RK4 in a few substeps, and put the bob body exactly there with its true velocity (the velocity
+// arrows, the energy graph and the period readout all read the body). g is read from the engine every
+// step, so the gravity slider, voice and Moon mode apply at once. With k = 0 the swing never dies out.
 
 import Matter from 'matter-js';
 import type { Point, SceneBuilder } from '../types';
 import { contourMask, cutSprite, deepestPoint, eraseFromPaper, roleOf } from './common';
-import { STEP_ACCEL } from '../sim';
+import { STEP_ACCEL, STEP_MS } from '../sim';
 
-const STIFFNESS = 1;
-const DAMPING = 0;
 const KICK_DEG = 20;
+/** RK4 substeps per physics step. */
+const SUBSTEPS = 4;
 
 export const buildPendulum: SceneBuilder = (input) => {
   const { width: W, height: H } = input;
@@ -39,20 +47,55 @@ export const buildPendulum: SceneBuilder = (input) => {
     }
 
   const length = Math.hypot(bob.x - pivot.x, bob.y - pivot.y);
-  // No air drag by default: a pendulum should keep its energy (an "Air resistance" option can add drag explicitly).
-  const body = Matter.Bodies.circle(bob.x, bob.y, bobRadius, { frictionAir: 0, friction: 0, restitution: 0 });
-  const rope = Matter.Constraint.create({ pointA: { ...pivot }, bodyB: body, length, stiffness: STIFFNESS, damping: DAMPING });
+  // onStep puts the bob on the exact pendulum path every step; there is nothing for it to collide with.
+  const body = Matter.Bodies.circle(bob.x, bob.y, bobRadius, {
+    frictionAir: 0,
+    friction: 0,
+    restitution: 0,
+    collisionFilter: { group: -1, category: 0, mask: 0 },
+  });
 
+  // θ = string angle from straight down (positive = bob right of the pivot), ω = dθ/dt in rad per step.
+  let theta = Math.atan2(bob.x - pivot.x, bob.y - pivot.y);
+  let omega = 0;
   // Never show a still pendulum: if it hangs straight down, give it ~KICK_DEG of swing.
-  const angle = Math.atan2(bob.x - pivot.x, bob.y - pivot.y);
-  if (Math.abs(angle) < (8 * Math.PI) / 180) {
-    const v = Math.sqrt(2 * STEP_ACCEL * length * (1 - Math.cos((KICK_DEG * Math.PI) / 180)));
-    Matter.Body.setVelocity(body, { x: v, y: 0 });
-  }
+  if (Math.abs(theta) < (8 * Math.PI) / 180)
+    omega = Math.sqrt(2 * STEP_ACCEL * length * (1 - Math.cos((KICK_DEG * Math.PI) / 180))) / length;
+
+  const place = () => {
+    const s = Math.sin(theta), c = Math.cos(theta);
+    Matter.Body.setPosition(body, { x: pivot.x + length * s, y: pivot.y + length * c });
+    // Velocity along the swing, L·ω, in px per step like every Matter velocity.
+    Matter.Body.setVelocity(body, { x: length * omega * c, y: -length * omega * s });
+  };
+  place();
+
+  const params = input.analysis.params;
+  const onStep = (engine: Matter.Engine) => {
+    // Engine gravity (slider / voice / Moon mode) in px per step².
+    const toStep = engine.gravity.scale * STEP_MS * STEP_MS;
+    const gx = engine.gravity.x * toStep, gy = engine.gravity.y * toStep;
+    // Air drag (dimensionless, read live; 0 = none): θ'' gets −k·θ'·|θ'|. k = 0.1 takes ~9 % off a 20° swing per period.
+    const k = Math.max(0, Number(params.airDrag) || 0);
+    // Tangential gravity over L (the tangent is (cos θ, −sin θ)), minus drag.
+    const acc = (th: number, om: number) => (gx * Math.cos(th) - gy * Math.sin(th)) / length - k * om * Math.abs(om);
+    const h = 1 / SUBSTEPS;
+    for (let i = 0; i < SUBSTEPS; i++) {
+      const a1 = acc(theta, omega);
+      const t2 = omega + 0.5 * h * a1, a2 = acc(theta + 0.5 * h * omega, t2);
+      const t3 = omega + 0.5 * h * a2, a3 = acc(theta + 0.5 * h * t2, t3);
+      const t4 = omega + h * a3, a4 = acc(theta + h * t3, t4);
+      theta += (h / 6) * (omega + 2 * t2 + 2 * t3 + t4);
+      omega += (h / 6) * (a1 + 2 * a2 + 2 * a3 + a4);
+    }
+    // Keep θ in −π..π if it ever goes over the top (no gravity, huge swings).
+    if (Math.abs(theta) > Math.PI) theta -= 2 * Math.PI * Math.round(theta / (2 * Math.PI));
+    place();
+  };
 
   return {
     bodies: [body],
-    constraints: [rope],
+    constraints: [],
     sprites: [
       {
         ...cutSprite(input, swing),
@@ -61,6 +104,7 @@ export const buildPendulum: SceneBuilder = (input) => {
     ],
     background: eraseFromPaper(input, [swing]),
     label: 'Pendulum',
+    onStep,
   };
 };
 

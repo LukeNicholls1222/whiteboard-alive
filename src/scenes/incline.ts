@@ -1,8 +1,10 @@
 // Incline: a drawn triangle becomes a static ramp, the drawn block on it slides down (and may stop by friction).
+// Once it has stopped, it waits a moment and slides again from the start.
 
 import Matter from 'matter-js';
 import type { Contour, Point, SceneBuilder, SceneInput, Sprite } from '../types';
 import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
+import { replayWhenStopped } from './replay';
 import { STEP_ACCEL } from '../sim';
 
 /** Coulomb friction coefficient μ used when the AI gives no `params.friction`. */
@@ -549,6 +551,7 @@ export const buildIncline: SceneBuilder = (input) => {
   });
 
   const bodies: Matter.Body[] = [ramp];
+  const moving: Matter.Body[] = [];
   const sprites: Sprite[] = [];
   const masks: Uint8Array[] = [];
 
@@ -587,6 +590,7 @@ export const buildIncline: SceneBuilder = (input) => {
     Matter.Body.setVelocity(body, { x: slope.dir.x * v0, y: slope.dir.y * v0 });
 
     bodies.push(body);
+    moving.push(body);
     masks.push(blk.erase);
     const cut = cutSprite(input, blk.sprite);
     sprites.push({
@@ -607,5 +611,12 @@ export const buildIncline: SceneBuilder = (input) => {
   );
 
   // The ramp stays in the background exactly as drawn; only the moving blocks are erased.
-  return { bodies, constraints: [], sprites, background: eraseFromPaper(input, masks), label: 'Incline' };
+  return {
+    bodies,
+    constraints: [],
+    sprites,
+    background: eraseFromPaper(input, masks),
+    label: 'Incline',
+    onStep: replayWhenStopped(moving),
+  };
 };
