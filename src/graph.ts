@@ -103,16 +103,25 @@ export class LiveGraph {
     const g = this.sim?.gravity ?? EARTH_G;
     if (g === this.lastG) return;
     const changed = !Number.isNaN(this.lastG);
+    const oldG = this.lastG;
     this.lastG = g;
     const isMoon = Math.abs(g - MOON_G) < 0.05;
     this.moon.checked = isMoon;
     document.body.classList.toggle('lg-moon-on', isMoon);
     this.gLabel.textContent = `g = ${g.toFixed(g < 10 ? 2 : 1)} m/s²`;
-    // Old periods were measured under the old gravity.
-    if (changed) {
-      this.period.reset();
-      this.metricValue.textContent = this.measuresPeriod() ? '--' : this.metricValue.textContent;
+    // Old periods were measured under the old gravity. Until the next half swing is measured, show
+    // a provisional estimate: a pendulum's period goes as 1/sqrt(g); a spring's does not depend on g.
+    if (changed && this.measuresPeriod()) {
+      const old = this.period.value();
+      const guess = old ? (this.diagram === 'pendulum' ? old.period * Math.sqrt(oldG / g) : old.period) : null;
+      this.period.restart(guess);
+      this.showPeriod();
     }
+  }
+
+  private showPeriod() {
+    const p = this.period.value();
+    this.metricValue.textContent = !p ? '--' : p.provisional ? `~${p.period.toFixed(1)} s` : `${p.period.toFixed(2)} s`;
   }
 
   private onStep(sim: Simulation, engine: Matter.Engine) {
@@ -139,8 +148,7 @@ export class LiveGraph {
     if (this.measuresPeriod()) {
       const main = bodies.reduce<Matter.Body | null>((a, b) => (!a || b.mass > a.mass ? b : a), null);
       if (main) this.period.push(this.time, main);
-      const p = this.period.value();
-      if (p) this.metricValue.textContent = `${p.toFixed(2)} s`;
+      this.showPeriod();
     } else {
       this.speed += (fastest - this.speed) * 0.15;
       this.metricValue.textContent = `${this.speed.toFixed(1)} m/s`;
@@ -225,7 +233,8 @@ export class LiveGraph {
 /**
  * Measures the period of an oscillating body from its turning points:
  * the velocity along the main swing axis flips sign twice per period, so each gap between
- * flips is half a period. Using both turning points gives a first reading after ~1 swing.
+ * flips is half a period. The release from rest counts as the first turning point, so a
+ * provisional reading appears after one half swing; it is confirmed after two and then averaged.
  */
 class PeriodMeter {
   private xs: number[] = [];
@@ -234,7 +243,12 @@ class PeriodMeter {
   private sign = 0;
   private lastFlip = NaN;
   private halves: number[] = [];
+  /** True until the first motion after a fresh start: a body released from rest starts at a turning point. */
+  private fromRest = true;
+  /** Shown (as provisional) until a half swing is measured, e.g. the Earth period scaled to the Moon. */
+  private guess: number | null = null;
 
+  /** A new drawing: the body is released from rest, so the release counts as the first turning point. */
   reset() {
     this.xs = [];
     this.ys = [];
@@ -242,6 +256,19 @@ class PeriodMeter {
     this.sign = 0;
     this.lastFlip = NaN;
     this.halves = [];
+    this.fromRest = true;
+    this.guess = null;
+  }
+
+  /**
+   * Gravity changed mid-swing: old readings no longer apply, but keep tracking the motion so the
+   * next turning point starts a fresh half swing. `guess` is shown meanwhile (provisional).
+   */
+  restart(guess: number | null) {
+    this.lastFlip = NaN;
+    this.halves = [];
+    this.fromRest = false;
+    this.guess = guess;
   }
 
   push(t: number, body: Matter.Body) {
@@ -251,6 +278,7 @@ class PeriodMeter {
       this.xs.shift();
       this.ys.shift();
     }
+    if (this.fromRest && this.xs.length === 1) this.lastFlip = t - STEP_S;
     // Swing axis = whichever coordinate moves more (x for a pendulum, along the spring for a spring).
     const useX = range(this.xs) >= range(this.ys);
     const v = useX ? body.velocity.x : body.velocity.y;
@@ -269,13 +297,18 @@ class PeriodMeter {
       }
       this.lastFlip = tc;
     }
-    if (s !== 0) this.sign = s;
+    if (s !== 0) {
+      this.sign = s;
+      this.fromRest = false;
+    }
     this.prevV = v;
   }
 
-  value(): number | null {
-    if (this.halves.length < 2) return null;
-    return (2 * this.halves.reduce((a, b) => a + b, 0)) / this.halves.length;
+  /** Period in seconds; `provisional` until two half swings have been measured. */
+  value(): { period: number; provisional: boolean } | null {
+    if (!this.halves.length) return this.guess ? { period: this.guess, provisional: true } : null;
+    const period = (2 * this.halves.reduce((a, b) => a + b, 0)) / this.halves.length;
+    return { period, provisional: this.halves.length < 2 };
   }
 }
 

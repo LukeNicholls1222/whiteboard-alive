@@ -52,6 +52,14 @@ h1 { margin: 8px 0 0; font-weight: 900; font-size: 28px; color: var(--green); }
 .btn-ghost:active { transform: translateY(2px); border-bottom-width: 2px; }
 .btn-ghost.on { color: #fff; background: var(--blue); border-color: #1899d6; }
 .btn-ghost[hidden] { display: none; }
+/* "Show what AI saw": a small pill over the top-right corner of the drawing. */
+.btn-float {
+  position: absolute; top: 10px; right: 10px; z-index: 2; margin: 0;
+  font-size: 12px; padding: 6px 12px; border-radius: 12px; border-bottom-width: 3px;
+  background: rgba(255, 255, 255, 0.94); -webkit-tap-highlight-color: transparent;
+}
+.btn-float:active { transform: translateY(1px); border-bottom-width: 2px; }
+.btn-float.on { background: var(--blue); }
 
 /* ---- Controls: sliders, planet chips, talk button ---- */
 .controls { border: 2px solid var(--line); border-bottom-width: 4px; border-radius: 20px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
