@@ -1,6 +1,7 @@
 import './style.css';
 import { analyze, hasApiKey } from './ai';
 import { createControls } from './controls';
+import { LiveGraph } from './graph';
 import { buildScene } from './scenes';
 import { AIOverlay } from './overlay';
 import { Simulation } from './sim';
@@ -35,9 +36,11 @@ async function startScene(input: SceneInput, intro = false): Promise<BuiltScene>
   if (intro) await overlay.playIntro({ ...input, scene });
   sim = new Simulation(stage, scene, input.width, input.height);
   sim.setParams(input.analysis.params);
+  graph.attach(sim, input.analysis.diagram);
   sim.start();
   return scene;
 }
+const graph = new LiveGraph(stage.parentElement!);
 
 // Start loading OpenCV right away so it is ready by the time a photo is picked.
 const cvPromise = loadOpenCV();
