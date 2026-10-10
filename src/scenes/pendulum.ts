@@ -39,7 +39,8 @@ export const buildPendulum: SceneBuilder = (input) => {
     }
 
   const length = Math.hypot(bob.x - pivot.x, bob.y - pivot.y);
-  const body = Matter.Bodies.circle(bob.x, bob.y, bobRadius, { frictionAir: 0.0008, friction: 0, restitution: 0 });
+  // No air drag by default: a pendulum should keep its energy (an "Air resistance" option can add drag explicitly).
+  const body = Matter.Bodies.circle(bob.x, bob.y, bobRadius, { frictionAir: 0, friction: 0, restitution: 0 });
   const rope = Matter.Constraint.create({ pointA: { ...pivot }, bodyB: body, length, stiffness: STIFFNESS, damping: DAMPING });
 
   // Never show a still pendulum: if it hangs straight down, give it ~KICK_DEG of swing.
