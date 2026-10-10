@@ -15,12 +15,14 @@ export class Simulation {
   engine = Matter.Engine.create();
   private raf = 0;
   private ctx: CanvasRenderingContext2D;
+  /** Called after every physics step (graphs, readouts). */
+  stepListeners: Array<(engine: Matter.Engine) => void> = [];
 
   constructor(
     private canvas: HTMLCanvasElement,
     private scene: BuiltScene,
     private worldW: number,
-    private worldH: number,
+    readonly worldH: number,
   ) {
     this.ctx = canvas.getContext('2d')!;
     Matter.Composite.add(this.engine.world, [...scene.bodies, ...scene.constraints]);
@@ -30,11 +32,17 @@ export class Simulation {
     if (p.gravity !== undefined) this.engine.gravity.scale = (BASE_SCALE * p.gravity) / 9.8;
   }
 
+  /** Current gravity in m/s² (read back from the engine, so there is one source of truth). */
+  get gravity(): number {
+    return (this.engine.gravity.scale / BASE_SCALE) * 9.8;
+  }
+
   start() {
     const loop = () => {
       this.scene.step?.(this.engine);
       Matter.Engine.update(this.engine, STEP_MS);
       this.scene.onStep?.(this.engine);
+      for (const fn of this.stepListeners) fn(this.engine);
       this.draw();
       this.raf = requestAnimationFrame(loop);
     };

@@ -1,5 +1,6 @@
 import './style.css';
 import { analyze, hasApiKey } from './ai';
+import { LiveGraph } from './graph';
 import { buildScene } from './scenes';
 import { Simulation } from './sim';
 import { annotate, extractContours, loadOpenCV, toWorkingCanvas } from './vision';
@@ -11,6 +12,7 @@ const stage = $<HTMLCanvasElement>('stage');
 const explain = $<HTMLParagraphElement>('explain');
 
 let sim: Simulation | null = null;
+const graph = new LiveGraph(stage.parentElement!);
 
 // Start loading OpenCV right away so it is ready by the time a photo is picked.
 const cvPromise = loadOpenCV();
@@ -65,6 +67,7 @@ async function run(file: Blob) {
     sim?.stop();
     sim = new Simulation(stage, scene, vision.width, vision.height);
     sim.setParams(analysis.params);
+    graph.attach(sim, analysis.diagram);
     sim.start();
     setStep('done');
     explain.textContent = analysis.explanation || `${scene.label}${analysis.source === 'heuristic' && !hasApiKey() ? ' (offline mode)' : ''}`;
