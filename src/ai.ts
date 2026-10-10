@@ -4,8 +4,18 @@ import type { Analysis, Contour, DiagramType } from './types';
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY ?? '';
 // Newest Flash first; older ones only if the newer model is unavailable for this key (see docs/research/gemini-json.md).
-const MODELS = import.meta.env.VITE_GEMINI_MODEL ? [import.meta.env.VITE_GEMINI_MODEL] : ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-2.5-flash'];
-const TIMEOUT_MS = 18000;
+const MODELS = import.meta.env.VITE_GEMINI_MODEL ? [import.meta.env.VITE_GEMINI_MODEL] : [
+      // The free tier allows ~20 requests/day per model, so keep a long chain of independent quotas.
+      'gemini-3.8-flash',
+      'gemini-3.7-flash',
+      'gemini-3.6-flash',
+      'gemini-3.5-flash',
+      'gemini-3-flash-preview',
+      'gemini-flash-latest',
+      'gemini-3.5-flash-lite',
+      'gemini-3.1-flash-lite',
+    ];
+const TIMEOUT_MS = 20000;
 
 export const hasApiKey = () => API_KEY.length > 0;
 
@@ -87,7 +97,7 @@ export async function analyze(annotated: HTMLCanvasElement, contours: Contour[])
     for (const withSchema of [true, false]) {
       if (Date.now() > deadline) return heuristic(contours);
       try {
-        const raw = await callGemini(model, jpeg, text, withSchema, Math.min(11000, deadline - Date.now()));
+        const raw = await callGemini(model, jpeg, text, withSchema, Math.min(9000, deadline - Date.now()));
         return sanitize(raw, contours);
       } catch (err: any) {
         console.warn(`[ai] ${model} schema=${withSchema} failed`, err);
