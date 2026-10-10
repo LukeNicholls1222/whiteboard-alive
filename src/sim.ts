@@ -5,7 +5,7 @@ import Matter from 'matter-js';
 import decomp from 'poly-decomp';
 import { MotionTracker } from './motion';
 import { drawClean, drawnSnapshot, FAINT_ALPHA, usesClean } from './clean';
-import { drawMorph, ghostAlpha, morphHooks, morphLabelAlpha, morphProgress } from './morph';
+import { drawMorph, ghostAlpha, type IntroLayer, morphHooks, morphLabelAlpha, morphProgress } from './morph';
 import type { BuiltScene, SimParams, Sprite, ViewRect } from './types';
 import { BASE_SCALE, STEP_MS } from './units';
 
@@ -71,6 +71,8 @@ export class Simulation {
   private morphStart: number | null = null;
   /** performance.now() when the morph ended (the ghost fades from then); null = no morph was played (a rebuild). */
   private morphEnd: number | null = null;
+  /** "What the AI saw" as last shown, for the morph to start from and absorb. */
+  private intro: IntroLayer | null = null;
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -114,12 +116,15 @@ export class Simulation {
 
   /**
    * Run. `morph`: first turn the drawing into the clean figure (morph.ts), then start the physics. Only for a new
-   * photo after the AI intro; ignored in drawn style.
+   * photo after the AI intro; ignored in drawn style. `intro`: the AI overlay's last frame; the morph's first frame
+   * (drawn right away, before this returns) is that same picture, so the overlay can be hidden at once.
    */
-  start(opts: { morph?: boolean } = {}) {
+  start(opts: { morph?: boolean; intro?: IntroLayer | null } = {}) {
     if (opts.morph && this.drawn) {
+      this.intro = opts.intro ?? null;
       this.morphStart = performance.now();
       for (const fn of morphHooks.start) fn(this.scene);
+      this.draw(0);
     }
     const loop = () => {
       if (this.morphStart !== null) {
@@ -172,7 +177,7 @@ export class Simulation {
     }
     ctx.setTransform(s, 0, 0, s, tx, ty);
     const px = (window.devicePixelRatio || 1) / s; // world px per CSS px
-    if (drawn && morphT !== undefined) drawMorph({ ctx, scene: this.scene, drawn: drawn.fixed, moving: drawn.moving, px, t: morphT });
+    if (drawn && morphT !== undefined) drawMorph({ ctx, scene: this.scene, drawn: drawn.fixed, moving: drawn.moving, px, t: morphT, intro: this.intro });
     else if (drawn) {
       // The original drawing stays faint and still; the clean figure moves on top of it. The ghost of the moving
       // parts fades away after the morph (and is not shown at all on a rebuild).

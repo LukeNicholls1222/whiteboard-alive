@@ -3,15 +3,18 @@
 // the timing, the per-frame drawing and the start / end hooks. Simulation (sim.ts) only asks morphProgress() how far
 // it is and calls drawMorph() instead of its normal frame while it runs; physics is frozen until it is done.
 //
-// What it looks like (times from the start of the morph, after the hold under the fading AI overlay):
-//   0.00-0.90 s  the drawing dims to its faint background level
+// What it looks like (times from the start of the morph = the last frame of "what the AI saw"; the morph's first
+// frame is that same picture, so there is no gap and no frame of the plain drawing in between):
+//   0.00-0.90 s  the drawing dims from the overlay's washed level to its faint background level
 //   0.00-0.45 s  the fixed parts (ceiling, ground, ramp, cannon) are traced: a light in the AI's colour for that part
-//                runs along the line and the tidy grey line is left behind; the glow fades
+//                runs along the line and the tidy grey line is left behind; the glow fades. The overlay's coloured
+//                outline of the same colour is drawn into the light as it runs, and its label shrinks away
 //   0.18-0.65 s  the connections (string, rope, spring, arrow) are traced the same way, from the fixed end out
 //   0.36-1.2 s   the masses (bob, block, ball, weights) are traced around and snap in: the solid shape pops up with a
 //                small overshoot, a ring spreads from it with a few sparks
 //   1.08-1.40 s  "alive": the masses lift a little and settle; the value labels and arrows fade in
-// Every part's light starts a little after the previous one in its group. prefers-reduced-motion: a short cross-fade.
+// Every part's light starts a little after the previous one in its group. prefers-reduced-motion: a short cross-fade
+// (the overlay's colours fade with it).
 
 import type { BuiltScene, CleanPart, Point } from './types';
 import { drawClean, FAINT_ALPHA, partCenter, partOutline } from './clean';
@@ -19,12 +22,20 @@ import { drawClean, FAINT_ALPHA, partCenter, partOutline } from './clean';
 /** True when the device asks for less motion: the morph is a plain cross-fade. */
 const REDUCED = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-/** Hold the drawing as it is while the AI overlay fades out on top (overlay.ts FADE_MS). */
-export const MORPH_HOLD_MS = 250;
-/** The morph itself. */
+/** The morph: total time before the physics starts. */
 export const MORPH_MS = REDUCED ? 450 : 1400;
-/** Total time before the physics starts. */
-export const MORPH_TOTAL_MS = MORPH_HOLD_MS + MORPH_MS;
+
+/** The last frame of "what the AI saw" (overlay.ts), in world px, carried into the morph so it can absorb it. */
+export interface IntroLayer {
+  /** White wash the overlay laid over the drawing (alpha). */
+  wash: number;
+  /** Coloured outline runs, as the overlay drew them (alpha `runAlpha`, width `runCss` CSS px). */
+  runs: Array<{ points: Point[]; closed: boolean; color: string }>;
+  runAlpha: number;
+  runCss: number;
+  /** Labels where the overlay placed them (box top-left + size, world px). */
+  labels: Array<{ text: string; color: string; x: number; y: number; w: number; h: number }>;
+}
 
 /** How long the ghost of the moving parts (where they were drawn) stays after the morph, fading to nothing. */
 export const GHOST_MS = 3000;
@@ -43,6 +54,8 @@ const TRACE_FADE_MS = 220;
 const DIM_MS = 900;
 const ALIVE_FROM = 1080;
 const ALIVE_MS = 320;
+/** An overlay label shrinks away this long after the light of its colour starts. */
+const LABEL_MS = 240;
 
 /** Called when a morph starts / ends (after its last frame, right before the first physics step). */
 export const morphHooks = {
@@ -50,10 +63,10 @@ export const morphHooks = {
   end: [] as Array<(scene: BuiltScene) => void>,
 };
 
-/** Morph progress 0..1 for the time since it started (0 during the hold), or null once it is over. */
+/** Morph progress 0..1 for the time since it started, or null once it is over. */
 export function morphProgress(elapsedMs: number): number | null {
-  if (elapsedMs >= MORPH_TOTAL_MS) return null;
-  return Math.max(0, Math.min(1, (elapsedMs - MORPH_HOLD_MS) / MORPH_MS));
+  if (elapsedMs >= MORPH_MS) return null;
+  return Math.max(0, Math.min(1, elapsedMs / MORPH_MS));
 }
 
 /** Opacity of the value labels and velocity arrows at morph progress t: they come in at the very end. */
@@ -83,11 +96,14 @@ export interface MorphFrame {
   px: number;
   /** 0..1 (morphProgress). */
   t: number;
+  /** "What the AI saw" as it was last shown; absorbed by the lights (absent: the drawing was shown plain). */
+  intro?: IntroLayer | null;
 }
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 const ease = (t: number) => t * t * (3 - 2 * t);
 const easeOut = (t: number) => 1 - (1 - t) * (1 - t) * (1 - t);
+const easeIn = (t: number) => t * t;
 /** Overshoots a little past 1 and comes back (easeOutBack). */
 const backOut = (t: number) => {
   const c1 = 1.70158, c3 = c1 + 1;
@@ -208,6 +224,100 @@ function planFor(ctx: CanvasRenderingContext2D, scene: BuiltScene, px: number): 
   return plan;
 }
 
+/**
+ * When the light of each overlay colour starts and when its trace is over (ms into the morph), from the plan: a
+ * colour the clean figure does not use goes with the fixed parts (the first group).
+ */
+function colorTimes(plan: PartPlan[]): Map<string, { start: number; end: number }> {
+  const m = new Map<string, { start: number; end: number }>();
+  for (const p of plan) {
+    const c = m.get(p.color);
+    if (!c) m.set(p.color, { start: p.start, end: p.start + TRACE_MS });
+    else {
+      c.start = Math.min(c.start, p.start);
+      c.end = Math.max(c.end, p.start + TRACE_MS);
+    }
+  }
+  return m;
+}
+
+/**
+ * The overlay's picture under the morph: the drawing (dimming from the overlay's washed level to faint), then its
+ * coloured runs, each drawn into the light of its colour as the light runs (gone when the trace is over).
+ */
+function drawIntroUnder(ctx: CanvasRenderingContext2D, f: MorphFrame, ms: number, dim: number, times: Map<string, { start: number; end: number }>) {
+  const intro = f.intro;
+  const wash = intro ? intro.wash * (1 - dim) : 0;
+  if (wash > 0) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = wash;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.restore();
+  }
+  if (!intro) return;
+  const fallback = { start: GROUP_START.fixed, end: GROUP_START.fixed + TRACE_MS };
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = intro.runCss * f.px;
+  for (const r of intro.runs) {
+    const w = times.get(r.color) ?? fallback;
+    const gone = ease(clamp01((ms - w.start) / (w.end - w.start)));
+    if (gone >= 1 || r.points.length < 2) continue;
+    ctx.globalAlpha = intro.runAlpha * (1 - gone);
+    ctx.strokeStyle = r.color;
+    ctx.beginPath();
+    r.points.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)));
+    if (r.closed) ctx.closePath();
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** The overlay's labels on top: each shrinks away as the light of its colour starts. */
+function drawIntroLabels(ctx: CanvasRenderingContext2D, f: MorphFrame, ms: number, times: Map<string, { start: number; end: number }>) {
+  const intro = f.intro;
+  if (!intro || !intro.labels.length) return;
+  const px = f.px;
+  const fallback = { start: GROUP_START.fixed, end: 0 };
+  ctx.save();
+  ctx.font = `800 ${12 * px}px Nunito, system-ui, sans-serif`;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+  for (const l of intro.labels) {
+    const start = (times.get(l.color) ?? fallback).start;
+    const k = easeIn(clamp01((ms - start) / LABEL_MS));
+    if (k >= 1) continue;
+    const scale = 1 - k;
+    ctx.save();
+    ctx.globalAlpha = 1 - k;
+    ctx.translate(l.x + l.w / 2, l.y + l.h / 2);
+    ctx.scale(scale, scale);
+    ctx.fillStyle = l.color;
+    roundRect(ctx, -l.w / 2, -l.h / 2, l.w, l.h, l.h / 2);
+    ctx.fill();
+    ctx.lineWidth = 2 * px;
+    ctx.strokeStyle = '#fff';
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.fillText(l.text, 0, 1 * px);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
 /** One frame of the morph. */
 export function drawMorph(f: MorphFrame) {
   const { ctx, scene, drawn, moving, px } = f;
@@ -224,8 +334,11 @@ export function drawMorph(f: MorphFrame) {
     scene.onDraw(ctx);
     ctx.restore();
   }
+  const plan = planFor(ctx, scene, px);
+  const times = colorTimes(plan);
+  drawIntroUnder(ctx, f, ms, dim, times);
   const alive = clamp01((ms - ALIVE_FROM) / ALIVE_MS);
-  for (const p of planFor(ctx, scene, px)) {
+  for (const p of plan) {
     const local = ms - p.start;
     if (local < 0) continue;
     const q = clamp01(local / TRACE_MS);
@@ -263,9 +376,10 @@ export function drawMorph(f: MorphFrame) {
     }
     ctx.restore();
   }
+  drawIntroLabels(ctx, f, ms, times);
 }
 
-/** Reduced motion: the drawing fades to faint while the clean figure fades in on top. */
+/** Reduced motion: the drawing (and the overlay's colours) fade to faint while the clean figure fades in on top. */
 function drawCrossFade(f: MorphFrame) {
   const { ctx, scene, drawn, moving, px } = f;
   const t = ease(f.t);
@@ -279,7 +393,20 @@ function drawCrossFade(f: MorphFrame) {
     scene.onDraw(ctx);
     ctx.restore();
   }
+  // Every overlay colour and label goes over the whole cross-fade.
+  const all = new Map<string, { start: number; end: number }>();
+  const ms = f.t * MORPH_MS;
+  const span = { start: 0, end: MORPH_MS };
+  for (const r of f.intro?.runs ?? []) all.set(r.color, span);
+  for (const l of f.intro?.labels ?? []) all.set(l.color, span);
+  drawIntroUnder(ctx, f, ms, t, all);
   drawClean(ctx, scene.clean ?? [], px, { alpha: t });
+  if (f.intro) {
+    const labels = new Map<string, { start: number; end: number }>();
+    for (const l of f.intro.labels) labels.set(l.color, { start: 0, end: 0 });
+    // LABEL_MS is shorter than the cross-fade: scale the time so the labels shrink over the whole of it.
+    drawIntroLabels(ctx, f, (ms * LABEL_MS) / MORPH_MS, labels);
+  }
 }
 
 /** Stroke the first `upTo` world px of a polyline. */

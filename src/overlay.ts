@@ -1,8 +1,11 @@
 // "What the AI saw": the detected contours drawn over the original drawing, coloured by role.
-// Shown for ~1.5 s before the simulation starts, then on demand via a toggle button.
+// Shown for ~1.5 s before the simulation starts, then on demand via a toggle button. Its last frame is handed to the
+// morph (morph.ts IntroLayer), which draws the same picture as its first frame and absorbs the colours into its
+// lights, so the overlay can be hidden at once with no frame of the plain drawing in between.
 
 import type { Analysis, BodyRole, BuiltScene, Contour, Point, Sprite } from './types';
 import { contourMask, deepestPoint, maskBounds } from './scenes/common';
+import { type IntroLayer, MORPH_MS } from './morph';
 import { drawSprite, PAPER_FILL, pictureCssHeight, pictureTransform, viewOf, visibleRect } from './sim';
 
 const C = {
@@ -53,13 +56,20 @@ export interface OverlayInput {
 }
 
 const INTRO_MS = 1500;
+/** Fade-out when there is no morph to hand over to (drawn style). */
 const FADE_MS = 450;
+/** How the lines are drawn (the morph keeps drawing them the same way). */
+const WASH = 0.35;
+const RUN_ALPHA = 0.55;
+const RUN_CSS = 7;
 
 export class AIOverlay {
   private canvas = document.createElement('canvas');
   private ctx = this.canvas.getContext('2d')!;
   private runs: Run[] = [];
   private labels: Label[] = [];
+  /** Where the labels were drawn last (world px), for the hand-over to the morph. */
+  private placed: IntroLayer['labels'] = [];
   private data: OverlayInput | null = null;
   private raf = 0;
   private visible = false;
@@ -86,11 +96,15 @@ export class AIOverlay {
     this.data = null;
     this.intro = false;
     this.visible = false;
-    this.canvas.classList.remove('show', 'intro', 'fade');
+    this.canvas.classList.remove('show', 'intro', 'fade', 'off');
     this.button.hidden = true;
   }
 
-  /** Full-opacity intro over the paper; resolves when the simulation should start (overlay keeps fading out on top). */
+  /**
+   * Full-opacity intro over the paper; resolves when the simulation should start. The overlay stays on screen, as
+   * it is, until release(): the caller starts the simulation (its first morph frame is this same picture) and then
+   * releases it, so nothing else is ever seen in between.
+   */
   async playIntro(input: OverlayInput): Promise<void> {
     this.reset();
     const token = ++this.token;
@@ -106,6 +120,7 @@ export class AIOverlay {
     this.sizeStage();
     this.canvas.classList.add('show', 'intro');
     const t0 = performance.now();
+    if (import.meta.env.DEV && (window as any).__wa) (window as any).__wa.introStart = t0;
     await new Promise<void>((resolve) => {
       const tick = () => {
         const t = performance.now() - t0;
@@ -115,16 +130,30 @@ export class AIOverlay {
       };
       tick();
     });
-    if (token !== this.token) return;
-    // Fade out while the simulation starts underneath.
-    this.canvas.classList.add('fade');
+  }
+
+  /** The intro's last frame for the morph to carry on from (null when no intro is on screen). */
+  handoff(): IntroLayer | null {
+    if (!this.intro || !this.data) return null;
+    return { wash: WASH, runs: this.runs, runAlpha: RUN_ALPHA, runCss: RUN_CSS, labels: this.placed };
+  }
+
+  /**
+   * End the intro. `morphing`: the simulation is drawing the morph from the handed-over picture, so the overlay goes
+   * away at once (no transition) and the toggle shows once the morph is over. Otherwise (drawn style, no morph) it
+   * fades out over the plain drawing as before.
+   */
+  release(morphing: boolean) {
+    if (!this.intro) return;
+    const token = this.token;
+    this.canvas.classList.add(morphing ? 'off' : 'fade');
     setTimeout(() => {
       if (token !== this.token) return;
       this.intro = false;
-      this.canvas.classList.remove('intro', 'fade', 'show');
+      this.canvas.classList.remove('intro', 'fade', 'show', 'off');
       this.button.hidden = false;
       this.syncButton();
-    }, FADE_MS);
+    }, morphing ? MORPH_MS : FADE_MS);
   }
 
   /**
@@ -273,15 +302,14 @@ export class AIOverlay {
         ctx.drawImage(d.scene.background, 0, 0);
         for (const sp of d.scene.sprites) drawSprite(ctx, sp);
       } else ctx.drawImage(d.paper, 0, 0);
-      ctx.fillStyle = 'rgba(255,255,255,0.35)';
-      if (view) ctx.fillRect(vis.x, vis.y, vis.w, vis.h);
-      else ctx.fillRect(0, 0, d.width, d.height);
+      ctx.fillStyle = `rgba(255,255,255,${WASH})`;
+      ctx.fillRect(vis.x, vis.y, vis.w, vis.h);
     }
 
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
-    ctx.lineWidth = 7 * px;
-    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = RUN_CSS * px;
+    ctx.globalAlpha = RUN_ALPHA;
     for (const r of this.runs) {
       ctx.strokeStyle = r.color;
       strokePartial(ctx, r.points, r.closed, progress);
@@ -290,6 +318,7 @@ export class AIOverlay {
 
     // Labels pop in after the lines are mostly traced.
     const la = withPaper ? clamp01((progress - 0.5) / 0.5) : 1;
+    this.placed = [];
     if (la <= 0) return;
     const font = 12 * px;
     ctx.font = `800 ${font}px Nunito, system-ui, sans-serif`;
@@ -309,6 +338,7 @@ export class AIOverlay {
         if (!placed.some((b) => overlap(b, { x, y, w, h }))) break;
       }
       placed.push({ x, y, w, h });
+      this.placed.push({ text: l.text, color: l.color, x, y, w, h });
       ctx.globalAlpha = la;
       const pop = 0.8 + 0.2 * la;
       ctx.save();
