@@ -1,5 +1,4 @@
 import './style.css';
-import type Matter from 'matter-js';
 import { aiPlan, analyze, askGemini, hasApiKey, offlineAnalysis } from './ai';
 import { cachedAnalysis, EXAMPLES, exampleBlob, exampleThumb, fingerprint, preloadExamples } from './examples';
 import { createControls, launchSpeedTune } from './controls';
@@ -8,9 +7,10 @@ import { QuantityLabels } from './notes';
 import { buildScene } from './scenes';
 import { AIOverlay } from './overlay';
 import { Simulation } from './sim';
+import { ProgressLine } from './progress';
 import { VelocityArrows } from './vectors';
-import type { Analysis, BuiltScene, SceneInput, SimParams } from './types';
-import { annotate, extractContours, loadOpenCV, toWorkingCanvas } from './vision';
+import type { Analysis, BuiltScene, SceneInput } from './types';
+import { annotate, extractContours, loadOpenCV, toWorkingCanvas, type VisionResult } from './vision';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const fileInput = $<HTMLInputElement>('file');
@@ -52,13 +52,11 @@ interface StartOptions {
   scene?: BuiltScene;
   /** Photo this start belongs to: if a newer photo came in during the intro, nothing starts. */
   forGen?: number;
-  /** Keep the running scene moving under the intro and swap at its end (the AI answer replacing the quick guess). */
-  crossfade?: boolean;
 }
 
 async function startScene(input: SceneInput, opts: StartOptions = {}): Promise<BuiltScene | null> {
   const scene = opts.scene ?? buildScene(input);
-  if (!opts.crossfade) sim?.stop();
+  sim?.stop();
   // Show what the AI understood on top of the paper, then let it come alive.
   if (opts.intro) await overlay.playIntro({ ...input, scene });
   if (opts.forGen !== undefined && opts.forGen !== gen) return null;
@@ -100,33 +98,77 @@ const cvPromise = loadOpenCV();
 cvPromise.then(preloadExamples, preloadExamples);
 
 type Step = 'load' | 'contours' | 'ai' | 'run';
-const STEPS: Record<Step, string> = {
-  load: 'Getting ready',
-  contours: 'Finding your lines',
-  ai: 'Understanding the drawing',
-  run: 'Bringing it to life',
-};
-
 const ORDER: Step[] = ['load', 'contours', 'ai', 'run'];
-type StepState = 'done' | 'active' | 'warn' | '';
-
-function renderSteps(states: StepState[], labels: Partial<Record<Step, string>> = {}) {
-  status.innerHTML = ORDER.map((s, i) => `<span class="step ${states[i]}">${labels[s] ?? STEPS[s]}</span>`).join('');
-}
+/** One line, four dots. Short labels so it fits a 390 px phone; `ms` = how long the line creeps toward that dot. */
+const progress = new ProgressLine(status, [
+  { label: 'Ready', ms: 2500 },
+  { label: 'Lines', ms: 1500 },
+  { label: 'Understanding', ms: 20000 }, // Gemini's whole time budget (TIMEOUT_MS in ai.ts)
+  { label: 'Alive', ms: 2000 }, // the "what the AI saw" intro
+]);
+progress.step(-1);
 
 function setStep(step: Step | 'done' | 'error', detail = '') {
-  if (step === 'error') {
-    status.innerHTML = `<span class="step error">${detail}</span>`;
-    return;
-  }
-  const idx = step === 'done' ? ORDER.length : ORDER.indexOf(step);
-  renderSteps(ORDER.map((_, i) => (i < idx ? 'done' : i === idx ? 'active' : '')));
+  if (step === 'error') return progress.error(detail);
+  progress.step(step === 'done' ? ORDER.length : ORDER.indexOf(step));
 }
 
-/** Moving on the shape-based guess while Gemini is still reading the drawing (the AI step keeps pulsing). */
-const showGuessing = () => renderSteps(['done', 'done', 'active', 'done'], { ai: 'Quick guess · AI checking…' });
-/** Gemini failed or timed out: the guess stays, and the status says so. */
-const showGuessOnly = () => renderSteps(['done', 'done', 'warn', 'done'], { ai: 'Using a quick guess' });
+/** Gemini failed or timed out: the scene is built from the shape-based guess, and the status says so. */
+const showGuessOnly = () => progress.warn(ORDER.indexOf('ai'), 'Using a quick guess');
+
+/**
+ * While Gemini reads the drawing nothing moves: the stage shows the still paper and its lines glow softly one
+ * after another (top to bottom), so the screen never looks frozen. Replaced by the intro once the answer is in.
+ */
+let waitRaf = 0;
+function showWaiting(v: VisionResult) {
+  cancelAnimationFrame(waitRaf);
+  const ctx = stage.getContext('2d')!;
+  const lines = v.contours
+    .filter((k) => k.points.length >= 2 && k.bbox.w + k.bbox.h > 20)
+    .sort((a, b) => b.inkPixels - a.inkPixels)
+    .slice(0, 12)
+    .sort((a, b) => a.centroid.y - b.centroid.y || a.centroid.x - b.centroid.x);
+  const PER = 520; // ms between two lines lighting up; each glow lasts 2 PER
+  const cycle = (lines.length + 2) * PER;
+  const t0 = performance.now();
+  const frame = (now: number) => {
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = stage.clientWidth;
+    const cssH = (cssW * v.height) / v.width;
+    const pw = Math.round(cssW * dpr), ph = Math.round(cssH * dpr);
+    if (stage.width !== pw || stage.height !== ph) {
+      stage.width = pw;
+      stage.height = ph;
+      stage.style.height = `${cssH}px`;
+    }
+    const s = stage.width / v.width;
+    ctx.setTransform(s, 0, 0, s, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.drawImage(v.paper, 0, 0);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.lineWidth = (6 * dpr) / s;
+    ctx.strokeStyle = '#1cb0f6';
+    const t = ((now - t0) % cycle) / PER;
+    lines.forEach((k, i) => {
+      const local = t - i;
+      if (local <= 0 || local >= 2) return;
+      ctx.globalAlpha = 0.4 * Math.sin((Math.PI * local) / 2);
+      ctx.beginPath();
+      k.points.forEach((p, j) => (j ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+      ctx.closePath();
+      ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+    waitRaf = requestAnimationFrame(frame);
+  };
+  frame(t0);
+}
+function stopWaiting() {
+  cancelAnimationFrame(waitRaf);
+  waitRaf = 0;
+}
 
 fileInput.addEventListener('change', () => {
   const file = fileInput.files?.[0];
@@ -173,6 +215,8 @@ async function run(file: Blob, example?: string) {
   const stale = () => my !== gen;
   busy = true;
   mark('photo');
+  // An older photo may still be waiting for Gemini: its glowing lines must not draw over this one.
+  stopWaiting();
   try {
     overlay.reset();
     notes.reset();
@@ -193,30 +237,49 @@ async function run(file: Blob, example?: string) {
     const t1 = performance.now();
     const annotated = annotate(vision.paper, vision.contours);
 
+    let analysis: Analysis;
     if (!example && aiPlan().kind === 'gemini') {
-      // Gemini takes 3-15 s (up to 20 s when busy): ask it, and meanwhile run the shape-based guess (~0.2 s) so the
-      // drawing moves right away. The answer replaces the guess when it reads the drawing differently (see refine).
+      // Nothing moves before the drawing is understood. Gemini takes 3-15 s (at most 20 s): meanwhile the stage
+      // shows the still paper with its lines glowing in turn and the "Understanding" dot pulsing. The shape-based
+      // guess is worked out in the meantime, so a failure or timeout can start on it at once.
+      sim?.stop();
+      sim = null;
+      controls.hide();
+      explain.textContent = '';
+      showWaiting(vision);
+      mark('waiting');
+      // Another photo or example may replace this one while it waits; the generation check drops the old answer.
+      busy = false;
       const pending = askGemini(annotated, vision.contours);
+      await nextFrame();
+      if (stale()) return;
       const guess = offlineAnalysis(annotated, vision.contours);
-      console.log(`[ai] quick guess ${guess.diagram} in ${Math.round(performance.now() - t1)}ms, waiting for Gemini`);
-      current = { ...vision, analysis: guess };
-      const scene = buildScene(current);
-      const guessKey = sceneKey(scene);
-      await startScene(current, { scene });
-      showControls(scene, guess);
-      showGuessing();
-      explain.textContent = scene.label;
-      void refine(my, pending, t1, guessKey, { ...guess.params });
-      return;
+      console.log(`[ai] quick guess ${guess.diagram} ready in ${Math.round(performance.now() - t1)}ms, waiting for Gemini`);
+      const ai = await pending.catch(() => null);
+      if (stale()) {
+        console.log('[ai] answer for an older photo, ignored');
+        mark('ai-stale', my);
+        return;
+      }
+      stopWaiting();
+      if (ai) {
+        mark('ai-answer');
+        analysis = ai;
+      } else {
+        console.log(`[ai] no answer after ${Math.round(performance.now() - t1)}ms, using the quick guess`);
+        mark('ai-failed');
+        showGuessOnly();
+        analysis = guess;
+      }
+    } else {
+      analysis = example
+        ? await cachedAnalysis(example, vision.contours).catch((err) => {
+            console.warn(err);
+            return offlineAnalysis(annotated, vision.contours);
+          })
+        : await analyze(annotated, vision.contours);
+      if (stale()) return;
     }
-
-    const analysis = example
-      ? await cachedAnalysis(example, vision.contours).catch((err) => {
-          console.warn(err);
-          return offlineAnalysis(annotated, vision.contours);
-        })
-      : await analyze(annotated, vision.contours);
-    if (stale()) return;
     console.log(`[ai] ${analysis.source} ${Math.round(performance.now() - t1)}ms`, analysis);
     if (import.meta.env.DEV) (window as any).__wa.last = { analysis: structuredClone(analysis), fingerprint: fingerprint(vision.contours, analysis) };
 
@@ -235,65 +298,6 @@ async function run(file: Blob, example?: string) {
   } finally {
     if (!stale()) busy = false;
   }
-}
-
-/**
- * Gemini's answer for photo `my` arrived (or failed). If it reads the drawing differently from the quick guess
- * (diagram, roles that change the scene, handwritten values), the scene is rebuilt and swapped in under the
- * "what the AI saw" intro; if it would build the very same scene, the motion carries on and only the labels change.
- */
-async function refine(my: number, pending: Promise<Analysis | null>, t1: number, guessKey: string, guessParams: SimParams) {
-  const ai = await pending.catch(() => null);
-  if (my !== gen || !current) {
-    console.log('[ai] answer for an older photo, ignored');
-    mark('ai-stale', my);
-    return;
-  }
-  const input = current;
-  if (!ai) {
-    console.log(`[ai] no answer after ${Math.round(performance.now() - t1)}ms, keeping the quick guess`);
-    mark('ai-failed');
-    showGuessOnly();
-    return;
-  }
-  console.log(`[ai] gemini ${Math.round(performance.now() - t1)}ms`, ai);
-  if (import.meta.env.DEV) (window as any).__wa.last = { analysis: structuredClone(ai), fingerprint: fingerprint(input.contours, ai) };
-  // Keep what the user changed while the guess was running (slider, voice, Moon).
-  const changed = Object.fromEntries(Object.entries(input.analysis.params).filter(([k, v]) => guessParams[k] !== v));
-  ai.params = { ...ai.params, ...changed };
-  const next: SceneInput = { ...input, analysis: ai };
-  const scene = buildScene(next);
-  const same = ai.diagram === input.analysis.diagram && !ai.annotations?.length && sceneKey(scene) === guessKey;
-  setStep('done');
-  explain.textContent = ai.explanation || scene.label;
-  if (same) {
-    mark('ai-same');
-    Object.assign(input.analysis, { ...ai, params: input.analysis.params });
-    void overlay.playIntro({ ...input, scene });
-  } else {
-    mark('ai-rebuild');
-    current = next;
-    const started = await startScene(next, { intro: true, scene, forGen: my, crossfade: true });
-    if (started) showControls(started, ai);
-  }
-}
-
-/** What a freshly built scene is made of (shapes, joints, cut-outs, scale): equal keys = the same simulation. */
-function sceneKey(scene: BuiltScene): string {
-  const r = (v: number) => (Number.isFinite(v) ? Math.round(v * 2) / 2 : String(v));
-  const pt = (p?: { x: number; y: number } | null) => (p ? `${r(p.x)},${r(p.y)}` : '-');
-  const index = new Map(scene.bodies.map((b, i) => [b, i]));
-  const ref = (b?: Matter.Body | null) => (b ? index.get(b) ?? 'x' : -1);
-  return JSON.stringify({
-    label: scene.label,
-    bodies: scene.bodies.map((b) => [b.isStatic, r(b.mass), b.vertices.map(pt).join(' ')]),
-    constraints: scene.constraints.map((c) => [ref(c.bodyA), ref(c.bodyB), pt(c.pointA), pt(c.pointB), r(c.length), c.stiffness, c.damping]),
-    sprites: scene.sprites.map((sp) => [sp.follow.kind, pt(sp.offset), sp.image.width, sp.image.height]),
-    measures: scene.measures,
-    physics: scene.physics,
-    scale: scene.scale ? [scene.scale.pxPerMeter, scene.scale.timeFactor] : null,
-    gravityScale: scene.gravityScale,
-  });
 }
 
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
