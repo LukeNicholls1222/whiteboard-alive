@@ -3,7 +3,7 @@
 Total: 180 seconds. Times are targets; the live parts have a little slack built in.
 Props: paper, two thick black markers, phone with the live site open (https://lukenicholls1222.github.io/whiteboard-alive/), laptop showing the phone screen or a mirrored tab, one "how it works" slide.
 
-Every feature used below is live, except the example gallery (marked IN PROGRESS). If something goes wrong on stage, jump to "Backup plans" at the end.
+Every feature used below is live. If something goes wrong on stage, jump to "Backup plans" at the end.
 
 ---
 
@@ -95,6 +95,6 @@ If recognition misses:
 4. The "Show what AI saw" colours and the sliders still work in this mode.
 
 **If the Wi-Fi is dead** (the page won't load or nothing responds):
-1. Use the example gallery and run one of the saved examples. It needs no network. (IN PROGRESS: check it's live before going on stage. If it isn't, switch to the backup `?offline` tab, which is already loaded, and snap the backup pre-drawn pendulum.)
+1. Use the example gallery and run one of the saved examples. It needs no network. If that fails too, switch to the backup `?offline` tab, which is already loaded, and snap the backup pre-drawn pendulum.
 2. Say: "The Wi-Fi died, but this is a saved run of exactly the same pipeline."
 3. Then carry on from section 4 (sliders / Moon) as normal.

@@ -44,9 +44,9 @@ It also shows its progress step by step ("Finding your lines → Understanding t
 | Projectile (cannon or arrow → parabola) | Working |
 | Pulley (wheel + rope + two weights → heavier one drops) | Working |
 
-**In progress**
+**Works offline too**
 
-- A gallery of example drawings with saved results, so the demo works without Wi-Fi or the AI
+- "Or try one of ours": six example drawings with saved AI results. Tapping one runs the full pipeline with zero network calls to the AI.
 
 ## How we built it
 
