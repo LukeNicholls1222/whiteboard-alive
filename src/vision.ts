@@ -20,18 +20,18 @@ export function loadOpenCV(): Promise<any> {
     const script = document.createElement('script');
     script.src = `${import.meta.env.BASE_URL}opencv.js`;
     script.async = true;
+    // The Emscripten module is itself a thenable; resolving a promise with it loops forever and
+    // freezes the page. Strip `then` before handing it out.
+    const finish = (m: any) => {
+      if (m && typeof m.then === 'function') delete m.then;
+      window.cv = m;
+      resolve(m);
+    };
     script.onload = () => {
       const cv = window.cv;
-      if (cv && typeof cv.then === 'function') {
-        cv.then((m: any) => {
-          window.cv = m;
-          resolve(m);
-        });
-      } else if (cv && cv.Mat) {
-        resolve(cv);
-      } else {
-        cv.onRuntimeInitialized = () => resolve(window.cv);
-      }
+      if (cv && typeof cv.then === 'function') cv.then(finish);
+      else if (cv && cv.Mat) finish(cv);
+      else cv.onRuntimeInitialized = () => finish(window.cv);
     };
     script.onerror = () => reject(new Error('OpenCV.js の読み込みに失敗しました'));
     document.head.appendChild(script);
@@ -105,7 +105,8 @@ export function extractContours(cv: any, photo: HTMLCanvasElement): VisionResult
       const touchesEdge = rect.x <= 1 || rect.y <= 1 || rect.x + rect.width >= W - 1 || rect.y + rect.height >= H - 1;
       const huge = rect.width > W * 0.9 || rect.height > H * 0.9;
       const tiny = Math.max(rect.width, rect.height) < minSide / 30 || (area < minArea && Math.max(rect.width, rect.height) < minSide / 12);
-      if (tiny || (touchesEdge && huge)) {
+      // Anything touching the photo border is the paper edge, table or shadow, never the drawing.
+      if (tiny || touchesEdge || huge) {
         c.delete();
         continue;
       }

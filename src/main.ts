@@ -32,9 +32,16 @@ function setStep(step: Step | 'done' | 'error', detail = '') {
   if (step === 'error') status.innerHTML = `<span class="step error">${detail}</span>`;
 }
 
-fileInput.addEventListener('change', async () => {
+fileInput.addEventListener('change', () => {
   const file = fileInput.files?.[0];
-  if (!file) return;
+  if (file) run(file).finally(() => (fileInput.value = ''));
+});
+
+// ?src=<image url> runs the pipeline on a hosted image (used for testing with samples/).
+const srcParam = new URLSearchParams(location.search).get('src');
+if (srcParam) fetch(srcParam).then((r) => r.blob()).then(run);
+
+async function run(file: Blob) {
   try {
     setStep('load');
     const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
@@ -64,9 +71,7 @@ fileInput.addEventListener('change', async () => {
   } catch (err) {
     console.error(err);
     setStep('error', 'Something went wrong. Try another photo!');
-  } finally {
-    fileInput.value = '';
   }
-});
+}
 
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
