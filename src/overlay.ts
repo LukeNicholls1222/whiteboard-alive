@@ -25,6 +25,7 @@ const ROLE_STYLE: Record<BodyRole, { label: string; color: string }> = {
   cannon: { label: 'cannon', color: C.red },
   arrow: { label: 'arrow', color: C.red },
   projectile: { label: 'ball', color: C.orange },
+  label: { label: 'note', color: C.grey },
   other: { label: 'other', color: C.grey },
 };
 const MOVING = { label: 'moving', color: C.orange };
@@ -153,7 +154,11 @@ export class AIOverlay {
   private classify(input: OverlayInput) {
     this.runs = [];
     this.labels = [];
-    const { parts, partOf } = partsFor(input);
+    const { parts, partOf: scenePartOf } = partsFor(input);
+    // Handwritten values were read, not simulated: show them as notes whatever the scene made of the rest.
+    const notes = new Set(input.analysis.bodies.filter((b) => b.role === 'label').map((b) => b.contourId));
+    if (notes.size) parts.note = style(ROLE_STYLE.label);
+    const partOf = (p: Point, k: Contour) => (notes.has(k.id) ? 'note' : scenePartOf(p, k));
     const best = new Map<string, Point[]>(); // longest run per part, for label placement
     const note = (key: string, run: Point[]) => {
       const b = best.get(key);

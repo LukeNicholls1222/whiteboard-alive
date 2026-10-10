@@ -1,16 +1,28 @@
-// Live readout under the simulation: energy graph (last 8 s), period / speed, and Moon mode.
-// Reads everything from the running Simulation each step; keeps no gravity state of its own.
+// Live readout under the simulation: energy graph in joules (last 8 s on screen), period / speed, and Moon mode.
+// Reads everything from the running Simulation each step; keeps no gravity state of its own. Every number is in
+// physical units through units.ts (the scene's px per metre and slow-motion factor).
 
 import Matter from 'matter-js';
-import { STEP_ACCEL, STEP_MS, type Simulation } from './sim';
-import type { DiagramType } from './types';
+import type { Simulation } from './sim';
+import type { DiagramType, Scale } from './types';
+import {
+  DEFAULT_KG,
+  DEFAULT_SCALE,
+  EARTH_G,
+  formatEnergy,
+  formatSeconds,
+  formatSpeed,
+  massesOf,
+  meters,
+  mps,
+  physSeconds,
+  scaleOf,
+  springK,
+  STEP_S,
+} from './units';
 
 const WINDOW_S = 8;
-const STEP_S = STEP_MS / 1000;
 const MAX_SAMPLES = Math.round(WINDOW_S / STEP_S);
-/** 9.8 m/s² is STEP_ACCEL px/step² in the sim, so this many px make one metre. */
-const PX_PER_M = STEP_ACCEL / (STEP_S * STEP_S) / 9.8;
-const EARTH_G = 9.8;
 const MOON_G = 1.62;
 
 const GREEN = '#58cc02';
@@ -28,16 +40,19 @@ export class LiveGraph {
   private ctx: CanvasRenderingContext2D;
   private metricLabel: HTMLSpanElement;
   private metricValue: HTMLSpanElement;
+  private theoryLabel: HTMLSpanElement;
   private moon: HTMLInputElement;
   private gLabel: HTMLSpanElement;
 
   private sim: Simulation | null = null;
   private diagram: DiagramType = 'fallback';
+  private scale: Scale = DEFAULT_SCALE;
+  private kg = new Map<Matter.Body, number>();
   private samples: Sample[] = [];
   private yMax = 0;
+  /** Screen seconds since the drawing started (the period meter works in screen time). */
   private time = 0;
   private period = new PeriodMeter();
-  private speed = 0;
   private lastG = NaN;
 
   constructor(after: HTMLElement) {
@@ -50,6 +65,7 @@ export class LiveGraph {
         <div class="lg-metric">
           <span class="lg-metric-label"></span>
           <span class="lg-metric-value">--</span>
+          <span class="lg-theory" hidden></span>
         </div>
         <label class="lg-moon">
           <span class="lg-moon-text">Moon mode<span class="lg-g"></span></span>
@@ -68,6 +84,7 @@ export class LiveGraph {
     this.ctx = this.canvas.getContext('2d')!;
     this.metricLabel = this.root.querySelector('.lg-metric-label')!;
     this.metricValue = this.root.querySelector('.lg-metric-value')!;
+    this.theoryLabel = this.root.querySelector('.lg-theory')!;
     this.moon = this.root.querySelector('input')!;
     this.gLabel = this.root.querySelector('.lg-g')!;
     this.moon.addEventListener('change', () => {
@@ -79,11 +96,15 @@ export class LiveGraph {
   attach(sim: Simulation, diagram: DiagramType) {
     this.sim = sim;
     this.diagram = diagram;
+    this.scale = scaleOf(sim.scene);
+    this.kg = massesOf(sim.scene);
     this.samples = [];
     this.yMax = 0;
     this.time = 0;
-    this.speed = 0;
-    this.period.reset();
+    // Released from rest = the start is a turning point. A spring (or a pendulum drawn hanging straight) starts
+    // with a push through the middle instead, so its first gap to a turning point is only a quarter swing.
+    const main = mainBody(Matter.Composite.allBodies(sim.engine.world).filter((b) => !b.isStatic));
+    this.period.reset(!main || Math.hypot(main.velocity.x, main.velocity.y) < PeriodMeter.MIN_V);
     this.lastG = NaN;
     this.root.hidden = false;
     this.metricLabel.textContent = this.measuresPeriod() ? 'Period' : 'Speed';
@@ -91,7 +112,32 @@ export class LiveGraph {
     // If Moon mode was on for the previous drawing, keep it on for the new one.
     if (this.moon.checked) sim.setParams({ gravity: MOON_G });
     this.syncGravity();
+    this.showTheory();
     sim.stepListeners.push((engine) => this.onStep(sim, engine));
+  }
+
+  /**
+   * The textbook period next to the measured one: pendulum 2π√(L/g) with the drawn string length, spring
+   * 2π√(m/k) with the simulated k. Follows gravity changes (slider, Moon mode).
+   */
+  private showTheory() {
+    const sim = this.sim;
+    let text = '';
+    if (sim && this.diagram === 'pendulum' && sim.scene.label === 'Pendulum' && sim.scene.measures?.string) {
+      const L = meters(sim.scene.measures.string, this.scale);
+      const g = sim.gravity;
+      text = `Theory 2π√(L/g) = ${g > 0 ? formatSeconds(2 * Math.PI * Math.sqrt(L / g)) : '--'}`;
+    } else if (sim && this.diagram === 'spring' && sim.scene.label === 'Spring and mass') {
+      const c = sim.scene.constraints[0];
+      const block = sim.scene.parts?.block;
+      if (c && block) {
+        const m = block.kg ?? DEFAULT_KG;
+        const k = springK(c.stiffness, m, this.scale);
+        text = `Theory 2π√(m/k) = ${formatSeconds(2 * Math.PI * Math.sqrt(m / k))}`;
+      }
+    }
+    this.theoryLabel.textContent = text;
+    this.theoryLabel.hidden = !text;
   }
 
   private measuresPeriod() {
@@ -109,6 +155,7 @@ export class LiveGraph {
     this.moon.checked = isMoon;
     document.body.classList.toggle('lg-moon-on', isMoon);
     this.gLabel.textContent = `g = ${g.toFixed(g < 10 ? 2 : 1)} m/s²`;
+    if (changed) this.showTheory();
     // Old periods were measured under the old gravity. Until the next half swing is measured, show
     // a provisional estimate: a pendulum's period goes as 1/sqrt(g); a spring's does not depend on g.
     if (changed && this.measuresPeriod()) {
@@ -119,9 +166,11 @@ export class LiveGraph {
     }
   }
 
+  /** Measured period, converted from screen seconds to physical seconds. */
   private showPeriod() {
     const p = this.period.value();
-    this.metricValue.textContent = !p ? '--' : p.provisional ? `~${p.period.toFixed(1)} s` : `${p.period.toFixed(2)} s`;
+    const T = p ? physSeconds(p.period, this.scale) : 0;
+    this.metricValue.textContent = !p ? '--' : p.provisional ? `~${T.toFixed(T < 1 ? 2 : 1)} s` : formatSeconds(T);
   }
 
   private onStep(sim: Simulation, engine: Matter.Engine) {
@@ -131,27 +180,28 @@ export class LiveGraph {
     const g = sim.gravity;
     const bodies = Matter.Composite.allBodies(engine.world).filter((b) => !b.isStatic);
 
+    // Joules: written or assumed (1 kg) masses, speeds and heights in metres through the scene's scale.
     let ke = 0;
     let pe = 0;
-    let fastest = 0;
     for (const b of bodies) {
-      const v = (Math.hypot(b.velocity.x, b.velocity.y) / STEP_S) / PX_PER_M; // m/s
-      const h = (sim.worldH - b.position.y) / PX_PER_M; // m above the bottom edge
-      ke += 0.5 * b.mass * v * v;
-      pe += b.mass * g * h;
-      fastest = Math.max(fastest, v);
+      const kg = this.kg.get(b) ?? DEFAULT_KG;
+      const v = mps(Math.hypot(b.velocity.x, b.velocity.y), this.scale);
+      const h = meters(sim.worldH - b.position.y, this.scale); // above the bottom edge
+      ke += 0.5 * kg * v * v;
+      pe += kg * g * h;
     }
-    pe += springEnergy(engine);
+    pe += springEnergy(engine, this.scale, this.kg);
     this.samples.push({ ke, pe });
     if (this.samples.length > MAX_SAMPLES) this.samples.shift();
 
     if (this.measuresPeriod()) {
-      const main = bodies.reduce<Matter.Body | null>((a, b) => (!a || b.mass > a.mass ? b : a), null);
+      const main = mainBody(bodies);
       if (main) this.period.push(this.time, main);
       this.showPeriod();
     } else {
-      this.speed += (fastest - this.speed) * 0.15;
-      this.metricValue.textContent = `${this.speed.toFixed(1)} m/s`;
+      // Same tracker, same body, same conversion and formatter as the velocity arrow's number.
+      const f = sim.motion.fastest();
+      this.metricValue.textContent = f ? formatSpeed(mps(Math.hypot(f.track.vx, f.track.vy), this.scale)) : '--';
     }
     this.draw();
   }
@@ -200,12 +250,14 @@ export class LiveGraph {
     ctx.textAlign = 'right';
     ctx.fillText('now', right, cssH - 4);
     ctx.textAlign = 'left';
-    ctx.fillText(`-${WINDOW_S} s`, left, cssH - 4);
+    // The window is 8 s on screen; the axis is in physical time like every other readout.
+    const span = physSeconds(WINDOW_S, this.scale);
+    ctx.fillText(`-${span < 10 ? span.toFixed(1) : span.toFixed(0)} s`, left, cssH - 4);
     ctx.save();
     ctx.translate(13, top + h / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.textAlign = 'center';
-    ctx.fillText('Energy', 0, 0);
+    ctx.fillText('Energy (J)', 0, 0);
     ctx.restore();
 
     const n = this.samples.length;
@@ -227,6 +279,16 @@ export class LiveGraph {
     plot(ORANGE, (s) => s.pe);
     plot(BLUE, (s) => s.ke);
     plot(GREEN, (s) => s.ke + s.pe);
+    // Top of the scale, so the joules can be read off; on a white halo above the curves.
+    ctx.font = '800 11px Nunito, system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#fff';
+    ctx.strokeText(formatEnergy(yMax), left + 6, top + 2);
+    ctx.fillStyle = '#999';
+    ctx.fillText(formatEnergy(yMax), left + 6, top + 2);
   }
 }
 
@@ -237,6 +299,8 @@ export class LiveGraph {
  * provisional reading appears after one half swing; it is confirmed after two and then averaged.
  */
 class PeriodMeter {
+  /** px/step: slower than this along the swing axis is jitter around rest. */
+  static readonly MIN_V = 0.03;
   private xs: number[] = [];
   private ys: number[] = [];
   private prevV = 0;
@@ -248,15 +312,15 @@ class PeriodMeter {
   /** Shown (as provisional) until a half swing is measured, e.g. the Earth period scaled to the Moon. */
   private guess: number | null = null;
 
-  /** A new drawing: the body is released from rest, so the release counts as the first turning point. */
-  reset() {
+  /** A new drawing. Released from rest: the release counts as the first turning point; pushed: it does not. */
+  reset(fromRest = true) {
     this.xs = [];
     this.ys = [];
     this.prevV = 0;
     this.sign = 0;
     this.lastFlip = NaN;
     this.halves = [];
-    this.fromRest = true;
+    this.fromRest = fromRest;
     this.guess = null;
   }
 
@@ -282,7 +346,7 @@ class PeriodMeter {
     // Swing axis = whichever coordinate moves more (x for a pendulum, along the spring for a spring).
     const useX = range(this.xs) >= range(this.ys);
     const v = useX ? body.velocity.x : body.velocity.y;
-    const minV = 0.03; // px/step: ignore jitter around rest
+    const minV = PeriodMeter.MIN_V;
     const s = v > minV ? 1 : v < -minV ? -1 : 0;
     if (s !== 0 && this.sign !== 0 && s !== this.sign) {
       // Interpolate the exact zero crossing between the two steps.
@@ -312,24 +376,29 @@ class PeriodMeter {
   }
 }
 
-/** Matter 0.20 (2 constraint iterations): a soft constraint acts like k ≈ 6.6 × stiffness × mass per step². */
-const SPRING_K_PER_STIFFNESS = 6.6;
-
-/** Elastic energy stored in soft constraints (drawn springs), in the same units as KE / PE. */
-function springEnergy(engine: Matter.Engine): number {
+/**
+ * Elastic energy stored in soft constraints (drawn springs), in joules: ½ k x² with the physical k that the
+ * constraint has for the body's mass (units.ts: ω² ≈ OMEGA2_PER_STIFFNESS × stiffness per step²).
+ */
+function springEnergy(engine: Matter.Engine, scale: Scale, kg: Map<Matter.Body, number>): number {
   let e = 0;
   for (const c of Matter.Composite.allConstraints(engine.world)) {
     if (c.stiffness >= 0.1) continue; // rigid ropes / pins store no energy
     const ends = [c.bodyA, c.bodyB].filter((b): b is Matter.Body => !!b && !b.isStatic);
     if (!ends.length) continue;
-    const m = ends.length === 2 ? (ends[0].mass * ends[1].mass) / (ends[0].mass + ends[1].mass) : ends[0].mass;
+    const ms = ends.map((b) => kg.get(b) ?? DEFAULT_KG);
+    const m = ms.length === 2 ? (ms[0] * ms[1]) / (ms[0] + ms[1]) : ms[0];
     const a = Matter.Constraint.pointAWorld(c);
     const b = Matter.Constraint.pointBWorld(c);
-    const stretch = (Math.hypot(b.x - a.x, b.y - a.y) - c.length) / PX_PER_M; // m
-    const k = (SPRING_K_PER_STIFFNESS * c.stiffness * m) / (STEP_S * STEP_S); // per s²
-    e += 0.5 * k * stretch * stretch;
+    const stretch = meters(Math.hypot(b.x - a.x, b.y - a.y) - c.length, scale);
+    e += 0.5 * springK(c.stiffness, m, scale) * stretch * stretch;
   }
   return e;
+}
+
+/** The body whose swing is timed: the heaviest moving one (the bob, the spring's block). */
+function mainBody(bodies: Matter.Body[]): Matter.Body | null {
+  return bodies.reduce<Matter.Body | null>((a, b) => (!a || b.mass > a.mass ? b : a), null);
 }
 
 function range(a: number[]) {
@@ -368,6 +437,8 @@ function injectStyle() {
   .lg-moon input { position: absolute; opacity: 0; pointer-events: none; }
   .lg-moon-text { display: flex; flex-direction: column; align-items: flex-end; font-weight: 800; font-size: 15px; color: #3c3c3c; }
   .lg-g { font-size: 12px; font-weight: 700; color: #777; }
+  .lg-theory { margin-top: 2px; font-size: 12px; font-weight: 800; color: #1899d6; font-variant-numeric: tabular-nums; }
+  .lg-theory[hidden] { display: none; }
   .lg-switch { position: relative; width: 52px; height: 30px; border-radius: 999px; background: #e5e5e5; transition: background 0.2s; flex-shrink: 0; }
   .lg-switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; box-shadow: 0 2px 0 rgba(0,0,0,0.12); transition: transform 0.2s; }
   .lg-moon input:checked + .lg-switch { background: #1cb0f6; }

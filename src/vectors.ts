@@ -1,30 +1,19 @@
 // Velocity arrows: one arrow per moving body of the drawing, from its centre in the direction it moves.
-// Length is strictly proportional to speed, with one factor for every scene, so arrows can be compared.
+// Length is strictly proportional to the on-screen speed (the same look in every scene); the number is the
+// physical speed (units.ts). Both come from the Simulation's MotionTracker, the same values the graph's Speed
+// reads, so the arrow and the card always print the same number in the same frame.
 
-import type Matter from 'matter-js';
-import { STEP_ACCEL, STEP_MS, type Simulation } from './sim';
+import type { Simulation } from './sim';
 import type { BuiltScene } from './types';
+import { formatSpeed, mps, scaleOf, STEP_S } from './units';
 import { WORK_SIZE } from './vision';
 
 /**
- * Arrow length per unit speed, in working-image px per (m/s): 1 m/s = 1/20 of the 960 px picture (48 px).
- * A typical pendulum (~2 m/s) gets a ~100 px arrow, a fast cannon ball (~7 m/s) about a third of the picture.
+ * Arrow length per on-screen speed: the tip is where the body would be this many screen seconds later.
+ * 0.47 s keeps the look from before physical units (1 "m/s" = 1/20 of the 960 px picture at 1000/9.8 px/m):
+ * a typical pendulum gets a ~100 px arrow, a fast cannon ball about a third of the picture.
  */
-export const ARROW_PX_PER_MPS = WORK_SIZE / 20;
-const STEP_S = STEP_MS / 1000;
-/** Same conversion as the graph: 9.8 m/s² is STEP_ACCEL px/step², so 1 m = 1000 / 9.8 px. */
-const PX_PER_M = STEP_ACCEL / (STEP_S * STEP_S) / 9.8;
-/** Hysteresis on speed (m/s) so a body at rest does not flicker an arrow on and off. */
-const SHOW_MPS = 0.12;
-const HIDE_MPS = 0.08;
-/**
- * Light smoothing of the velocity vector (weight of the newest frame), only while slow: that is where
- * contact jitter would make a tiny arrow twitch. Above SMOOTH_BELOW_MPS the arrow is the exact velocity.
- */
-const SMOOTH = 0.5;
-const SMOOTH_BELOW_MPS = 0.5;
-/** A jump larger than this (world px in one frame) is a reset/relaunch: drop the smoothing history. */
-const JUMP_PX = 60;
+export const ARROW_SECONDS = WORK_SIZE / 20 / (1000 / 9.8);
 
 const COLOR = '#ff4b4b';
 /** Sizes in CSS px, converted to world px each frame so they look the same on any screen. */
@@ -34,15 +23,7 @@ const HEAD_LEN_CSS = 13;
 const HEAD_HALF_W_CSS = 8;
 const LABEL_CSS = 12;
 
-interface Track {
-  vx: number; // px/step, smoothed
-  vy: number;
-  x: number;
-  y: number;
-  shown: boolean;
-}
-
-/** One drawn arrow (exposed for tests). Lengths in world px, speed in m/s. */
+/** One drawn arrow (exposed for tests). Lengths in world px, speeds in m/s, `text` = the printed number. */
 export interface ArrowSample {
   x: number;
   y: number;
@@ -50,23 +31,28 @@ export interface ArrowSample {
   vy: number;
   speed: number;
   length: number;
+  text: string;
+  /** Where the number was printed: centre and size in world px. */
+  label?: { x: number; y: number; w: number; h: number };
 }
+
+type Box = { x: number; y: number; w: number; h: number };
 
 export class VelocityArrows {
   enabled = true;
-  private tracks = new Map<Matter.Body, Track>();
   private sim: Simulation | null = null;
   private input: HTMLInputElement | null = null;
   /** Arrows drawn in the last frame. */
   last: ArrowSample[] = [];
+  /** Boxes (world px, this frame) the numbers should stay off when they can, e.g. the value labels. */
+  avoid: () => Box[] = () => [];
 
   /** Hook into a freshly started simulation. */
   attach(sim: Simulation) {
     this.sim = sim;
-    this.tracks.clear();
     this.last = [];
     sim.drawListeners.push((ctx, scene, s) => {
-      if (this.sim === sim) this.draw(ctx, scene, s);
+      if (this.sim === sim) this.draw(sim, ctx, scene, s);
     });
   }
 
@@ -97,50 +83,23 @@ export class VelocityArrows {
     if (this.input) this.input.checked = on;
   }
 
-  /** Bodies the user sees moving: the ones a sprite of the drawing follows, never static ones. */
-  private movingBodies(scene: BuiltScene): Matter.Body[] {
-    const out: Matter.Body[] = [];
-    for (const sp of scene.sprites) {
-      const f = sp.follow;
-      if (f.kind === 'stretch') continue;
-      if (f.body.isStatic || out.includes(f.body)) continue;
-      out.push(f.body);
-    }
-    return out;
-  }
-
-  private draw(ctx: CanvasRenderingContext2D, scene: BuiltScene, pxScale: number) {
-    const bodies = this.movingBodies(scene);
+  private draw(sim: Simulation, ctx: CanvasRenderingContext2D, scene: BuiltScene, pxScale: number) {
     const samples: ArrowSample[] = [];
+    const scale = scaleOf(scene);
     // World px per CSS px.
     const css = (window.devicePixelRatio || 1) / pxScale;
-    for (const b of bodies) {
+    for (const b of sim.motion.bodies) {
+      const t = sim.motion.get(b);
+      if (!t || !t.shown || !this.enabled) continue;
+      const v = Math.hypot(t.vx, t.vy); // px per step
+      const length = (v / STEP_S) * ARROW_SECONDS;
+      const speed = mps(v, scale);
+      const text = formatSpeed(speed);
+      const ux = t.vx / v, uy = t.vy / v;
       const p = b.position;
-      let t = this.tracks.get(b);
-      if (!t || Math.hypot(p.x - t.x, p.y - t.y) > JUMP_PX) {
-        t = { vx: b.velocity.x, vy: b.velocity.y, x: p.x, y: p.y, shown: false };
-        this.tracks.set(b, t);
-      } else {
-        // Smooth only when it was slow and still is, so a sudden stop (landing, end of the ramp) is exact too.
-        const raw = Math.hypot(b.velocity.x, b.velocity.y) / STEP_S / PX_PER_M;
-        const prev = Math.hypot(t.vx, t.vy) / STEP_S / PX_PER_M;
-        // A reversal (turning point of a swing or spring) is shown at once, never averaged towards zero.
-        const sameWay = b.velocity.x * t.vx + b.velocity.y * t.vy > 0;
-        const k = sameWay && Math.max(raw, prev) < SMOOTH_BELOW_MPS ? SMOOTH : 1;
-        t.vx += (b.velocity.x - t.vx) * k;
-        t.vy += (b.velocity.y - t.vy) * k;
-        t.x = p.x;
-        t.y = p.y;
-      }
-      const speed = Math.hypot(t.vx, t.vy) / STEP_S / PX_PER_M; // m/s
-      t.shown = speed >= (t.shown ? HIDE_MPS : SHOW_MPS);
-      if (!t.shown || !this.enabled) continue;
-      const length = speed * ARROW_PX_PER_MPS;
-      const ux = t.vx / Math.hypot(t.vx, t.vy);
-      const uy = t.vy / Math.hypot(t.vx, t.vy);
-      samples.push({ x: p.x, y: p.y, vx: (t.vx / STEP_S) / PX_PER_M, vy: (-t.vy / STEP_S) / PX_PER_M, speed, length });
       drawArrow(ctx, p.x, p.y, ux, uy, length, css);
-      drawLabel(ctx, p.x + ux * length, p.y + uy * length, ux, uy, speed, css);
+      const label = drawLabel(ctx, p.x, p.y, ux, uy, length, text, css, this.avoid());
+      samples.push({ x: p.x, y: p.y, vx: mps(t.vx, scale), vy: mps(-t.vy, scale), speed, length, text, label });
     }
     this.last = samples;
   }
@@ -190,28 +149,99 @@ function drawArrow(ctx: CanvasRenderingContext2D, x: number, y: number, ux: numb
   ctx.stroke();
 }
 
-function drawLabel(ctx: CanvasRenderingContext2D, tipX: number, tipY: number, ux: number, uy: number, speed: number, css: number) {
-  const text = `${speed.toFixed(1)} m/s`;
+/** True if the segment a-b passes through the box [x0, x1] × [y0, y1] (Liang-Barsky clipping). */
+function segmentHitsBox(ax: number, ay: number, bx: number, by: number, x0: number, y0: number, x1: number, y1: number) {
+  let t0 = 0, t1 = 1;
+  const dx = bx - ax, dy = by - ay;
+  const clip = (p: number, q: number) => {
+    if (p === 0) return q >= 0;
+    const r = q / p;
+    if (p < 0) {
+      if (r > t1) return false;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return false;
+      if (r < t1) t1 = r;
+    }
+    return true;
+  };
+  return clip(-dx, ax - x0) && clip(dx, x1 - ax) && clip(-dy, ay - y0) && clip(dy, y1 - ay) && t0 <= t1;
+}
+
+/**
+ * The speed just past the tip, on the side the arrow points to. When that would leave the picture (a block at the
+ * edge, a ball flying out), the number moves beside the visible part of the arrow, or behind the body: always on
+ * the picture and never on top of the arrow line, and off the value labels (`avoid`) whenever there is room.
+ */
+function drawLabel(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  ux: number,
+  uy: number,
+  len: number,
+  text: string,
+  css: number,
+  avoid: Box[],
+): { x: number; y: number; w: number; h: number } {
   const size = LABEL_CSS * css;
   ctx.font = `800 ${size}px Nunito, "Avenir Next", system-ui, sans-serif`;
-  const w = ctx.measureText(text).width;
-  // Just past the tip, on the side the arrow points to.
+  const w = ctx.measureText(text).width + 4 * css; // + the white text outline
+  const h = size + 2 * css;
   const gap = 8 * css;
-  // The arrow keeps its true length even past the edge, but the number always stays readable on the picture.
+  const pad = 4 * css;
   const worldW = ctx.canvas.width / ctx.getTransform().a;
   const worldH = ctx.canvas.height / ctx.getTransform().d;
-  const pad = 4 * css;
+  // Half the label's size measured along a direction: how far its centre must sit from a line to clear it.
+  const ext = (dx: number, dy: number) => (Math.abs(dx) * w) / 2 + (Math.abs(dy) * h) / 2;
+  const tipX = x + ux * len, tipY = y + uy * len;
+  const nx = -uy, ny = ux;
+  const inside = (cx: number, cy: number) =>
+    cx - w / 2 >= pad && cx + w / 2 <= worldW - pad && cy - h / 2 >= pad && cy + h / 2 <= worldH - pad;
+  // Centre line to the outer edge of the shaft's white outline, and of the head's.
+  const shaftClear = (SHAFT_CSS / 2 + OUTLINE_CSS) * css;
+  const headClear = (HEAD_HALF_W_CSS + OUTLINE_CSS) * css;
+  const clearOfArrow = (cx: number, cy: number) =>
+    !segmentHitsBox(x, y, tipX, tipY, cx - w / 2 - shaftClear, cy - h / 2 - shaftClear, cx + w / 2 + shaftClear, cy + h / 2 + shaftClear);
+
+  const cands: [number, number][] = [];
+  const along = gap + ext(ux, uy);
+  const further = 2 * ext(ux, uy) + gap;
+  cands.push([tipX + ux * along, tipY + uy * along]);
+  // Beside the arrow (clear of the head too), from the tip back to the body; the side facing up first.
+  const side = 4 * css + headClear + ext(nx, ny);
+  const sides = ny <= 0 ? [1, -1] : [-1, 1];
+  for (let k = 0; k <= 8; k++) {
+    const t = len * (1 - k / 8);
+    for (const s of sides) cands.push([x + ux * t + s * nx * side, y + uy * t + s * ny * side]);
+  }
+  cands.push([x - ux * along, y - uy * along]);
+  // A step or two further out, ahead of the tip and behind the body (for tight corners).
+  for (const k of [1, 2]) {
+    cands.push([tipX + ux * (along + k * further), tipY + uy * (along + k * further)]);
+    cands.push([x - ux * (along + k * further), y - uy * (along + k * further)]);
+  }
+  const offLabels = (cx: number, cy: number) =>
+    !avoid.some((b) => cx - w / 2 < b.x + b.w && b.x < cx + w / 2 && cy - h / 2 < b.y + b.h && b.y < cy + h / 2);
   const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), Math.max(lo, hi));
-  const cx = clamp(tipX + ux * (gap + w / 2), w / 2 + pad, worldW - w / 2 - pad);
-  const cy = clamp(tipY + uy * (gap + size / 2), size / 2 + pad, worldH - size / 2 - pad);
+  // Near the edge: the same spots slid onto the picture.
+  const slid = cands.map(([cx, cy]): [number, number] => [clamp(cx, w / 2 + pad, worldW - w / 2 - pad), clamp(cy, h / 2 + pad, worldH - h / 2 - pad)]);
+  let pick =
+    cands.find(([cx, cy]) => inside(cx, cy) && clearOfArrow(cx, cy) && offLabels(cx, cy)) ??
+    slid.find(([cx, cy]) => clearOfArrow(cx, cy) && offLabels(cx, cy)) ??
+    cands.find(([cx, cy]) => inside(cx, cy) && clearOfArrow(cx, cy)) ??
+    slid.find(([cx, cy]) => clearOfArrow(cx, cy));
+  // Nowhere fits (tiny picture): the usual spot, kept on the picture.
+  if (!pick) pick = slid[0];
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
   ctx.lineWidth = 4 * css;
   ctx.strokeStyle = '#fff';
-  ctx.strokeText(text, cx, cy);
+  ctx.strokeText(text, pick[0], pick[1]);
   ctx.fillStyle = COLOR;
-  ctx.fillText(text, cx, cy);
+  ctx.fillText(text, pick[0], pick[1]);
+  return { x: pick[0], y: pick[1], w, h };
 }
 
 let styled = false;

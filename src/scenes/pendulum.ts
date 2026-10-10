@@ -4,6 +4,7 @@ import Matter from 'matter-js';
 import type { Point, SceneBuilder } from '../types';
 import { contourMask, cutSprite, deepestPoint, eraseFromPaper, roleOf } from './common';
 import { STEP_ACCEL } from '../sim';
+import { DEFAULT_KG, noteFor } from '../units';
 
 const STIFFNESS = 1;
 const DAMPING = 0;
@@ -49,6 +50,7 @@ export const buildPendulum: SceneBuilder = (input) => {
     Matter.Body.setVelocity(body, { x: v, y: 0 });
   }
 
+  const kg = noteFor(input.analysis, 'mass', ['bob', 'block', 'ball'])?.value;
   return {
     bodies: [body],
     constraints: [rope],
@@ -60,6 +62,12 @@ export const buildPendulum: SceneBuilder = (input) => {
     ],
     background: eraseFromPaper(input, [swing]),
     label: 'Pendulum',
+    // L in 2π√(L/g) is pivot to bob centre.
+    measures: { string: length },
+    parts: {
+      string: { at: () => ({ x: (pivot.x + body.position.x) / 2, y: (pivot.y + body.position.y) / 2 }) },
+      bob: { at: () => body.position, clear: bobRadius, body, kg: kg ?? DEFAULT_KG, kgFrom: kg ? 'note' : 'assumed' },
+    },
   };
 };
 

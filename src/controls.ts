@@ -22,11 +22,28 @@ export interface ParamSpec extends VoiceParamSpec {
 
 const GRAVITY: ParamSpec = { key: 'gravity', label: 'Gravity', min: 0, max: 25, step: 0.1, value: 9.8, unit: 'm/s²', digits: 1 };
 
-/** Which extra sliders each diagram gets. Only parameters the scene actually reads. */
+/**
+ * Which extra sliders each diagram gets. Only parameters the scene actually reads. The launch speed is in m/s;
+ * its range and starting value come from the drawing (see `tune` in show()), these are only placeholders.
+ */
 const SCENE_PARAMS: Partial<Record<DiagramType, ParamSpec[]>> = {
   incline: [{ key: 'friction', label: 'Friction', min: 0, max: 1.5, step: 0.05, value: 0.3, digits: 2, replay: true }],
-  projectile: [{ key: 'speed', label: 'Launch speed', min: 2, max: 25, step: 0.5, value: 10, digits: 1, rebuild: true }],
+  projectile: [{ key: 'speed', label: 'Launch speed', min: 0.5, max: 10, step: 0.1, value: 3, unit: 'm/s', digits: 1, rebuild: true }],
 };
+
+/** Per-drawing slider settings (range, step, starting value), e.g. a launch speed range around the fitted speed. */
+export type SliderTune = Partial<Record<string, Partial<Pick<ParamSpec, 'min' | 'max' | 'step' | 'digits' | 'value'>>>>;
+
+/** Launch speed slider for a drawing: 0.2× to 2.5× the speed that lands inside the picture (and the written one). */
+export function launchSpeedTune(fit: number, value: number): SliderTune {
+  const lo = Math.min(fit, value) * 0.2;
+  const hi = Math.max(fit, value) * 2.5;
+  const step = 10 ** Math.floor(Math.log10(hi / 50));
+  const digits = Math.max(0, -Math.round(Math.log10(step)));
+  const min = Math.max(step, Math.floor(lo / step) * step);
+  const max = Math.ceil(hi / step) * step;
+  return { speed: { min: +min.toFixed(digits), max: +max.toFixed(digits), step, digits, value: +value.toFixed(digits + 1) } };
+}
 
 /** Pause after the last friction tick before the slide replays (long enough to see the live change). */
 const REPLAY_MS = 400;
@@ -221,10 +238,16 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
   });
 
   return {
-    /** Show the controls for a freshly built scene. Keeps values the user already chose. */
-    show(diagram: DiagramType, params: Partial<SimParams>) {
-      specs = specsFor(diagram);
-      for (const s of specs) values[s.key] = Number.isFinite(params[s.key]) ? (params[s.key] as number) : (values[s.key] ?? s.value);
+    /**
+     * Show the controls for a freshly built scene. Keeps values the user already chose, except where the drawing
+     * sets its own slider (`tune`, e.g. a launch speed in this drawing's m/s).
+     */
+    show(diagram: DiagramType, params: Partial<SimParams>, tune: SliderTune = {}) {
+      specs = specsFor(diagram).map((s) => (tune[s.key] ? { ...s, ...tune[s.key] } : s));
+      for (const s of specs) {
+        const own = tune[s.key]?.value;
+        values[s.key] = Number.isFinite(params[s.key]) ? (params[s.key] as number) : own ?? values[s.key] ?? s.value;
+      }
       render();
       root.hidden = false;
     },

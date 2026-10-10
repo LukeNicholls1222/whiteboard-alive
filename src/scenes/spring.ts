@@ -3,16 +3,23 @@
 // the zigzag cut-out stretches and squashes between its two ends.
 
 import Matter from 'matter-js';
-import type { BBox, Contour, Point, SceneBuilder, SceneInput, Sprite } from '../types';
+import type { BBox, Contour, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
 import { contourMask, cutSprite, deepestPoint, eraseFromPaper, maskBounds, roleOf } from './common';
 import { STEP_ACCEL, STEP_MS } from '../sim';
+import { DEFAULT_KG, noteFor, scaleFor, stiffnessFor } from '../units';
 
-// Fixed per diagram type; never chosen by the AI.
+// Fixed per diagram type; never chosen by the AI (a handwritten k may move it within the stable range below).
 const STIFFNESS = 0.0015;
 const DAMPING = 0;
 const FRICTION_AIR = 0.001;
 /** Measured for Matter 0.20 (2 constraint iterations): omega² per step² ≈ 6.6 × stiffness. Period ≈ 1 s here. */
-const OMEGA2 = 6.6 * STIFFNESS;
+const OMEGA2_PER_STIFFNESS = 6.6;
+/**
+ * Engine stiffness allowed for a handwritten k: screen period about 0.4-2.9 s. Matter stays stable well past both
+ * ends; softer would make a hanging block sag far below the drawing, stiffer would blur into a buzz.
+ */
+const MIN_STIFFNESS = 0.0002;
+const MAX_STIFFNESS = 0.01;
 /** Oscillation amplitude as a fraction of the drawn spring length (clamped below). */
 const KICK_FRACTION = 0.25;
 const KICK_MIN_PX = 12;
@@ -302,6 +309,22 @@ export const buildSpring: SceneBuilder = (input) => {
 
   const L0 = Math.hypot(attach.x - anchor.x, attach.y - anchor.y);
   const dir = { x: (attach.x - anchor.x) / L0, y: (attach.y - anchor.y) / L0 };
+
+  // A handwritten k (with the block's written or assumed mass) sets the stiffness so the screen period is the
+  // physical 2π√(m/k) played at this drawing's slow-motion factor, kept inside the stable range.
+  const kg = noteFor(input.analysis, 'mass', ['block', 'bob', 'ball'])?.value;
+  const kNote = noteFor(input.analysis, 'spring_constant')?.value;
+  // The drawn spring length is its size on paper (for a hanging spring that is the stretched, at-rest length).
+  const measures = haveSpringSprite ? { spring: L0 } : {};
+  let stiffness = STIFFNESS;
+  let kFrom: ValueSource = 'assumed';
+  if (kNote) {
+    const want = stiffnessFor(kNote, kg ?? DEFAULT_KG, scaleFor(input, measures));
+    stiffness = Math.min(MAX_STIFFNESS, Math.max(MIN_STIFFNESS, want));
+    kFrom = stiffness === want ? 'note' : 'adjusted';
+  }
+  const OMEGA2 = OMEGA2_PER_STIFFNESS * stiffness;
+
   // Rest length chosen so the drawing is the equilibrium under normal gravity (a hanging spring doesn't just sag).
   const restLength = Math.max(0.3 * L0, L0 - (STEP_ACCEL * dir.y) / OMEGA2);
   const spring = Matter.Constraint.create({
@@ -309,7 +332,7 @@ export const buildSpring: SceneBuilder = (input) => {
     bodyB: body,
     pointB: { x: attach.x - body.position.x, y: attach.y - body.position.y },
     length: restLength,
-    stiffness: STIFFNESS,
+    stiffness,
     damping: DAMPING,
   });
 
@@ -362,6 +385,7 @@ export const buildSpring: SceneBuilder = (input) => {
   }
   sprites.push({ ...cutSprite(input, massMask), follow: { kind: 'body', body, origin: { ...body.position }, originAngle: body.angle } });
 
+  const block = body;
   return {
     bodies: [body, ...rails],
     constraints: [spring],
@@ -369,5 +393,22 @@ export const buildSpring: SceneBuilder = (input) => {
     background: eraseFromPaper(input, masks),
     label: 'Spring and mass',
     step,
+    measures,
+    parts: {
+      spring: {
+        at: () => {
+          const end = Matter.Constraint.pointBWorld(spring);
+          return { x: (anchor.x + end.x) / 2, y: (anchor.y + end.y) / 2 };
+        },
+      },
+      block: {
+        at: () => block.position,
+        clear: Math.max(bb.max.x - bb.min.x, bb.max.y - bb.min.y) / 2,
+        body: block,
+        kg: kg ?? DEFAULT_KG,
+        kgFrom: kg ? 'note' : 'assumed',
+      },
+    },
+    physics: { springK: { from: kFrom, note: kNote } },
   };
 };

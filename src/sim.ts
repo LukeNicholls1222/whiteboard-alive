@@ -2,19 +2,21 @@
 
 import Matter from 'matter-js';
 import decomp from 'poly-decomp';
+import { MotionTracker } from './motion';
 import type { BuiltScene, SimParams, Sprite } from './types';
+import { BASE_SCALE, STEP_MS } from './units';
+
+// The step constants live in units.ts (a leaf module); re-exported here for the scene builders.
+export { STEP_ACCEL, STEP_MS } from './units';
 
 Matter.Common.setDecomp(decomp);
-
-export const STEP_MS = 1000 / 60;
-const BASE_SCALE = 0.001;
-/** Gravity acceleration at 9.8 m/s² in px per step², as Matter integrates it. */
-export const STEP_ACCEL = BASE_SCALE * STEP_MS * STEP_MS;
 
 export class Simulation {
   engine = Matter.Engine.create();
   private raf = 0;
   private ctx: CanvasRenderingContext2D;
+  /** Smoothed velocities of the moving bodies, updated right after every step (arrows and graph share it). */
+  readonly motion: MotionTracker;
   /** Called after every physics step (graphs, readouts). */
   stepListeners: Array<(engine: Matter.Engine) => void> = [];
   /** Called after every setParams, whoever made the change (slider, chip, voice, Moon switch). */
@@ -24,12 +26,13 @@ export class Simulation {
 
   constructor(
     private canvas: HTMLCanvasElement,
-    private scene: BuiltScene,
+    readonly scene: BuiltScene,
     private worldW: number,
     readonly worldH: number,
   ) {
     this.ctx = canvas.getContext('2d')!;
     Matter.Composite.add(this.engine.world, [...scene.bodies, ...scene.constraints]);
+    this.motion = new MotionTracker(scene);
   }
 
   setParams(p: Partial<SimParams>) {
@@ -53,6 +56,7 @@ export class Simulation {
       this.scene.step?.(this.engine);
       Matter.Engine.update(this.engine, STEP_MS);
       this.scene.onStep?.(this.engine);
+      this.motion.update();
       for (const fn of this.stepListeners) fn(this.engine);
       this.draw();
       this.raf = requestAnimationFrame(loop);
