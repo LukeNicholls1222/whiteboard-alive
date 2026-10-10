@@ -46,23 +46,86 @@ export function usesClean(scene: BuiltScene): boolean {
 }
 
 /**
- * The whole drawing as the scene starts, in world px: the background, the scene's own hand-drawn parts and every
- * cut-out at its starting pose. Rendered once (before the first step); drawn faint behind the clean figure.
+ * The drawing as the scene starts, in world px, in two layers rendered once (before the first step) and drawn faint
+ * behind the clean figure: `fixed` = the background and the scene's own hand-drawn parts (ceiling, ramp, cannon),
+ * `moving` = every cut-out at its starting pose (transparent elsewhere). The moving layer is what the ghost of
+ * "where it started" is made of; it fades away after the morph (morph.ts ghostAlpha) so a resting bob or box is
+ * not mistaken for a second one.
  */
-export function drawnSnapshot(scene: BuiltScene): HTMLCanvasElement {
+export function drawnSnapshot(scene: BuiltScene): { fixed: HTMLCanvasElement; moving: HTMLCanvasElement } {
   const bg = scene.background;
-  const c = document.createElement('canvas');
-  c.width = bg.width;
-  c.height = bg.height;
-  const ctx = c.getContext('2d')!;
-  ctx.drawImage(bg, 0, 0);
+  const layer = () => {
+    const c = document.createElement('canvas');
+    c.width = bg.width;
+    c.height = bg.height;
+    return c;
+  };
+  const fixed = layer();
+  const fctx = fixed.getContext('2d')!;
+  fctx.drawImage(bg, 0, 0);
   if (scene.drawnOnly) {
-    ctx.save();
-    scene.drawnOnly(ctx);
-    ctx.restore();
+    fctx.save();
+    scene.drawnOnly(fctx);
+    fctx.restore();
   }
-  for (const sp of scene.sprites) drawSprite(ctx, sp);
-  return c;
+  const moving = layer();
+  const mctx = moving.getContext('2d')!;
+  for (const sp of scene.sprites) drawSprite(mctx, sp);
+  return { fixed, moving };
+}
+
+/** A body's tidied outline in world px (what drawBody draws), for the morph to trace. */
+export function bodyOutline(body: Matter.Body): Point[] {
+  const { tidy } = localShape(body);
+  const cos = Math.cos(body.angle), sin = Math.sin(body.angle);
+  return tidy.map((p) => ({ x: body.position.x + p.x * cos - p.y * sin, y: body.position.y + p.x * sin + p.y * cos }));
+}
+
+/**
+ * The path a part is drawn along (world px), for the morph's light to trace, and whether it closes. Null for parts
+ * without a line of their own (pin, image, sprite). Read at morph time, before the physics moves anything.
+ */
+export function partOutline(ctx: CanvasRenderingContext2D, p: CleanPart, px: number): { points: Point[]; closed: boolean } | null {
+  const circle = (c: Point, r: number, n = 28) => {
+    const pts: Point[] = [];
+    // Start at the top and go clockwise on screen, so a traced circle closes where it began.
+    for (let i = 0; i < n; i++) pts.push({ x: c.x + Math.cos(-Math.PI / 2 + (i / n) * Math.PI * 2) * r, y: c.y + Math.sin(-Math.PI / 2 + (i / n) * Math.PI * 2) * r });
+    return pts;
+  };
+  switch (p.kind) {
+    case 'body':
+      return { points: bodyOutline(p.body), closed: true };
+    case 'ball':
+      return { points: circle(p.body.position, Math.max(p.radius, (p.minCss ?? 0) * px)), closed: true };
+    case 'wheel':
+      return { points: circle(p.center, p.radius), closed: true };
+    case 'rope':
+      return { points: [p.from(), p.to()], closed: false };
+    case 'arc': {
+      const pts: Point[] = [];
+      const n = 14;
+      for (let i = 0; i <= n; i++) {
+        const a = p.from + ((p.to - p.from) * i) / n;
+        pts.push({ x: p.center.x + Math.cos(a) * p.radius, y: p.center.y + Math.sin(a) * p.radius });
+      }
+      return { points: pts, closed: false };
+    }
+    case 'spring':
+      return { points: springPoints(p.from(), p.to(), p.coils, p.width), closed: false };
+    case 'support':
+    case 'arrow':
+      return { points: [p.from, p.to], closed: false };
+    case 'ground': {
+      const v = visible(ctx);
+      return { points: [{ x: p.x0 ?? v.x - 10 * px, y: p.y }, { x: p.x1 ?? v.x + v.w + 10 * px, y: p.y }], closed: false };
+    }
+    case 'solid':
+      return p.points.length >= 2 ? { points: p.points, closed: true } : null;
+    case 'pin':
+    case 'image':
+    case 'sprite':
+      return null;
+  }
 }
 
 export interface CleanStyle {

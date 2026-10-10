@@ -5,7 +5,7 @@ import Matter from 'matter-js';
 import decomp from 'poly-decomp';
 import { MotionTracker } from './motion';
 import { drawClean, drawnSnapshot, FAINT_ALPHA, usesClean } from './clean';
-import { drawMorph, morphHooks, morphProgress } from './morph';
+import { drawMorph, ghostAlpha, morphHooks, morphLabelAlpha, morphProgress } from './morph';
 import type { BuiltScene, SimParams, Sprite, ViewRect } from './types';
 import { BASE_SCALE, STEP_MS } from './units';
 
@@ -62,10 +62,15 @@ export class Simulation {
   /** Called every frame after the sprites, in world coordinates. `pxScale` = canvas px per world px. */
   drawListeners: Array<(ctx: CanvasRenderingContext2D, scene: BuiltScene, pxScale: number) => void> = [];
 
-  /** Clean style: the whole drawing as the scene starts, shown faint behind the clean figure (null = drawn style). */
-  private drawn: HTMLCanvasElement | null = null;
+  /**
+   * Clean style: the drawing as the scene starts, shown faint behind the clean figure (null = drawn style). `fixed` =
+   * background and drawn scenery; `moving` = the cut-outs where they were drawn, a ghost that fades after the morph.
+   */
+  private drawn: { fixed: HTMLCanvasElement; moving: HTMLCanvasElement } | null = null;
   /** performance.now() when the morph started; null = not morphing. */
   private morphStart: number | null = null;
+  /** performance.now() when the morph ended (the ghost fades from then); null = no morph was played (a rebuild). */
+  private morphEnd: number | null = null;
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -125,6 +130,7 @@ export class Simulation {
           return;
         }
         this.morphStart = null;
+        this.morphEnd = performance.now();
         for (const fn of morphHooks.end) fn(this.scene);
       }
       this.scene.step?.(this.engine);
@@ -166,11 +172,17 @@ export class Simulation {
     }
     ctx.setTransform(s, 0, 0, s, tx, ty);
     const px = (window.devicePixelRatio || 1) / s; // world px per CSS px
-    if (drawn && morphT !== undefined) drawMorph({ ctx, scene: this.scene, drawn, px, t: morphT });
+    if (drawn && morphT !== undefined) drawMorph({ ctx, scene: this.scene, drawn: drawn.fixed, moving: drawn.moving, px, t: morphT });
     else if (drawn) {
-      // The original drawing stays faint and still; the clean figure moves on top of it.
+      // The original drawing stays faint and still; the clean figure moves on top of it. The ghost of the moving
+      // parts fades away after the morph (and is not shown at all on a rebuild).
       ctx.globalAlpha = FAINT_ALPHA;
-      ctx.drawImage(drawn, 0, 0);
+      ctx.drawImage(drawn.fixed, 0, 0);
+      const ghost = ghostAlpha(this.morphEnd === null ? null : performance.now() - this.morphEnd);
+      if (ghost > 0) {
+        ctx.globalAlpha = ghost;
+        ctx.drawImage(drawn.moving, 0, 0);
+      }
       ctx.globalAlpha = 1;
       if (this.scene.onDraw) {
         ctx.save();
@@ -194,8 +206,8 @@ export class Simulation {
     }
     for (const fn of this.drawListeners) {
       ctx.save();
-      // Value labels and arrows fade in with the clean figure during the morph.
-      if (morphT !== undefined) ctx.globalAlpha = morphT;
+      // Value labels and arrows fade in at the end of the morph.
+      if (morphT !== undefined) ctx.globalAlpha = morphLabelAlpha(morphT);
       fn(ctx, this.scene, s);
       ctx.restore();
     }
