@@ -108,6 +108,60 @@ function splitMerged(input: SceneInput, mask: Uint8Array) {
   return { mass, spring };
 }
 
+/**
+ * True if the non-block part of a split looks like a spring hanging off one side of the block
+ * (not a floor/wall line running past it): it sits on one side and is centred across the block.
+ */
+function looksLikeSpring(input: SceneInput, split: { mass: Uint8Array; spring: Uint8Array }): boolean {
+  const { width: W, height: H } = input;
+  const mb = maskBounds(split.mass, W, H);
+  const cm = centroidOf(split.mass, W);
+  const cs = centroidOf(split.spring, W);
+  if (!mb || !cm || !cs) return false;
+  const vertical = Math.abs(cm.y - cs.y) >= Math.abs(cm.x - cs.x);
+  let before = 0, after = 0;
+  for (let i = 0; i < split.spring.length; i++) {
+    if (!split.spring[i]) continue;
+    const u = vertical ? (i / W) | 0 : i % W;
+    const c = vertical ? mb.y + mb.h / 2 : mb.x + mb.w / 2;
+    if (u < c) before++;
+    else after++;
+  }
+  const oneSided = Math.max(before, after) >= 0.85 * (before + after);
+  const off = vertical ? Math.abs(cs.x - cm.x) / Math.max(1, mb.w) : Math.abs(cs.y - cm.y) / Math.max(1, mb.h);
+  return oneSided && off < 0.35;
+}
+
+/**
+ * Remove the fixed end (ceiling / wall) from a spring mask. Walks from the block end towards the far end and
+ * cuts where ink first spreads well outside the spring's own band (the stroke suddenly gets wider).
+ * Everything from there on stays in the background. `us` is ordered block end first.
+ */
+function cutFixedEnd(mask: Uint8Array, W: number, sp: ReturnType<typeof spans>, us: number[], vertical: boolean): number[] {
+  if (us.length < 6) return us;
+  // The spring's own band across the axis, measured on the block-side 60% (away from any ceiling).
+  const near = us.slice(0, Math.max(3, Math.floor(us.length * 0.6)));
+  const los = near.map((u) => sp.lo[u]).sort((a, b) => a - b);
+  const his = near.map((u) => sp.hi[u]).sort((a, b) => a - b);
+  const vlo = los[Math.floor(los.length * 0.05)];
+  const vhi = his[Math.min(his.length - 1, Math.floor(his.length * 0.95))];
+  const margin = 0.3 * (vhi - vlo) + 6;
+  let cut = -1;
+  for (let k = Math.floor(us.length * 0.4); k < us.length; k++) {
+    const u = us[k];
+    if (sp.lo[u] < vlo - margin || sp.hi[u] > vhi + margin) {
+      cut = k;
+      break;
+    }
+  }
+  if (cut < 0) return us;
+  for (let j = cut; j < us.length; j++) {
+    const u = us[j];
+    for (let v = sp.lo[u]; v <= sp.hi[u]; v++) mask[vertical ? u * W + v : v * W + u] = 0;
+  }
+  return us.slice(0, cut);
+}
+
 /** Cut wide end rows/columns off a block mask (a floor or wall drawn in the same stroke). Returns true if anything was cut. */
 function trimFlanges(mask: Uint8Array, W: number, H: number): boolean {
   let cut = false;
@@ -143,7 +197,14 @@ export const buildSpring: SceneBuilder = (input) => {
   if (!massC.length) massC = [guessMass(pool)!];
   const rest = pool.filter((c) => !massC.includes(c));
   let springC = rest.filter((c) => role(c)?.role === 'spring');
-  if (!springC.length) springC = guessSpring(rest, massC);
+  // Without an AI spring: ceiling, spring and block are often one stroke. If the block contour splits into
+  // block + something spring-like on one side, that is the spring; stray marks elsewhere stay in the background.
+  let premerged: { mass: Uint8Array; spring: Uint8Array } | null = null;
+  if (!springC.length) {
+    const split = splitMerged(input, contourMask(input, massC));
+    if (split && looksLikeSpring(input, split)) premerged = split;
+    else springC = guessSpring(rest, massC);
+  }
 
   // Ink of everything else (ceiling, floor, wall) stays put, even where it touches the block or spring.
   const others = contours.filter((c) => !massC.includes(c) && !springC.includes(c));
@@ -157,7 +218,11 @@ export const buildSpring: SceneBuilder = (input) => {
   // useRect: the block's outline isn't a single clean contour, so its body is the box around its mask.
   let useRect = false;
   let springMask: Uint8Array | null = null;
-  if (springC.length) {
+  if (premerged) {
+    massMask = notOther(premerged.mass);
+    springMask = notOther(premerged.spring);
+    useRect = true;
+  } else if (springC.length) {
     springMask = notOther(contourMask(input, springC));
     for (let i = 0; i < springMask.length; i++) if (massMask[i]) springMask[i] = 0;
     if (count(springMask) < 40) springMask = null;
@@ -183,28 +248,33 @@ export const buildSpring: SceneBuilder = (input) => {
   const cs = springMask ? centroidOf(springMask, W) : null;
   if (springMask && cs) {
     vertical = Math.abs(cm.y - cs.y) >= Math.abs(cm.x - cs.x);
-    const sp = spans(springMask, W, H, vertical);
     const massPlus = (vertical ? cm.y - cs.y : cm.x - cs.x) > 0;
+    // Stray block pixels past the block's near edge (e.g. a corner left over by a split) belong to the block,
+    // otherwise the spring's moving end lands on the far corner of the block.
+    const near = vertical ? (massPlus ? mb.y : mb.y + mb.h - 1) : massPlus ? mb.x : mb.x + mb.w - 1;
+    for (let i = 0; i < springMask.length; i++) {
+      if (!springMask[i]) continue;
+      const u = vertical ? (i / W) | 0 : i % W;
+      if (massPlus ? u >= near : u <= near) {
+        springMask[i] = 0;
+        massMask[i] = 1;
+      }
+    }
+    const sp = spans(springMask, W, H, vertical);
     const us: number[] = [];
     for (let u = 0; u < sp.n; u++) if (sp.width(u) > 0) us.push(u);
-    if (!massPlus) us.reverse(); // us[0] = far (fixed) end, us[last] = block end
-    // A ceiling / wall drawn joined to the spring shows up as much wider rows at the far end: leave it in the background.
-    const widths = us.map((u) => sp.width(u)).sort((a, b) => a - b);
-    const median = widths[widths.length >> 1] || 1;
-    let k = 0;
-    while (k < us.length * 0.6 && sp.width(us[k]) > Math.max(2.5 * median, 8)) k++;
-    for (let j = 0; j < k; j++) {
-      const u = us[j];
-      for (let v = sp.lo[u]; v <= sp.hi[u]; v++) springMask[vertical ? u * W + v : v * W + u] = 0;
-    }
-    const kept = us.slice(k);
+    if (massPlus) us.reverse(); // us[0] = block end, us[last] = far (fixed) end
+    // A ceiling / wall drawn joined to the spring stays in the background: cut where the stroke suddenly widens.
+    const kept = cutFixedEnd(springMask, W, sp, us, vertical).reverse(); // kept[0] = fixed end
     const at = (u: number): Point => {
       const v = (sp.lo[u] + sp.hi[u]) / 2;
       return vertical ? { x: v, y: u } : { x: u, y: v };
     };
-    anchor = at(kept[0]);
-    attach = at(kept[kept.length - 1]);
-    haveSpringSprite = Math.hypot(attach.x - anchor.x, attach.y - anchor.y) >= 8;
+    if (kept.length) {
+      anchor = at(kept[0]);
+      attach = at(kept[kept.length - 1]);
+      haveSpringSprite = Math.hypot(attach.x - anchor.x, attach.y - anchor.y) >= 8;
+    } else anchor = attach = { x: cm.x, y: mb.y };
   } else {
     anchor = { x: cm.x, y: mb.y };
     attach = anchor;
