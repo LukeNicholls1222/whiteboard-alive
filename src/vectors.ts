@@ -155,6 +155,13 @@ export class VelocityArrows {
   /** Boxes (world px, this frame) the speed labels should stay off when they can, e.g. the value labels. */
   avoid: () => Box[] = () => [];
 
+  /** New photo: stop drawing the old drawing's arrows until the next attach(). */
+  reset() {
+    this.sim = null;
+    this.last = [];
+    this.scale = null;
+  }
+
   /** Hook into a freshly started simulation. */
   attach(sim: Simulation) {
     this.sim = sim;
