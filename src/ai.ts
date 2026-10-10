@@ -1,5 +1,6 @@
 // Gemini: annotated photo + contour list -> roles and constraints. The AI never invents coordinates.
 
+import { guessDiagram } from './guess';
 import type { Analysis, Contour, DiagramType } from './types';
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY ?? '';
@@ -86,8 +87,8 @@ Reply with JSON only, shaped like:
 
 export async function analyze(annotated: HTMLCanvasElement, contours: Contour[]): Promise<Analysis> {
   const override = new URLSearchParams(location.search).get('diagram') as DiagramType | null;
-  if (override && DIAGRAMS.includes(override)) return heuristic(contours, override);
-  if (!hasApiKey()) return heuristic(contours);
+  if (override && DIAGRAMS.includes(override)) return heuristic(contours, annotated, override);
+  if (!hasApiKey()) return heuristic(contours, annotated);
 
   const jpeg = annotated.toDataURL('image/jpeg', 0.85).split(',')[1];
   const text = prompt(contours, annotated.width, annotated.height);
@@ -95,7 +96,7 @@ export async function analyze(annotated: HTMLCanvasElement, contours: Contour[])
   for (const model of MODELS) {
     // Structured output first; if the API rejects the schema field, retry with plain JSON mode.
     for (const withSchema of [true, false]) {
-      if (Date.now() > deadline) return heuristic(contours);
+      if (Date.now() > deadline) return heuristic(contours, annotated);
       try {
         const raw = await callGemini(model, jpeg, text, withSchema, Math.min(9000, deadline - Date.now()));
         return sanitize(raw, contours);
@@ -107,7 +108,7 @@ export async function analyze(annotated: HTMLCanvasElement, contours: Contour[])
       }
     }
   }
-  return heuristic(contours);
+  return heuristic(contours, annotated);
 }
 
 async function callGemini(model: string, jpeg: string, text: string, withSchema: boolean, timeoutMs: number): Promise<any> {
@@ -163,19 +164,66 @@ function sanitize(raw: any, contours: Contour[]): Analysis {
   };
 }
 
-/** Offline guess so the pipeline always produces something that moves. */
-function heuristic(contours: Contour[], diagram: DiagramType = 'fallback'): Analysis {
-  // No roles at all: scene builders then use their own geometric guesses ("no role" branches).
-  void contours;
+/**
+ * Offline analysis (no key, AI quota used up, AI busy, or ?diagram=... forced). The diagram type comes from
+ * shape features (src/guess.ts) unless forced; roles stay empty so scene builders use their geometric guesses.
+ */
+function heuristic(contours: Contour[], annotated: HTMLCanvasElement, forced?: DiagramType): Analysis {
+  let diagram: DiagramType = forced ?? 'fallback';
+  let confidence = 0;
+  if (!forced) {
+    try {
+      const g = guessDiagram({ width: annotated.width, height: annotated.height, ink: inkFromAnnotated(annotated, contours), contours });
+      console.log(`[ai] offline guess: ${g.diagram} (${g.confidence}) ${g.why}`);
+      diagram = g.diagram;
+      confidence = g.confidence;
+    } catch (err) {
+      console.warn('[ai] offline guess failed', err);
+    }
+  }
   return {
     diagram,
-    confidence: 0,
+    confidence,
     bodies: [],
     constraints: [],
     params: { gravity: 9.8 },
     explanation: '',
     source: 'heuristic',
   };
+}
+
+/**
+ * Recover the ink mask from the annotated image: the cleaned paper is exactly PAPER_COLOR wherever there is no ink,
+ * so non-paper pixels inside a contour's bbox are ink - except the id boxes and "#N" labels (see annotate() in
+ * vision.ts), which can land inside a neighbour's bbox. Those are redrawn on a scratch canvas and masked out.
+ */
+function inkFromAnnotated(annotated: HTMLCanvasElement, contours: Contour[]): Uint8Array {
+  const W = annotated.width, H = annotated.height;
+  const d = annotated.getContext('2d')!.getImageData(0, 0, W, H).data;
+  const marks = document.createElement('canvas');
+  marks.width = W;
+  marks.height = H;
+  const mctx = marks.getContext('2d')!;
+  mctx.strokeStyle = mctx.fillStyle = '#000';
+  mctx.lineWidth = 4;
+  mctx.font = 'bold 22px sans-serif';
+  for (const c of contours) {
+    mctx.strokeRect(c.bbox.x - 3, c.bbox.y - 3, c.bbox.w + 6, c.bbox.h + 6);
+    const y = Math.max(20, c.bbox.y - 6);
+    mctx.fillRect(c.bbox.x - 2, y - 22, mctx.measureText(`#${c.id}`).width + 4, 28);
+  }
+  const m = mctx.getImageData(0, 0, W, H).data;
+  const ink = new Uint8Array(W * H);
+  for (const c of contours) {
+    const x0 = Math.max(0, c.bbox.x), x1 = Math.min(W, c.bbox.x + c.bbox.w);
+    const y0 = Math.max(0, c.bbox.y), y1 = Math.min(H, c.bbox.y + c.bbox.h);
+    for (let y = y0; y < y1; y++)
+      for (let x = x0; x < x1; x++) {
+        const i = y * W + x, p = i * 4;
+        if (!m[p + 3] && (d[p] !== 251 || d[p + 1] !== 250 || d[p + 2] !== 246)) ink[i] = 255;
+      }
+  }
+  return ink;
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
