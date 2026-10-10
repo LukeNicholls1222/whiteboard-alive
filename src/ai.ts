@@ -168,3 +168,71 @@ function heuristic(contours: Contour[], diagram: DiagramType = 'fallback'): Anal
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+// ---- Voice: spoken sentence + current params -> {"set": {...}} diff ----------------------------
+
+export interface VoiceParamSpec {
+  key: string;
+  label: string;
+  min: number;
+  max: number;
+  unit?: string;
+}
+
+/**
+ * Ask Gemini (text only) which parameters a spoken command changes. Returns only keys from `specs`,
+ * clamped to their ranges. Throws on no key / network / bad JSON so the caller can use keyword parsing.
+ */
+export async function voiceToParams(
+  utterance: string,
+  current: Record<string, number>,
+  specs: VoiceParamSpec[],
+  timeoutMs = 6000,
+): Promise<Record<string, number>> {
+  if (!hasApiKey()) throw new Error('no api key');
+  const text = `You control a physics simulation for students. Current parameters: ${JSON.stringify(current)}.
+Parameters you may change (key, meaning, allowed range):
+${specs.map((s) => `- ${s.key}: ${s.label}${s.unit ? ` in ${s.unit}` : ''}, ${s.min} to ${s.max}`).join('\n')}
+Reference gravities in m/s²: Earth 9.8, Moon 1.62, Mars 3.71, Jupiter 24.8, zero gravity 0.
+The student said: ${JSON.stringify(utterance)}
+Reply with JSON only: {"set": {<key>: <new number>}} containing only the parameters that should change.
+Relative requests ("double", "half", "a bit more") are relative to the current value. If nothing should change, reply {"set": {}}.`;
+  const deadline = Date.now() + timeoutMs;
+  let lastErr: unknown = new Error('no model');
+  for (const model of MODELS) {
+    if (Date.now() > deadline) break;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), Math.max(500, deadline - Date.now()));
+    try {
+      const generationConfig: Record<string, unknown> = {
+        responseMimeType: 'application/json',
+        temperature: 0,
+        thinkingConfig: model.includes('2.5') ? { thinkingBudget: 0 } : { thinkingLevel: 'LOW' },
+      };
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': API_KEY },
+        body: JSON.stringify({ contents: [{ parts: [{ text }] }], generationConfig }),
+        signal: ctrl.signal,
+      });
+      if (!res.ok) {
+        lastErr = Object.assign(new Error(`Gemini ${res.status}`), { status: res.status });
+        if (res.status === 404 || res.status === 403 || res.status === 400) continue; // try the next model
+        throw lastErr;
+      }
+      const json = await res.json();
+      const out: string = json.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? '').join('') ?? '';
+      const raw = JSON.parse(out.replace(/^```(?:json)?|```$/g, '').trim());
+      const set: Record<string, number> = {};
+      for (const s of specs) {
+        if (!raw?.set || !(s.key in raw.set)) continue;
+        const v = Number(raw.set[s.key]);
+        if (Number.isFinite(v)) set[s.key] = clamp(v, s.min, s.max);
+      }
+      return set;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastErr;
+}

@@ -1,0 +1,216 @@
+// Sliders + voice for the running simulation. Gravity is shared by every scene; scene-specific
+// sliders come from a table keyed by diagram type (scenes themselves stay untouched).
+
+import { voiceToParams, type VoiceParamSpec } from './ai';
+import type { DiagramType, SimParams } from './types';
+import { PLANETS, listenOnce, parseKeywords, speechSupported } from './voice';
+
+export interface ParamSpec extends VoiceParamSpec {
+  step: number;
+  value: number;
+  /** Read only when the scene is built, so changing it rebuilds the scene. */
+  rebuild?: boolean;
+  /** Digits shown in the value bubble. */
+  digits: number;
+}
+
+const GRAVITY: ParamSpec = { key: 'gravity', label: 'Gravity', min: 0, max: 25, step: 0.1, value: 9.8, unit: 'm/s²', digits: 1 };
+
+/** Which extra sliders each diagram gets. Only parameters the scene actually reads. */
+const SCENE_PARAMS: Partial<Record<DiagramType, ParamSpec[]>> = {
+  incline: [{ key: 'friction', label: 'Friction', min: 0, max: 1.5, step: 0.05, value: 0.3, digits: 2 }],
+  projectile: [{ key: 'speed', label: 'Launch speed', min: 2, max: 25, step: 0.5, value: 10, digits: 1, rebuild: true }],
+};
+
+const PRESETS: { name: string; g: number }[] = [
+  { name: 'Earth', g: PLANETS.earth },
+  { name: 'Moon', g: PLANETS.moon },
+  { name: 'Jupiter', g: PLANETS.jupiter },
+];
+
+export interface ControlsHost {
+  /** Apply a parameter diff. `rebuild` = a build-time parameter changed, rebuild the scene. */
+  apply(set: Partial<SimParams>, rebuild: boolean): void;
+}
+
+export const specsFor = (diagram: DiagramType): ParamSpec[] => [GRAVITY, ...(SCENE_PARAMS[diagram] ?? [])];
+
+const fmt = (s: ParamSpec, v: number) => `${v.toFixed(s.digits)}${s.unit ? ` ${s.unit}` : ''}`;
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+export function createControls(root: HTMLElement, host: ControlsHost) {
+  let specs: ParamSpec[] = [];
+  const values: Record<string, number> = {};
+  let rebuildTimer = 0;
+
+  root.innerHTML = `
+    <div class="controls-head">
+      <h2>Play with it</h2>
+      <button type="button" class="mic" id="mic" aria-label="Tap and say a change">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>
+        <span class="mic-label">Talk</span>
+      </button>
+    </div>
+    <p class="voice-hint" id="voice-hint">Tap Talk and say “make it the moon”.</p>
+    <div class="sliders" id="sliders"></div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>`;
+  const sliders = root.querySelector<HTMLDivElement>('#sliders')!;
+  const mic = root.querySelector<HTMLButtonElement>('#mic')!;
+  const hint = root.querySelector<HTMLParagraphElement>('#voice-hint')!;
+  const toast = root.querySelector<HTMLDivElement>('#toast')!;
+  if (!speechSupported()) {
+    mic.hidden = true;
+    hint.hidden = true;
+  }
+
+  function render() {
+    sliders.innerHTML = specs
+      .map(
+        (s) => `
+      <div class="param" data-key="${s.key}">
+        <div class="param-row">
+          <label for="p-${s.key}">${s.label}</label>
+          <span class="param-value" id="v-${s.key}">${fmt(s, values[s.key])}</span>
+        </div>
+        <input type="range" id="p-${s.key}" min="${s.min}" max="${s.max}" step="${s.step}" value="${values[s.key]}" />
+        ${s.key === 'gravity' ? `<div class="chips">${PRESETS.map((p) => `<button type="button" class="chip" data-g="${p.g}">${p.name}</button>`).join('')}</div>` : ''}
+      </div>`,
+      )
+      .join('');
+    for (const s of specs) {
+      const input = sliders.querySelector<HTMLInputElement>(`#p-${s.key}`)!;
+      input.addEventListener('input', () => set({ [s.key]: Number(input.value) }, 'slider'));
+    }
+    sliders.querySelectorAll<HTMLButtonElement>('.chip').forEach((chip) =>
+      chip.addEventListener('click', () => {
+        haptic();
+        set({ gravity: Number(chip.dataset.g) }, 'chip');
+        say(`Gravity → ${fmt(GRAVITY, Number(chip.dataset.g))}`);
+      }),
+    );
+    syncUI();
+  }
+
+  function syncUI() {
+    for (const s of specs) {
+      const input = sliders.querySelector<HTMLInputElement>(`#p-${s.key}`);
+      const label = sliders.querySelector<HTMLSpanElement>(`#v-${s.key}`);
+      if (input && Number(input.value) !== values[s.key]) input.value = String(values[s.key]);
+      if (label) label.textContent = fmt(s, values[s.key]);
+      if (input) input.style.setProperty('--fill', `${((values[s.key] - s.min) / (s.max - s.min)) * 100}%`);
+    }
+    sliders.querySelectorAll<HTMLButtonElement>('.chip').forEach((chip) =>
+      chip.classList.toggle('on', Math.abs(Number(chip.dataset.g) - values.gravity) < 0.05),
+    );
+  }
+
+  /** Clamp, store, update the UI and hand the diff to the simulation. Returns what actually changed. */
+  function set(diff: Record<string, number>, _from: 'slider' | 'chip' | 'voice'): Record<string, number> {
+    const changed: Record<string, number> = {};
+    let rebuild = false;
+    for (const s of specs) {
+      if (!(s.key in diff) || !Number.isFinite(diff[s.key])) continue;
+      const v = Number(clamp(diff[s.key], s.min, s.max).toFixed(s.digits + 1));
+      if (v === values[s.key]) continue;
+      values[s.key] = v;
+      changed[s.key] = v;
+      if (s.rebuild) rebuild = true;
+    }
+    if (!Object.keys(changed).length) return changed;
+    syncUI();
+    const live = Object.fromEntries(Object.entries(changed).filter(([k]) => !specs.find((s) => s.key === k)?.rebuild));
+    if (Object.keys(live).length) host.apply(live as Partial<SimParams>, false);
+    if (rebuild) {
+      // Rebuilding redoes the scene geometry; wait for the finger to settle instead of rebuilding every tick.
+      clearTimeout(rebuildTimer);
+      rebuildTimer = window.setTimeout(() => host.apply({ ...values } as Partial<SimParams>, true), 180);
+    }
+    return changed;
+  }
+
+  let toastTimer = 0;
+  function say(text: string, kind: 'ok' | 'info' | 'warn' = 'ok') {
+    toast.textContent = text;
+    toast.className = `toast show ${kind}`;
+    clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => toast.classList.remove('show'), 4000);
+  }
+
+  function describe(changed: Record<string, number>) {
+    return Object.entries(changed)
+      .map(([k, v]) => {
+        const s = specs.find((x) => x.key === k)!;
+        return `${s.label} → ${fmt(s, v)}`;
+      })
+      .join(', ');
+  }
+
+  /** Voice / typed command: Gemini first, keyword parsing if that fails or finds nothing. */
+  async function command(utterance: string): Promise<Record<string, number>> {
+    const current = Object.fromEntries(specs.map((s) => [s.key, values[s.key]]));
+    let diff: Record<string, number> = {};
+    try {
+      diff = await voiceToParams(utterance, current, specs);
+    } catch (err) {
+      console.info('[voice] AI unavailable, using keywords', err);
+    }
+    if (!Object.keys(diff).length) diff = parseKeywords(utterance, current);
+    const changed = set(diff, 'voice');
+    if (Object.keys(changed).length) say(`“${utterance}” — ${describe(changed)}`);
+    else say(`“${utterance}” — try “moon gravity” or “double gravity”.`, 'warn');
+    return changed;
+  }
+
+  let listening: { stop: () => void } | null = null;
+  mic.addEventListener('click', async () => {
+    haptic();
+    if (listening) {
+      listening.stop();
+      return;
+    }
+    mic.classList.add('listening');
+    mic.querySelector('.mic-label')!.textContent = 'Listening';
+    say('Listening…', 'info');
+    try {
+      const l = listenOnce((t) => say(t ? `“${t}”` : 'Listening…', 'info'));
+      listening = l;
+      const text = await l.result;
+      listening = null;
+      mic.querySelector('.mic-label')!.textContent = 'Thinking';
+      await command(text);
+    } catch (err: any) {
+      const code = err?.message;
+      say(
+        code === 'not-allowed' || code === 'service-not-allowed'
+          ? 'Please allow the microphone to talk to it.'
+          : 'I did not catch that. Tap Talk and try again!',
+        'warn',
+      );
+    } finally {
+      listening = null;
+      mic.classList.remove('listening');
+      mic.querySelector('.mic-label')!.textContent = 'Talk';
+    }
+  });
+
+  return {
+    /** Show the controls for a freshly built scene. Keeps values the user already chose. */
+    show(diagram: DiagramType, params: Partial<SimParams>) {
+      specs = specsFor(diagram);
+      for (const s of specs) values[s.key] = Number.isFinite(params[s.key]) ? (params[s.key] as number) : (values[s.key] ?? s.value);
+      render();
+      root.hidden = false;
+    },
+    hide() {
+      root.hidden = true;
+    },
+    /** Current values (for tests / debugging). */
+    values: () => ({ ...values }),
+    set: (diff: Record<string, number>) => set(diff, 'slider'),
+    command,
+  };
+}
+
+function haptic() {
+  navigator.vibrate?.(10);
+}

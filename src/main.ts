@@ -1,8 +1,10 @@
 import './style.css';
 import { analyze, hasApiKey } from './ai';
+import { createControls } from './controls';
 import { buildScene } from './scenes';
 import { AIOverlay } from './overlay';
 import { Simulation } from './sim';
+import type { BuiltScene, SceneInput } from './types';
 import { annotate, extractContours, loadOpenCV, toWorkingCanvas } from './vision';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -13,6 +15,29 @@ const explain = $<HTMLParagraphElement>('explain');
 
 let sim: Simulation | null = null;
 const overlay = new AIOverlay(stage, $<HTMLButtonElement>('ai-toggle'));
+/** Inputs of the scene on screen, kept so build-time params (e.g. launch speed) can rebuild it. */
+let current: SceneInput | null = null;
+
+const controls = createControls($<HTMLElement>('controls'), {
+  apply(set, rebuild) {
+    if (!current) return;
+    Object.assign(current.analysis.params, set);
+    if (rebuild) startScene(current);
+    else sim?.setParams(set);
+  },
+});
+if (import.meta.env.DEV) (window as any).__wa = { controls, get sim() { return sim; } };
+
+async function startScene(input: SceneInput, intro = false): Promise<BuiltScene> {
+  const scene = buildScene(input);
+  sim?.stop();
+  // Show what the AI understood on top of the paper, then let it come alive.
+  if (intro) await overlay.playIntro({ ...input, scene });
+  sim = new Simulation(stage, scene, input.width, input.height);
+  sim.setParams(input.analysis.params);
+  sim.start();
+  return scene;
+}
 
 // Start loading OpenCV right away so it is ready by the time a photo is picked.
 const cvPromise = loadOpenCV();
@@ -64,13 +89,10 @@ async function run(file: Blob) {
 
     setStep('run');
     await nextFrame();
-    const scene = buildScene({ ...vision, analysis });
-    sim?.stop();
-    // Show what the AI understood on top of the paper, then let it come alive.
-    await overlay.playIntro({ ...vision, analysis, scene });
-    sim = new Simulation(stage, scene, vision.width, vision.height);
-    sim.setParams(analysis.params);
-    sim.start();
+    current = { ...vision, analysis };
+    const scene = await startScene(current, true);
+    // buildScene drops to the fallback when the chosen builder fails; show that scene's sliders.
+    controls.show(scene.label === 'Falling objects' ? 'fallback' : analysis.diagram, analysis.params);
     setStep('done');
     explain.textContent = analysis.explanation || `${scene.label}${analysis.source === 'heuristic' && !hasApiKey() ? ' (offline mode)' : ''}`;
   } catch (err) {
