@@ -165,6 +165,9 @@ function sanitize(raw: any, contours: Contour[]): Analysis {
   };
 }
 
+/** Shape-based guess without calling Gemini (used if a built-in example's saved answer cannot be read). */
+export const offlineAnalysis = (annotated: HTMLCanvasElement, contours: Contour[]) => heuristic(contours, annotated);
+
 /**
  * Offline analysis (no key, AI quota used up, AI busy, or ?diagram=... forced). The diagram type comes from
  * shape features (src/guess.ts) unless forced; roles stay empty so scene builders use their geometric guesses.

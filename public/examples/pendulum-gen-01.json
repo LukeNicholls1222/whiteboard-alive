@@ -1,0 +1,18 @@
+{
+  "diagram": "pendulum",
+  "confidence": 0.98,
+  "bodies": [
+    {
+      "contourId": 0,
+      "role": "bob",
+      "static": false,
+      "mass": 1
+    }
+  ],
+  "constraints": [],
+  "params": {
+    "gravity": 9.8
+  },
+  "explanation": "A pendulum suspended from a fixed ceiling will swing back and forth under gravity.",
+  "source": "cached"
+}

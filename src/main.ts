@@ -1,5 +1,6 @@
 import './style.css';
-import { analyze, hasApiKey } from './ai';
+import { analyze, hasApiKey, offlineAnalysis } from './ai';
+import { cachedAnalysis, EXAMPLES, exampleImage, exampleThumb, fingerprint } from './examples';
 import { createControls } from './controls';
 import { LiveGraph } from './graph';
 import { buildScene } from './scenes';
@@ -70,14 +71,49 @@ function setStep(step: Step | 'done' | 'error', detail = '') {
 
 fileInput.addEventListener('change', () => {
   const file = fileInput.files?.[0];
-  if (file) run(file).finally(() => (fileInput.value = ''));
+  if (file) {
+    selectExample(null);
+    run(file).finally(() => (fileInput.value = ''));
+  }
 });
 
 // ?src=<image url> runs the pipeline on a hosted image (used for testing with samples/).
 const srcParam = new URLSearchParams(location.search).get('src');
-if (srcParam) fetch(srcParam).then((r) => r.blob()).then(run);
+if (srcParam) fetch(srcParam).then((r) => r.blob()).then((b) => run(b));
 
-async function run(file: Blob) {
+// "Or try one of ours": built-in photos with the AI answer saved, so they always run (no network AI call).
+const gallery = $<HTMLDivElement>('examples');
+gallery.innerHTML = EXAMPLES.map(
+  (e) => `<button type="button" class="example" data-name="${e.name}">
+    <img src="${exampleThumb(e.name)}" alt="${e.title} drawing" loading="lazy" decoding="async" />
+    <span>${e.title}</span>
+  </button>`,
+).join('');
+gallery.addEventListener('click', async (ev) => {
+  const card = (ev.target as HTMLElement).closest<HTMLButtonElement>('.example');
+  if (!card || busy) return;
+  const name = card.dataset.name!;
+  selectExample(name);
+  stage.parentElement!.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  try {
+    const blob = await fetch(exampleImage(name)).then((r) => {
+      if (!r.ok) throw new Error(`example image ${r.status}`);
+      return r.blob();
+    });
+    await run(blob, name);
+  } catch (err) {
+    console.error(err);
+    setStep('error', 'That example did not load. Try another one!');
+  }
+});
+function selectExample(name: string | null) {
+  gallery.querySelectorAll<HTMLButtonElement>('.example').forEach((b) => b.classList.toggle('on', b.dataset.name === name));
+}
+
+let busy = false;
+
+async function run(file: Blob, example?: string) {
+  busy = true;
   try {
     overlay.reset();
     setStep('load');
@@ -93,8 +129,15 @@ async function run(file: Blob) {
 
     setStep('ai');
     const t1 = performance.now();
-    const analysis = await analyze(annotate(vision.paper, vision.contours), vision.contours);
+    const annotated = annotate(vision.paper, vision.contours);
+    const analysis = example
+      ? await cachedAnalysis(example, vision.contours).catch((err) => {
+          console.warn(err);
+          return offlineAnalysis(annotated, vision.contours);
+        })
+      : await analyze(annotated, vision.contours);
     console.log(`[ai] ${analysis.source} ${Math.round(performance.now() - t1)}ms`, analysis);
+    if (import.meta.env.DEV) (window as any).__wa.last = { analysis: structuredClone(analysis), fingerprint: fingerprint(vision.contours, analysis) };
 
     setStep('run');
     await nextFrame();
@@ -107,6 +150,8 @@ async function run(file: Blob) {
   } catch (err) {
     console.error(err);
     setStep('error', 'Something went wrong. Try another photo!');
+  } finally {
+    busy = false;
   }
 }
 

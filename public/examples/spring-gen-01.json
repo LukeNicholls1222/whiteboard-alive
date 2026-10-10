@@ -1,0 +1,18 @@
+{
+  "diagram": "spring",
+  "confidence": 1,
+  "bodies": [
+    {
+      "contourId": 0,
+      "role": "mass",
+      "static": false,
+      "mass": 1
+    }
+  ],
+  "constraints": [],
+  "params": {
+    "gravity": 9.8
+  },
+  "explanation": "A mass attached to a vertical spring connected to a fixed ceiling will oscillate up and down.",
+  "source": "cached"
+}
