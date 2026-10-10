@@ -170,6 +170,8 @@ export interface BuiltScene {
     launchSpeed?: { value: number; fit: number; from: ValueSource };
     /** Incline: slope angle as drawn, degrees. */
     rampAngle?: number;
+    /** Pendulum / projectile: the scene reads air drag; the factor ×N on real air the switch sets (air.ts). */
+    airDrag?: number;
   };
   /** px per metre and the time factor; set by buildScene for every scene. */
   scale?: Scale;

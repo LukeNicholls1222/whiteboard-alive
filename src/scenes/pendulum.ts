@@ -3,18 +3,25 @@
 // Physics: a rigid pendulum has one degree of freedom, the string angle θ. Matter's position-based rope
 // constraint bled about a fifth of the swing every 10 s (numerical damping), so like the pulley scene we
 // integrate the equation of motion ourselves every step,
-//   θ'' = −(g/L)·sin θ − k·θ'·|θ'|      (θ = 0 straight down, k = params.airDrag, default 0 = no drag),
+//   θ'' = −(g/L)·sin θ − k·θ'·|θ'|      (θ = 0 straight down),
 // with RK4 in a few substeps, and put the bob body exactly there with its true velocity (the velocity
 // arrows, the energy graph and the period readout all read the body). g is read from the engine every
 // step, so the gravity slider, voice and Moon mode apply at once. With k = 0 the swing never dies out.
+//
+// Air drag on the bob, F = c·v² with c = ½ρ·Cd·A (air.ts) and v = L·θ', gives θ'' = −(c·L/m)·θ'·|θ'|, so the
+// dimensionless k = params.airDrag × c·L/m (airDrag = factor on real air, 0 = off). k does not depend on the
+// time unit, so the slow-motion factor needs no conversion.
 
 import Matter from 'matter-js';
 import type { Point, SceneBuilder } from '../types';
 import { contourMask, cutSprite, deepestPoint, eraseFromPaper, roleOf } from './common';
 import { STEP_ACCEL, STEP_MS } from '../sim';
-import { DEFAULT_KG, noteFor } from '../units';
+import { DEFAULT_KG, noteFor, scaleFor } from '../units';
+import { dragConstant, roundFactor } from '../air';
 
 const KICK_DEG = 20;
+/** Drag k the air switch aims for: about 10 % off a 20° swing per period, the swing visibly dies down in ~30 s. */
+const AIR_K_TARGET = 0.12;
 /** RK4 substeps per physics step. */
 const SUBSTEPS = 4;
 
@@ -72,12 +79,17 @@ export const buildPendulum: SceneBuilder = (input) => {
   place();
 
   const params = input.analysis.params;
+  const kg = noteFor(input.analysis, 'mass', ['bob', 'block', 'ball'])?.value;
+  // Real air on this bob: k = c·L/m with the drawn radius and string length in metres (same scale buildScene sets).
+  const ppm = scaleFor(input, { string: length }).pxPerMeter;
+  const kReal = (dragConstant(bobRadius / ppm) * (length / ppm)) / (kg ?? DEFAULT_KG);
+  const airFactor = roundFactor(AIR_K_TARGET / Math.max(1e-12, kReal));
   const onStep = (engine: Matter.Engine) => {
     // Engine gravity (slider / voice / Moon mode) in px per step².
     const toStep = engine.gravity.scale * STEP_MS * STEP_MS;
     const gx = engine.gravity.x * toStep, gy = engine.gravity.y * toStep;
-    // Air drag (dimensionless, read live; 0 = none): θ'' gets −k·θ'·|θ'|. k = 0.1 takes ~9 % off a 20° swing per period.
-    const k = Math.max(0, Number(params.airDrag) || 0);
+    // Air drag (read live; airDrag = factor on real air, 0 = none): θ'' gets −k·θ'·|θ'|. k = 0.1 takes ~9 % off a 20° swing per period.
+    const k = Math.max(0, Number(params.airDrag) || 0) * kReal;
     // Tangential gravity over L (the tangent is (cos θ, −sin θ)), minus drag.
     const acc = (th: number, om: number) => (gx * Math.cos(th) - gy * Math.sin(th)) / length - k * om * Math.abs(om);
     const h = 1 / SUBSTEPS;
@@ -94,7 +106,6 @@ export const buildPendulum: SceneBuilder = (input) => {
     place();
   };
 
-  const kg = noteFor(input.analysis, 'mass', ['bob', 'block', 'ball'])?.value;
   return {
     bodies: [body],
     constraints: [],
@@ -113,6 +124,7 @@ export const buildPendulum: SceneBuilder = (input) => {
       string: { at: () => ({ x: (pivot.x + body.position.x) / 2, y: (pivot.y + body.position.y) / 2 }) },
       bob: { at: () => body.position, clear: bobRadius, body, kg: kg ?? DEFAULT_KG, kgFrom: kg ? 'note' : 'assumed' },
     },
+    physics: { airDrag: airFactor },
   };
 };
 

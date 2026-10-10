@@ -156,7 +156,13 @@ async function run(file: Blob, example?: string) {
     // buildScene drops to the fallback when the chosen builder fails; show that scene's sliders.
     // The launch speed slider is in this drawing's m/s, ranged around the speed that lands in the picture.
     const ls = scene.physics?.launchSpeed;
-    controls.show(scene.label === 'Falling objects' ? 'fallback' : analysis.diagram, analysis.params, ls ? launchSpeedTune(ls.fit, ls.value) : {});
+    // The air resistance switch shows only for scenes that read params.airDrag (pendulum, projectile).
+    controls.show(
+      scene.label === 'Falling objects' ? 'fallback' : analysis.diagram,
+      analysis.params,
+      ls ? launchSpeedTune(ls.fit, ls.value) : {},
+      scene.physics?.airDrag,
+    );
     setStep('done');
     explain.textContent = analysis.explanation || `${scene.label}${analysis.source === 'heuristic' && !hasApiKey() ? ' (offline mode)' : ''}`;
   } catch (err) {

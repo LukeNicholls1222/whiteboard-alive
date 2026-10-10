@@ -10,7 +10,8 @@ import Matter from 'matter-js';
 import type { Contour, PartInfo, PartName, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
 import { contourMask, cutSprite, eraseFromPaper, maskBounds, roleOf } from './common';
 import { STEP_ACCEL, STEP_MS } from '../sim';
-import { DEFAULT_KG, mps, noteFor, pxPerStep, scaleFor } from '../units';
+import { DEFAULT_KG, EARTH_G, mps, noteFor, pxPerStep, scaleFor } from '../units';
+import { dragConstant, roundFactor } from '../air';
 
 const RELAUNCH_MS = 1500;
 /** Minimum elevation when the ball starts on the ground (a flat shot would just roll). */
@@ -24,6 +25,11 @@ const TRAIL_EVERY = 2; // steps between trail samples
 const CELL = 5;
 /** Give up on a flight after this long and fire again (never leave the scene stuck). */
 const MAX_FLIGHT_MS = 9000;
+/**
+ * Drag the air switch aims for: drag = this × weight at the fitted launch speed (the one that lands inside the
+ * picture). The arc then visibly leans (steeper fall than rise) and lands clearly short.
+ */
+const AIR_DRAG_TARGET = 0.6;
 const DEBUG = typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug');
 
 interface Axis {
@@ -725,6 +731,26 @@ export const buildProjectile: SceneBuilder = (input) => {
   }
   const v0 = { x: unit.x * speed, y: unit.y * speed };
   Matter.Body.setVelocity(body, v0);
+
+  // --- Air resistance: F = −c·|v|·v on the ball (air.ts), times params.airDrag (factor on real air, 0 = off, read live) ---
+  const kg = noteFor(input.analysis, 'mass', ['ball', 'block', 'bob'])?.value;
+  const mass = kg ?? DEFAULT_KG;
+  const cReal = dragConstant(bodyR / scale.pxPerMeter);
+  // Factor that makes drag AIR_DRAG_TARGET × weight at the fitted launch speed on Earth: N·c·v² = target·m·g. The fit
+  // comes from the drawing only (the slider and a written speed do not change it), so the factor stays the same when
+  // the launch speed slider rebuilds the scene.
+  const vRef = mps(fit, scale) * Math.sqrt(EARTH_G / Math.min(50, Math.max(0.5, input.analysis.params.gravity || EARTH_G)));
+  const airFactor = roundFactor((AIR_DRAG_TARGET * mass * EARTH_G) / Math.max(1e-12, cReal * vRef * vRef));
+  const params = input.analysis.params;
+  // In engine units (px per step) the velocity change per step is −(c / m / pxPerMeter)·|v|·v, independent of the
+  // slow-motion factor. Applied as the exact one-step solution v / (1 + β·|v|), which can never overshoot.
+  const airDrag = () => {
+    const beta = (Math.max(0, Number(params.airDrag) || 0) * cReal) / mass / scale.pxPerMeter;
+    if (!beta) return;
+    const v = body.velocity;
+    const f = 1 / (1 + beta * Math.hypot(v.x, v.y));
+    Matter.Body.setVelocity(body, { x: v.x * f, y: v.y * f });
+  };
   if (DEBUG) {
     const deg = (p: Point) => Math.round((Math.atan2(-p.y, Math.abs(p.x)) * 1800) / Math.PI) / 10;
     console.log(
@@ -761,6 +787,7 @@ export const buildProjectile: SceneBuilder = (input) => {
       }
     }
     if (landedSteps < 0) {
+      airDrag();
       if (steps % TRAIL_EVERY === 0) trail.push({ x: p.x, y: p.y });
       const moved = Math.hypot(p.x - start.x, p.y - start.y);
       slowSteps = Math.hypot(body.velocity.x, body.velocity.y) < 0.3 ? slowSteps + 1 : 0;
@@ -825,7 +852,6 @@ export const buildProjectile: SceneBuilder = (input) => {
     follow: { kind: 'body', body, origin: { ...start }, originAngle: 0 },
   };
 
-  const kg = noteFor(input.analysis, 'mass', ['ball', 'block', 'bob'])?.value;
   const launchAt = { ...start };
   const parts: Partial<Record<PartName, PartInfo>> = {
     arrow: { at: () => launchAt, clear: r * 1.5, side: 'above' },
@@ -844,6 +870,6 @@ export const buildProjectile: SceneBuilder = (input) => {
     onDraw,
     measures,
     parts,
-    physics: { launchSpeed: { value: mps(speed, scale), fit: mps(fit, scale), from: speedFrom } },
+    physics: { launchSpeed: { value: mps(speed, scale), fit: mps(fit, scale), from: speedFrom }, airDrag: airFactor },
   };
 };

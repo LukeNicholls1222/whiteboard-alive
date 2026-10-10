@@ -2,6 +2,7 @@
 // sliders come from a table keyed by diagram type (scenes themselves stay untouched).
 
 import { voiceToParams, type VoiceParamSpec } from './ai';
+import { airSubtitle } from './air';
 import type { DiagramType, SimParams } from './types';
 import { PLANETS, listenOnce, parseKeywords, speechSupported } from './voice';
 
@@ -79,11 +80,28 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
     </div>
     <p class="voice-hint" id="voice-hint">Tap Talk and say “make it the moon”.</p>
     <div class="sliders" id="sliders"></div>
+    <div id="air-row" hidden>
+      <label class="va-toggle">
+        <span class="va-text">Air resistance<span class="va-sub" id="air-sub"></span></span>
+        <input type="checkbox" id="air" />
+        <span class="va-switch"></span>
+      </label>
+    </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>`;
   const sliders = root.querySelector<HTMLDivElement>('#sliders')!;
   const mic = root.querySelector<HTMLButtonElement>('#mic')!;
   const hint = root.querySelector<HTMLParagraphElement>('#voice-hint')!;
   const toast = root.querySelector<HTMLDivElement>('#toast')!;
+  const airRow = root.querySelector<HTMLDivElement>('#air-row')!;
+  const airInput = root.querySelector<HTMLInputElement>('#air')!;
+  const airSub = root.querySelector<HTMLSpanElement>('#air-sub')!;
+  /** Factor on real air this scene uses when the switch is on (0 = the scene has no air drag, switch hidden). */
+  let airFactor = 0;
+  // Live like the sliders: the scenes read params.airDrag every step, so nothing is rebuilt.
+  airInput.addEventListener('change', () => {
+    haptic();
+    host.apply({ airDrag: airInput.checked ? airFactor : 0 }, false);
+  });
   if (!speechSupported()) {
     mic.hidden = true;
     hint.hidden = true;
@@ -242,13 +260,18 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
      * Show the controls for a freshly built scene. Keeps values the user already chose, except where the drawing
      * sets its own slider (`tune`, e.g. a launch speed in this drawing's m/s).
      */
-    show(diagram: DiagramType, params: Partial<SimParams>, tune: SliderTune = {}) {
+    show(diagram: DiagramType, params: Partial<SimParams>, tune: SliderTune = {}, air?: number) {
       specs = specsFor(diagram).map((s) => (tune[s.key] ? { ...s, ...tune[s.key] } : s));
       for (const s of specs) {
         const own = tune[s.key]?.value;
         values[s.key] = Number.isFinite(params[s.key]) ? (params[s.key] as number) : own ?? values[s.key] ?? s.value;
       }
       render();
+      // Air resistance switch only where the scene reads it (`air` = its factor on real air), off by default.
+      airFactor = air && air > 0 ? air : 0;
+      airRow.hidden = !airFactor;
+      airInput.checked = !!airFactor && (params.airDrag ?? 0) > 0;
+      airSub.textContent = airFactor ? airSubtitle(airFactor) : '';
       root.hidden = false;
     },
     hide() {
