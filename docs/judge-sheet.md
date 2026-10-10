@@ -1,6 +1,6 @@
 # Whiteboard Alive: Draw your own diagram
 
-Draw a physics diagram, we take a photo, and **your lines start to move**.
+Draw a physics diagram with the **thick black marker**, we take a photo, and **it turns into a live simulation**.
 
 ## 1. Pick one of these five
 
@@ -17,7 +17,7 @@ Anything else? Draw it anyway. If we can't tell what it is, it still falls.
 ## 2. How to draw it so it works
 
 - **Draw big**: the diagram should fill at least half of the paper.
-- **Use the dark marker** and press firmly.
+- **Use the thick black marker only.** The app works best with dark black lines; pencil and thin pens may not be picked up. Press firmly.
 - **Keep lines connected**: the string touches the ceiling, the zig-zag touches the box.
 - **Keep words and numbers away from the parts**, about one finger's width, so they don't get mixed up with the lines.
 
@@ -29,4 +29,4 @@ You don't need to write any numbers. Values such as string length and mass can b
 - Make sure the **whole sheet** is in the shot.
 - Avoid casting the phone's shadow over the drawing.
 
-Then watch it move. You can also change gravity with the slider, tap **Moon**, or tap **Talk** and say *"make gravity weaker"*.
+Then watch your drawing turn into clean shapes and start moving. You can also change gravity with the slider, tap **Moon**, or tap **Talk** and say *"make gravity weaker"*.

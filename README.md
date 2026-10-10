@@ -2,7 +2,7 @@
 
 **Draw it. Snap it. Watch it move.**
 
-Draw a physics diagram on paper, take a photo with your phone, and the lines *you* drew start moving as a physics simulation. The AI works out what each stroke is (string, weight, spring, ramp...). Your own ink is cut out of the photo and becomes the moving parts, so you never re-draw anything.
+Draw a physics diagram on paper and take a photo with your phone. Whiteboard Alive works out what each stroke is (string, weight, spring, ramp...), traces over your drawing part by part, and transforms it into a clean, moving physics simulation built exactly where you drew it.
 
 Live demo: **https://lukenicholls1222.github.io/whiteboard-alive/** (works in a phone browser, no install)
 
@@ -10,15 +10,23 @@ Built at OCCHacks 2026 (Education track).
 
 ## How to use it
 
-1. Draw one of the five diagrams below on white paper with a dark marker.
+1. Draw one of the five diagrams below on white paper with a **thick black marker**.
 2. Open the live site on your phone and take a photo (or pick one from your gallery).
-3. The steps are shown as they happen: *Finding your lines → Understanding the drawing → Bringing it to life*.
-4. Before the simulation starts, the app briefly colours each stroke by the role it was given. Tap **Show what AI saw** to bring that overlay back at any time.
+3. A single progress line shows each step as it happens. Nothing moves until the drawing has been understood.
+4. The transformation:
+   - First, every stroke is coloured by the role it was given ("this is the string, this is the weight").
+   - Then a light traces your drawing part by part: the fixed parts first, then the links, then the masses.
+   - Each part snaps into a clean shape, and the simulation starts.
+   - The fixed parts of your drawing stay faintly in the background. The hand-drawn moving parts fade out after a few seconds.
+   - Tap **Show what AI saw** to bring the colour overlay back at any time.
 5. Change the physics while it runs:
+   - **Your numbers**: type in the real values. String length, mass, spring constant, ramp angle, launch speed, ground length, and the left and right pulley masses (whichever the diagram uses).
    - **Sliders**: Gravity (every diagram), Friction (incline), Launch speed (projectile).
-   - **Gravity presets**: Earth, Moon, Jupiter. Moon mode makes a pendulum swing slowly enough to see the longer period.
-   - **Voice**: tap **Talk** and say something like "make gravity weaker".
-6. Below the simulation there is a live energy graph (last 8 seconds) and a readout of the period (pendulum, spring) or speed.
+   - **Gravity presets**: Earth, Moon and Jupiter. Moon mode makes a pendulum swing slowly enough to see the longer period.
+   - **Voice**: tap **Talk** and say something like "make the string 1 meter" or "make gravity weaker". Voice can change every setting.
+   - **Air resistance**: a switch. The label is honest about the scale: real air, or real air ×N when it is exaggerated so you can see the effect.
+   - **Velocity arrows**: arrow length is proportional to speed, with a scale bar.
+6. Below the simulation there is a live energy graph (potential energy measured from the lowest point) and the period, shown next to the theory value (2π√(L/g) for the pendulum).
 
 ## Supported diagrams
 
@@ -35,15 +43,17 @@ If a drawing matches none of these, every drawn object becomes a rigid body and 
 ## How it works
 
 ```
-photo ─► OpenCV.js (on the phone) ─► numbered contours ─► Gemini labels each contour ─► Matter.js physics ─► your ink drawn on each body
+photo ─► OpenCV.js (on the phone) ─► numbered contours ─► Gemini labels each contour ─► Matter.js physics ─► clean shapes traced from your drawing
 ```
 
-1. **Computer vision on the device (OpenCV.js).** The photo is normalised against its own background, so shadows and uneven light cancel out. The paper is separated from the desk, ruled or grid lines are erased, small breaks in strokes are joined, and specks and stray handwriting are dropped. Each remaining contour is simplified (Douglas-Peucker) and given an id.
-2. **The AI only labels; it never places anything (Gemini).** Gemini gets the photo with every contour outlined and numbered, plus the list of contours. It returns JSON (enforced with a response schema) giving the diagram type, the role of each contour id, and the constraints between them. All coordinates come from OpenCV, never from the model, so nothing ends up somewhere you didn't draw it.
-3. **If the AI fails, the shapes still decide.** When Gemini is unavailable (quota, slow network, offline), a shape-based guess takes over. It looks for closed triangles, circles and boxes, filled-in blobs and zig-zag bands in the ink. It got 15 of 15 of our generated test drawings right. Add `?offline` to the URL to force this mode.
-4. **Physics (Matter.js).** Each diagram type has its own scene builder that turns roles into bodies and constraints. Stiffness and damping are fixed constants per diagram type, not chosen by the AI, so a scene behaves the same way every time. The incline adds its own Coulomb friction step, so the friction slider changes how the block slides.
-5. **Your drawing is the sprite.** The strokes of every moving body are cut out of the photo and drawn on top of that body every frame.
-6. **Voice.** The Web Speech API turns speech into text. Gemini turns the text into a small diff such as `{"set": {"gravity": 1.6}}`, which is applied immediately. If Gemini is unavailable, a keyword parser handles common phrases.
+1. **Computer vision on the device (OpenCV.js).** By default only black ink is picked up, so stains, the desk, fold shadows and the paper edge don't become strokes. If the drawing is in blue pen, it switches to the general ink detection automatically. The photo is normalised against its own background, ruled or grid lines are erased, small breaks in strokes are joined, and specks are dropped. Each remaining contour is simplified (Douglas-Peucker) and given an id.
+2. **The AI only labels; it never places anything (Gemini).** Gemini gets the photo with every contour outlined and numbered, plus the list of contours. It returns JSON (enforced with a response schema) giving the diagram type and the role of each contour id. All positions come from OpenCV, never from the model. Sizes and masses come from the numbers you type in, not from the paper.
+3. **If the AI fails, the shapes still decide.** The app waits for the AI before anything moves. If every model fails or times out, a shape-based guess takes over: it looks for closed triangles, circles and boxes, filled-in blobs and zig-zag bands in the ink. Add `?offline` to the URL to force this mode.
+4. **Physics (Matter.js).** Each diagram type has its own scene builder that turns roles into bodies and constraints. Stiffness and damping are fixed constants per diagram type, not chosen by the AI, so a scene behaves the same way every time. The incline adds its own Coulomb friction step.
+5. **The transformation.** Each scene describes its own clean figure. A light traces the matching strokes part by part, the clean shape snaps in over them, and from then on the clean figure is what moves.
+6. **Voice.** The Web Speech API turns speech into text. A keyword parser handles it first, instantly. Only if nothing matches does Gemini turn the text into a small diff such as `{"set": {"gravity": 1.6}}`.
+
+**Test results.** On 33 test drawings in `samples/generated/` (clean, faint pencil, ruled paper, dim light, broken lines, and drawings that match no diagram), with no AI on the live site: the shape-based guess picked the right diagram for 32 of 33, and 32 of 33 moved.
 
 ## Run it locally
 
@@ -69,9 +79,9 @@ All code in this repository was written during OCCHacks 2026 (Oct 10–11, 2026)
 
 - The full photo → contours → roles → physics pipeline
 - Five diagram scenes plus the always-moving fallback
-- Clean-up for messy phone photos (shadows, desk, ruled paper, broken lines)
-- The colour-coded "what the AI saw" overlay
-- Sliders, gravity presets (Moon mode) and voice control
-- Live energy graph with period readout
-- The shape-based offline guess
-- Test drawings in `samples/`: 15 generated with an image model, 15 of 15 working on the live site
+- The transformation from hand drawing to clean figure (colour overlay, tracing light, snap-in shapes)
+- Black-ink detection and clean-up for messy phone photos
+- Your numbers, gravity presets (Moon mode), air resistance, velocity arrows and voice control
+- Live energy graph with period and theory value
+- The shape-based guess for when the AI is unavailable
+- 33 test drawings in `samples/generated/`, made with an image model
