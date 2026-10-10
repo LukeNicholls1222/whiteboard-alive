@@ -109,7 +109,10 @@ function traceString(mask: Uint8Array, W: number, H: number, bob: Point, r: numb
     const width = hi - lo;
     const median = widths.length ? [...widths].sort((a, b) => a - b)[widths.length >> 1] : width;
     if (widths.length > 8 && width > median * 3 + 6) {
-      last = p; // hit the ceiling
+      // Hit the ceiling: put the pivot in the middle of the ceiling stroke, not at its lower edge.
+      let q = { ...p };
+      for (let k = 0; k < r * 2 && at(q.x, q.y); k++) q = { x: q.x + dir.x, y: q.y + dir.y };
+      last = { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
       break;
     }
     widths.push(width);
