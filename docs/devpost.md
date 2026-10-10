@@ -6,6 +6,10 @@
 
 **Tagline:** Draw a physics diagram on paper, snap a photo, and watch *your own lines* start to move.
 
+## Short version (paste into "About the project")
+
+Physics teachers draw a pendulum or a block on a ramp and ask the class to "imagine it moving", and simulation apps make students rebuild the problem with clip-art, so we made the drawing itself move. Whiteboard Alive is a web app: you draw a pendulum, spring, incline, projectile or pulley on paper and take a photo with your phone, and the strokes you drew become a live physics simulation. You can change it with sliders, a Moon gravity switch or your voice, and watch an energy graph and the period. OpenCV.js finds and numbers every stroke on the phone, Gemini only labels what each numbered stroke is (string, weight, spring...), and Matter.js runs the physics with your own ink cut out of the photo as the moving parts. All positions come from computer vision rather than the AI, and if the AI is unavailable, a guess from the shapes alone still picks the right diagram (15 of 15 on our test drawings).
+
 ---
 
 ## Inspiration
@@ -100,7 +104,6 @@ Vite + TypeScript with a plain Canvas (no framework). GitHub Actions builds on e
 
 ## What's next for Whiteboard Alive
 
-- Finish the example gallery so the demo runs fully offline.
 - Point a live camera at a classroom whiteboard instead of taking a single photo.
 - More topics: collisions, circuits, simple optics.
 - A teacher mode: save a drawing and its simulation, share it as a link with the class.
