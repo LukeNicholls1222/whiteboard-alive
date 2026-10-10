@@ -641,5 +641,7 @@ export const buildIncline: SceneBuilder = (input) => {
       },
     },
     physics: { rampAngle: (slope.angle * 180) / Math.PI },
+    // Fastest at the foot of the ramp: v² = v₀² + 2·g(sin θ − μ cos θ)·(slope left below the block) (v₀ = the starting push above).
+    speedHint: Math.hypot(Math.max(MIN_START_SPEED, Math.sqrt(2 * Math.max(0, STEP_ACCEL * (mu * Math.cos(slope.angle) - Math.sin(slope.angle))) * slope.length * MIN_SLIDE_FRACTION)), Math.sqrt(2 * Math.max(0, STEP_ACCEL * ((input.analysis.params.gravity || 9.8) / 9.8) * (Math.sin(slope.angle) - mu * Math.cos(slope.angle))) * slope.length * Math.min(1, Math.max(0, 1 - along(block.position, slope))))),
   };
 };

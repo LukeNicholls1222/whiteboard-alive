@@ -15,7 +15,7 @@
 
 import Matter from 'matter-js';
 import type { Contour, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
-import { STEP_MS } from '../sim';
+import { STEP_ACCEL, STEP_MS } from '../sim';
 import { noteFor } from '../units';
 import { buildFallback } from './fallback';
 import { contourMask, cutSprite, deepestPoint, eraseFromPaper, maskBounds, roleOf } from './common';
@@ -407,6 +407,8 @@ export const buildPulley: SceneBuilder = (input) => {
     onStep,
     onDraw,
     gravityScale: scale,
+    // Fastest at the end of the fall: v² = 2·a·travel with a = g·scale·(m₁ − m₂)/(m₁ + m₂).
+    speedHint: Math.sqrt(2 * STEP_ACCEL * ((input.analysis.params.gravity || 9.8) / 9.8) * scale * aRel * maxDown),
     measures: { wheel: 2 * R },
     parts: {
       'left weight': { at: () => bodyL.position, clear: half(left), side: 'left', body: bodyL, kg: kgL, kgFrom: fromL },

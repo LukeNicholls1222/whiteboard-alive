@@ -1,13 +1,24 @@
 // Values on the drawing: a small card next to each part with its physical value and, underneath, where that
 // value came from ("L = 0.42 m / assumed", "m = 2 kg / your note"), plus the slow-motion badge on the picture.
 // Everything is read from the scene (measures, parts, physics) and converted by units.ts.
+//
+// Where a card goes: next to its part, but off the way of everything that moves. When the scene starts, the
+// path of every moving body is worked out from the scene's own physics (the pendulum's arc, the pulley weights'
+// run up and down, the projectile's arc, the spring's stroke, the slide down a ramp), together with the velocity
+// arrow it will carry along that path (as long as the arrows will draw it, see vectors.ts). A card is placed
+// clear of all of that, of the other cards and of the scale bar's corner, then stays put. It only moves when
+// something still comes near (a path that went differently): every frame it is checked against the bodies and
+// arrows as they are now.
 
+import Matter from 'matter-js';
 import { DEFAULT_FRICTION } from './scenes/incline';
 import type { Simulation } from './sim';
 import type { Analysis, BuiltScene, PartInfo, PartName, Point, ValueSource } from './types';
 import {
   DEFAULT_KG,
+  OMEGA2_PER_STIFFNESS,
   SOURCE_TEXT,
+  STEP_MS,
   formatLength,
   formatMass,
   formatSpeed,
@@ -18,6 +29,7 @@ import {
   springK,
   timeLabel,
 } from './units';
+import { ARROW_HEAD_HALF_CSS, LABEL_SPACE_CSS, LMAX_FRACTION, scaleBarZone } from './vectors';
 
 const C = { green: '#58cc02', blue: '#1cb0f6', orange: '#ff9600', red: '#ff4b4b', purple: '#ce82ff' };
 const PART_COLOR: Record<PartName, string> = {
@@ -40,7 +52,18 @@ const SRC_FONT_CSS = 9.5;
 const PILL_H_CSS = 31;
 const PAD_CSS = 8;
 const RADIUS_CSS = 11;
-const GAP_CSS = 5;
+/** Between the cards of one part; between different parts' cards and the scale bar it is LABEL_SPACE_CSS. */
+const GAP_CSS = 6;
+/** Room a card keeps from an arrow's edge (CSS px). */
+const ARROW_SPACE_CSS = 6;
+/** Thickness kept clear around a swinging string (CSS px, from its centre line). */
+const STRING_HALF_CSS = 3;
+/** Spacing of the predicted path samples (world px along the path). */
+const PATH_STEP = 6;
+/** Most observed path samples kept (oldest dropped first). */
+const OBSERVED_MAX = 1500;
+/** After a search that found no clean spot, frames until the next one. */
+const RETRY_FRAMES = 15;
 
 interface Pill {
   part: PartName;
@@ -54,11 +77,21 @@ interface Pill {
 interface Group {
   part: PartName;
   pills: Pill[];
-  /** Index into the candidate spots last used, kept while it still fits so moving labels do not jump around. */
+  /** Index into the candidate spots of the last placement (for tests). */
   spot: number;
+  /** Where the block sits (world px centre); kept while it stays clear. */
+  at: Point | null;
+  /** Frames left before looking again for a clean spot, after a search that found none. */
+  retry: number;
 }
 
 export type Box = { x: number; y: number; w: number; h: number };
+
+/**
+ * Something a card keeps off: a box (a body), or a line `r` CSS px thick each side of its centre line (an
+ * arrow, a string). `soft` ones (strings) are given up first when nothing else fits.
+ */
+type Keep = ({ box: Box } | { seg: [number, number, number, number]; r: number }) & { soft?: boolean };
 
 export class QuantityLabels {
   enabled = true;
@@ -67,8 +100,17 @@ export class QuantityLabels {
   private badge: HTMLDivElement;
   /** Label boxes of the last frame (world px), so the velocity arrows can keep their numbers off them. */
   boxes: Box[] = [];
+  /** Predicted paths of the moving bodies and their arrows (world px), worked out on the first frame. */
+  private paths: Keep[] | null = null;
+  /** Where bodies and arrows actually went (added as they move, for any later re-placement). */
+  private observed: Keep[] = [];
+  private lastSeen = new Map<Matter.Body, Point>();
+  /** Fastest body speed seen, px per step (scales the arrows of a scene without a speedHint). */
+  private vSeen = 0;
+  /** Buttons and badges floating over the picture (the slow-motion badge, "Show what AI saw"), world px. */
+  private floats: { boxes: Box[]; css: number; age: number } | null = null;
 
-  constructor(card: HTMLElement) {
+  constructor(private card: HTMLElement) {
     injectStyle();
     this.badge = document.createElement('div');
     this.badge.className = 'time-badge';
@@ -89,10 +131,14 @@ export class QuantityLabels {
     const scale = scaleOf(sim.scene);
     this.groups = [];
     this.boxes = [];
+    this.paths = null;
+    this.observed = [];
+    this.lastSeen.clear();
+    this.vSeen = 0;
     for (const pill of pillsFor(sim.scene, analysis)) {
       const g = this.groups.find((x) => x.part === pill.part);
       if (g) g.pills.push(pill);
-      else this.groups.push({ part: pill.part, pills: [pill], spot: 0 });
+      else this.groups.push({ part: pill.part, pills: [pill], spot: 0, at: null, retry: 0 });
     }
     this.badge.textContent = timeLabel(scale);
     this.badge.title = `1 s on screen = ${Number(scale.timeFactor.toPrecision(2))} s of real time`;
@@ -115,8 +161,19 @@ export class QuantityLabels {
     const font = `800 ${FONT_CSS * css}px Nunito, "Avenir Next", system-ui, sans-serif`;
     const srcFont = `700 ${SRC_FONT_CSS * css}px Nunito, "Avenir Next", system-ui, sans-serif`;
     const placed: Box[] = [];
+    const space = LABEL_SPACE_CSS * css;
+    const lmax = LMAX_FRACTION * Math.min(worldW, worldH);
+    if (!this.groups.length) {
+      this.last = [];
+      this.boxes = [];
+      return;
+    }
+    const sim = this.sim!;
+    const predicted = (this.paths ??= predictPaths(scene, sim.engine, worldW, worldH, lmax));
+    // What moves right now (bodies, their arrows, swinging strings); also remembered for later re-placements.
+    const now = this.current(scene, lmax);
     // Labels never cover a part of the drawing (its own or another one's): moving parts by their body's box,
-    // fixed ones (wheel, launch point) by their clearance circle.
+    // fixed ones (wheel, launch point) by their clearance circle. Nor the scale bar's corner.
     const m = 2 * css;
     const keepBoxes: Box[] = [];
     const keepCircles: { c: Point; r: number }[] = [];
@@ -127,6 +184,12 @@ export class QuantityLabels {
         keepBoxes.push({ x: b.min.x - m, y: b.min.y - m, w: b.max.x - b.min.x + 2 * m, h: b.max.y - b.min.y + 2 * m });
       } else if ((p.clear ?? 0) > 0) keepCircles.push({ c: { ...p.at() }, r: p.clear! });
     }
+    const bar = scaleBarZone(ctx, css, worldW, worldH);
+    const floats = this.floatingBoxes(ctx.canvas, css);
+    const arrowGap = ARROW_SPACE_CSS * css;
+    /** Is a box clear of the given things (bodies 2 px apart, arrows and strings ARROW_SPACE_CSS from their edge)? */
+    const clearOf = (b: Box, list: Keep[], soft: boolean) =>
+      !list.some((k) => (soft || !k.soft) && ('box' in k ? overlap(grow(k.box, m), b) : segBoxDist(k.seg, b) < k.r * css + arrowGap));
     this.last = [];
     for (const group of this.groups) {
       const part = scene.parts?.[group.part];
@@ -145,33 +208,52 @@ export class QuantityLabels {
       const nRows = Math.ceil(rows.length / cols);
       const w = cols * cw + (cols - 1) * gap;
       const H = nRows * h + (nRows - 1) * gap;
-      const spots = spotsFor(part, w, H, gap);
-      const fits = (c: Point) => {
-        const b = { x: c.x - w / 2, y: c.y - H / 2, w, h: H };
-        return (
-          b.x >= 2 * css &&
-          b.y >= 2 * css &&
-          b.x + w <= worldW - 2 * css &&
-          b.y + H <= worldH - 2 * css &&
-          !placed.some((o) => overlap(o, b)) &&
-          !keepBoxes.some((o) => overlap(o, b)) &&
-          !keepCircles.some((k) => boxCircleOverlap(b, k.c, k.r))
-        );
-      };
-      let k = group.spot < spots.length && fits(spots[group.spot]) ? group.spot : spots.findIndex(fits);
-      let c: Point;
-      if (k >= 0) {
+      const boxAt = (c: Point): Box => ({ x: c.x - w / 2, y: c.y - H / 2, w, h: H });
+      // Always: on the picture, LABEL_SPACE_CSS off the other cards and the scale bar, off the drawing's parts,
+      // and off whatever moves right now (bodies and their arrows).
+      const base = (b: Box) =>
+        b.x >= 2 * css &&
+        b.y >= 2 * css &&
+        b.x + b.w <= worldW - 2 * css &&
+        b.y + b.h <= worldH - 2 * css &&
+        !placed.some((o) => overlap(grow(o, space), b)) &&
+        !overlap(grow(bar, space), b) &&
+        !floats.some((o) => overlap(grow(o, space), b)) &&
+        !keepBoxes.some((o) => overlap(o, b)) &&
+        !keepCircles.some((k) => boxCircleOverlap(b, k.c, k.r)) &&
+        clearOf(b, now, false);
+      // The block stays where it was put while that is still fine (a card that follows a moving part would
+      // ride on its path); otherwise it is placed again, at most every few frames when nothing fits.
+      if (!group.at || (!base(boxAt(group.at)) && --group.retry <= 0)) {
+        const spots = spotsFor(part, w, H, gap);
+        const paths = this.observed.length ? predicted.concat(this.observed) : predicted;
+        // Best: off every path, strings included; then strings may be crossed; then off what moves right now only.
+        const tiers = [(b: Box) => clearOf(b, paths, true), (b: Box) => clearOf(b, paths, false), () => true];
+        let k = -1;
+        for (const ok of tiers) {
+          k = spots.findIndex((s) => {
+            const b = boxAt(s);
+            return base(b) && ok(b);
+          });
+          if (k >= 0) break;
+        }
+        if (k >= 0) {
+          group.at = spots[k];
+          group.retry = 0;
+        } else {
+          // Nothing fits cleanly: the preferred spot, kept on the picture; look again in a moment.
+          k = 0;
+          group.at = {
+            x: Math.min(Math.max(spots[0].x, w / 2 + 2 * css), worldW - w / 2 - 2 * css),
+            y: Math.min(Math.max(spots[0].y, H / 2 + 2 * css), worldH - H / 2 - 2 * css),
+          };
+          group.retry = RETRY_FRAMES;
+        }
         group.spot = k;
-        c = spots[k];
-      } else {
-        // Nothing fits cleanly: the preferred spot, kept on the picture.
-        k = 0;
-        c = {
-          x: Math.min(Math.max(spots[0].x, w / 2 + 2 * css), worldW - w / 2 - 2 * css),
-          y: Math.min(Math.max(spots[0].y, H / 2 + 2 * css), worldH - H / 2 - 2 * css),
-        };
       }
-      placed.push({ x: c.x - w / 2, y: c.y - H / 2, w, h: H });
+      const c = group.at;
+      const k = group.spot;
+      placed.push(boxAt(c));
       rows.forEach((r, i) => {
         const row = Math.floor(i / cols), col = i % cols;
         // A last row with a single card is centred.
@@ -184,6 +266,189 @@ export class QuantityLabels {
     }
     this.boxes = placed;
   }
+
+  /**
+   * Where the badges and buttons floating over the picture are (world px), so no card hides behind them.
+   * Read from the page every half second or when the picture is resized (they show and hide on their own).
+   */
+  private floatingBoxes(canvas: HTMLCanvasElement, css: number): Box[] {
+    const f = this.floats;
+    if (f && f.css === css && ++f.age < 30) return f.boxes;
+    const cr = canvas.getBoundingClientRect();
+    const boxes: Box[] = [];
+    for (const el of this.card.querySelectorAll<HTMLElement>('.time-badge, .btn-float')) {
+      if (el.hidden || !el.offsetParent) continue;
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      boxes.push({ x: (r.left - cr.left) * css, y: (r.top - cr.top) * css, w: r.width * css, h: r.height * css });
+    }
+    this.floats = { boxes, css, age: 0 };
+    return boxes;
+  }
+
+  /**
+   * What moves right now: each moving body's box, its velocity arrow (never shorter than the one vectors.ts
+   * draws: that one is speed × Lmax / vRef with vRef ≥ speedHint) and a swinging string. Remembered as the
+   * observed path every PATH_STEP world px.
+   */
+  private current(scene: BuiltScene, lmax: number): Keep[] {
+    const out: Keep[] = [];
+    const hint = scene.speedHint && scene.speedHint > 0 ? scene.speedHint : 0;
+    for (const { body: b, pivot } of movingOf(scene)) {
+      const v = Math.hypot(b.velocity.x, b.velocity.y);
+      this.vSeen = Math.max(this.vSeen, v);
+      const p = b.position;
+      const keep = poseKeeps(b, p.x, p.y, v > 1e-9 ? [{ x: b.velocity.x / v, y: b.velocity.y / v }] : [], arrowLen(v, hint || this.vSeen, lmax), pivot);
+      out.push(...keep);
+      const last = this.lastSeen.get(b);
+      if (!last || Math.hypot(p.x - last.x, p.y - last.y) >= PATH_STEP) {
+        this.lastSeen.set(b, { x: p.x, y: p.y });
+        this.observed.push(...keep);
+        if (this.observed.length > OBSERVED_MAX) this.observed.splice(0, this.observed.length - OBSERVED_MAX);
+      }
+    }
+    return out;
+  }
+}
+
+/** The bodies the user sees moving (as vectors.ts picks them), with the pivot of a swinging one. */
+function movingOf(scene: BuiltScene): { body: Matter.Body; pivot?: Point }[] {
+  const out: { body: Matter.Body; pivot?: Point }[] = [];
+  for (const sp of scene.sprites) {
+    const f = sp.follow;
+    if (f.kind === 'stretch' || f.body.isStatic || out.some((o) => o.body === f.body)) continue;
+    out.push({ body: f.body, pivot: f.kind === 'swing' ? f.pivot : undefined });
+  }
+  return out;
+}
+
+/** Arrow length (world px) at speed v when the arrows are scaled to vTop (both px per step), at most Lmax. */
+const arrowLen = (v: number, vTop: number, lmax: number) => (v > 1e-9 ? Math.min(lmax, (v * lmax) / Math.max(vTop, 1e-9)) : 0);
+
+/** What a body at (x, y) takes: its box, its arrow(s) of length `len` along `dirs`, and its string to `pivot`. */
+function poseKeeps(b: Matter.Body, x: number, y: number, dirs: Point[], len: number, pivot?: Point): Keep[] {
+  const hw = (b.bounds.max.x - b.bounds.min.x) / 2, hh = (b.bounds.max.y - b.bounds.min.y) / 2;
+  const out: Keep[] = [{ box: { x: x - hw, y: y - hh, w: 2 * hw, h: 2 * hh } }];
+  if (len > 0.5) for (const d of dirs) out.push({ seg: [x, y, x + d.x * len, y + d.y * len], r: ARROW_HEAD_HALF_CSS });
+  if (pivot) out.push({ seg: [pivot.x, pivot.y, x, y], r: STRING_HALF_CSS, soft: true });
+  return out;
+}
+
+/**
+ * Where every moving body will go, and its arrow along the way, from the scene's own physics at the start:
+ *   swinging (pendulum)  the arc between the turning points (energy), arrows both ways along it;
+ *   pulley               straight up to the wheel and down to the bottom edge, full-length arrows both ways;
+ *   projectile           the parabola until it reaches the ground (or leaves the picture);
+ *   spring               the stroke of ± amplitude (speedHint / ω) along the spring;
+ *   anything else        straight on along its velocity, then along the ground (a block sliding off a ramp).
+ */
+function predictPaths(scene: BuiltScene, engine: Matter.Engine, W: number, H: number, lmax: number): Keep[] {
+  const out: Keep[] = [];
+  const g = engine.gravity.y * engine.gravity.scale * STEP_MS * STEP_MS; // px per step², downwards
+  const hint = scene.speedHint && scene.speedHint > 0 ? scene.speedHint : 0;
+  const groundY = scene.parts?.ground?.at().y;
+  for (const { body: b, pivot } of movingOf(scene)) {
+    const p = { ...b.position };
+    const v0 = { ...b.velocity };
+    const v = Math.hypot(v0.x, v0.y);
+    const hh = (b.bounds.max.y - b.bounds.min.y) / 2;
+    const add = (x: number, y: number, dirs: Point[], len: number) => out.push(...poseKeeps(b, x, y, dirs, len, pivot));
+
+    if (pivot) {
+      const L = Math.hypot(p.x - pivot.x, p.y - pivot.y);
+      if (L < 1) continue;
+      const th = Math.atan2(p.x - pivot.x, p.y - pivot.y);
+      // Turning point from energy: v² = 2gL(cos φ − cos φmax). No gravity or over the top: the whole circle.
+      const cosMax = g > 0 ? Math.cos(th) - (v * v) / (2 * g * L) : -2;
+      const thMax = cosMax <= -1 ? Math.PI : Math.acos(Math.min(1, cosMax));
+      const speedAt = (phi: number) => Math.sqrt(Math.max(0, v * v + 2 * g * L * (Math.cos(phi) - Math.cos(th))));
+      const vTop = Math.max(hint, speedAt(0));
+      const n = Math.min(240, Math.max(2, Math.ceil((2 * thMax * L) / PATH_STEP)));
+      for (let i = 0; i <= n; i++) {
+        const phi = -thMax + (2 * thMax * i) / n;
+        const t = { x: Math.cos(phi), y: -Math.sin(phi) };
+        add(pivot.x + L * Math.sin(phi), pivot.y + L * Math.cos(phi), [t, { x: -t.x, y: -t.y }], arrowLen(speedAt(phi), vTop, lmax));
+      }
+    } else if (scene.label === 'Pulley') {
+      const wheel = scene.parts?.wheel;
+      const top = wheel ? wheel.at().y + (wheel.clear ?? 0) + hh : p.y - H / 2;
+      for (let y = Math.min(top, p.y); y <= Math.max(H, p.y); y += PATH_STEP) add(p.x, y, [{ x: 0, y: -1 }, { x: 0, y: 1 }], lmax);
+    } else if (scene.label === 'Projectile') {
+      const floor = groundY ?? H;
+      const pts: { x: number; y: number; vx: number; vy: number }[] = [];
+      let x = p.x, y = p.y, vx = v0.x, vy = v0.y, run = PATH_STEP;
+      for (let i = 0; i < 3000; i++) {
+        if (run >= PATH_STEP) {
+          pts.push({ x, y, vx, vy });
+          run = 0;
+        }
+        vy += g;
+        x += vx;
+        y += vy;
+        run += Math.hypot(vx, vy);
+        if (y + hh > floor || x < -hh || x > W + hh || y > H + hh) break;
+      }
+      pts.push({ x, y, vx, vy });
+      const vTop = Math.max(hint, ...pts.map((q) => Math.hypot(q.vx, q.vy)));
+      for (const q of pts) {
+        const s = Math.hypot(q.vx, q.vy);
+        add(q.x, q.y, s > 1e-9 ? [{ x: q.vx / s, y: q.vy / s }] : [], arrowLen(s, vTop, lmax));
+      }
+    } else {
+      const spring = scene.constraints.find((c) => c.bodyB === b && !c.bodyA);
+      if (spring && v > 1e-9) {
+        // Stroke ± amplitude along the kick (= along the spring); arrows both ways, longest in the middle.
+        const omega = Math.sqrt(OMEGA2_PER_STIFFNESS * spring.stiffness);
+        const vTop = Math.max(hint, v);
+        const amp = (1.15 * vTop) / Math.max(omega, 1e-6);
+        const d = { x: v0.x / v, y: v0.y / v };
+        const n = Math.min(200, Math.max(2, Math.ceil((2 * amp) / PATH_STEP)));
+        for (let i = 0; i <= n; i++) {
+          const s = -amp + (2 * amp * i) / n;
+          add(p.x + d.x * s, p.y + d.y * s, [d, { x: -d.x, y: -d.y }], lmax * Math.sqrt(Math.max(0, 1 - (s / amp) ** 2)));
+        }
+        continue;
+      }
+      // Straight on along the velocity (down if still), full-length arrow; along the ground once it gets there.
+      let d = v > 1e-9 ? { x: v0.x / v, y: v0.y / v } : { x: 0, y: 1 };
+      let x = p.x, y = p.y;
+      for (let i = 0; i < 2000 && x >= -hh && x <= W + hh && y <= H + hh && y >= -hh; i++) {
+        add(x, y, [d], lmax);
+        if (groundY !== undefined && d.y > 0 && y + hh >= groundY) d = { x: Math.sign(d.x) || 1, y: 0 };
+        x += d.x * PATH_STEP;
+        y += d.y * PATH_STEP;
+      }
+    }
+  }
+  return out;
+}
+
+const grow = (b: Box, d: number): Box => ({ x: b.x - d, y: b.y - d, w: b.w + 2 * d, h: b.h + 2 * d });
+
+/** Shortest distance between a segment and a box (0 when they touch or cross). */
+function segBoxDist([x1, y1, x2, y2]: [number, number, number, number], b: Box): number {
+  // Crossing: Liang-Barsky clip.
+  let t0 = 0, t1 = 1;
+  const dx = x2 - x1, dy = y2 - y1;
+  const clip = (p: number, q: number) => {
+    if (p === 0) return q >= 0;
+    const r = q / p;
+    if (p < 0) {
+      if (r > t1) return false;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return false;
+      if (r < t1) t1 = r;
+    }
+    return true;
+  };
+  if (clip(-dx, x1 - b.x) && clip(dx, b.x + b.w - x1) && clip(-dy, y1 - b.y) && clip(dy, b.y + b.h - y1)) return 0;
+  const toSeg = (px: number, py: number) => {
+    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy || 1)));
+    return Math.hypot(px - x1 - t * dx, py - y1 - t * dy);
+  };
+  const toBox = (px: number, py: number) => Math.hypot(Math.max(b.x - px, 0, px - b.x - b.w), Math.max(b.y - py, 0, py - b.y - b.h));
+  return Math.min(toSeg(b.x, b.y), toSeg(b.x + b.w, b.y), toSeg(b.x, b.y + b.h), toSeg(b.x + b.w, b.y + b.h), toBox(x1, y1), toBox(x2, y2));
 }
 
 type Side = NonNullable<PartInfo['side']>;
@@ -224,7 +489,8 @@ function spotsFor(part: PartInfo, w: number, h: number, gap: number): Point[] {
   };
   const out: Point[] = [];
   const step = Math.min(h, 40 * (gap / GAP_CSS)) + gap;
-  for (const extra of [0, step, 2 * step]) for (const s of SIDE_ORDER[part.side ?? 'right']) out.push(at(s, extra));
+  // Further steps out are for a part whose neighbourhood is on a path (a swinging bob, a launch point).
+  for (const n of [0, 1, 2, 3, 4, 6, 8]) for (const s of SIDE_ORDER[part.side ?? 'right']) out.push(at(s, n * step));
   return out;
 }
 

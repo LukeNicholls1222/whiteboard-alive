@@ -1,7 +1,9 @@
 // Velocity arrows: one arrow per moving body of the drawing, from its centre in the direction it moves.
 // Length is strictly proportional to speed with one factor for the whole scene, so arrows can be compared.
-// The factor is picked per drawing from the fastest motion seen so far (the top speed gets an arrow about a
-// fifth of the picture) and a scale bar in the corner says how long "1 m/s" (or 0.2 m/s, ...) is.
+// The factor is picked per drawing from the top speed the scene expects (its speedHint, from its own physics),
+// or the fastest motion seen if that is faster: the top speed gets an arrow about a fifth of the picture, so
+// from the very first run an arrow grows as the body speeds up. A scale bar in the corner says how long
+// "1 m/s" (or 0.2 m/s, ...) is.
 
 import Matter from 'matter-js';
 import { STEP_ACCEL, STEP_MS, type Simulation } from './sim';
@@ -13,12 +15,13 @@ const STEP_S = STEP_MS / 1000;
 const PX_PER_M = STEP_ACCEL / (STEP_S * STEP_S) / 9.8;
 
 /** The scene's top speed gets an arrow this long (fraction of the picture's short side). */
-const LMAX_FRACTION = 0.22;
+export const LMAX_FRACTION = 0.22;
 /**
- * The factor is Lmax / vRef, where vRef is the fastest speed seen so far in this scene (it only ever grows,
- * so every arrow stays comparable with every earlier one). For the first second a small provisional value
- * fades out instead, so the very first frames are not scaled against a near-zero maximum, and a floor keeps
- * a scene that hardly moves from blowing its arrows up.
+ * The factor is Lmax / vRef, where vRef is the larger of the scene's expected top speed (BuiltScene.speedHint)
+ * and the fastest speed seen so far (it only ever grows, so every arrow stays comparable with every earlier
+ * one). A scene without a hint gets a small provisional value for the first second instead, so its very first
+ * frames are not scaled against a near-zero maximum, and a floor keeps a scene that hardly moves from blowing
+ * its arrows up.
  */
 const SEED_MPS = 0.3;
 const SEED_FRAMES = 60;
@@ -65,6 +68,13 @@ const LABEL_CSS = 12;
 const LABEL_GAP_CSS = 8;
 const EDGE_PAD_CSS = 4;
 const BAR_MARGIN_CSS = 10;
+/** Room a label keeps from another label and from the scale bar (CSS px). */
+export const LABEL_SPACE_CSS = 6;
+/** Half the width an arrow takes on screen, white outline included (CSS px): along the shaft, and at the head. */
+export const ARROW_HALF_CSS = SHAFT_CSS / 2 + OUTLINE_CSS;
+export const ARROW_HEAD_HALF_CSS = HEAD_HALF_W_CSS + OUTLINE_CSS;
+/** Room the speed label of an arrow may take past its tip (CSS px): about "10.0 m/s" plus its gap. */
+export const ARROW_LABEL_REACH_CSS = 70;
 
 interface Track {
   vx: number; // px/step, smoothed
@@ -118,8 +128,12 @@ export interface ArrowScale {
   k: number;
   /** Top speed the factor is based on, m/s. */
   vRef: number;
+  /** The scene's expected top speed (speedHint), m/s; 0 when the scene gives none. */
+  hint: number;
   /** Scale bar in the corner: a round number of m/s and its length in world px (= k × mps). */
   bar: { mps: number; px: number };
+  /** The scale bar's pill, world px. */
+  box: Box;
 }
 
 export class VelocityArrows {
@@ -129,6 +143,8 @@ export class VelocityArrows {
   private input: HTMLInputElement | null = null;
   /** Fastest smoothed speed seen in this scene, m/s. */
   private vMax = 0;
+  /** The scene's expected top speed (speedHint), m/s; 0 = none. */
+  private hint = 0;
   private frames = 0;
   /** Eased factor, world px per m/s (0 = not set yet). */
   private kShown = 0;
@@ -146,6 +162,8 @@ export class VelocityArrows {
     this.last = [];
     this.scale = null;
     this.vMax = 0;
+    const hint = sim.scene.speedHint;
+    this.hint = hint && hint > 0 && Number.isFinite(hint) ? mps(hint, scaleOf(sim.scene)) : 0;
     this.frames = 0;
     this.kShown = 0;
     sim.drawListeners.push((ctx, scene, s) => {
@@ -230,11 +248,10 @@ export class VelocityArrows {
       maxNow = Math.max(maxNow, speed);
     }
 
-    // The factor for this frame: Lmax at the top speed seen so far (provisional seed in the first second).
+    // The factor for this frame: Lmax at the expected top speed, or at the fastest seen if that is faster.
     this.vMax = Math.max(this.vMax, maxNow);
-    const seed = SEED_MPS * Math.max(0, 1 - this.frames / SEED_FRAMES);
+    const vRef = this.vRef();
     this.frames++;
-    const vRef = Math.max(this.vMax, seed, MIN_VREF_MPS);
     const kTarget = lmax / vRef;
     let k = this.kShown > 0 ? this.kShown + (kTarget - this.kShown) * EASE : kTarget;
     // While easing, never let the fastest arrow run past Lmax.
@@ -252,8 +269,10 @@ export class VelocityArrows {
     ctx.font = `800 ${LABEL_CSS * css}px ${FONT}`;
     const bar = layoutScaleBar(ctx, css, worldH, k, vRef);
     const obstacles = this.obstacles(scene, bodies, css);
-    obstacles.push({ box: bar.box, hard: true });
-    for (const box of this.avoid()) obstacles.push({ box });
+    // The scale bar and the value labels are text a speed label must never cover, and it keeps a little room from them.
+    const space = LABEL_SPACE_CSS * css;
+    obstacles.push({ box: grow(bar.box, space), hard: true });
+    for (const box of this.avoid()) obstacles.push({ box: grow(box, space), hard: true });
     const labels: Array<{ text: string; box: Box }> = [];
     const edge = (HEAD_HALF_W_CSS + OUTLINE_CSS) * css;
     for (const b of bodies) {
@@ -283,12 +302,18 @@ export class VelocityArrows {
     paintScaleBar(ctx, css, bar);
     for (const l of labels) drawLabel(ctx, l.text, l.box, css);
     this.last = samples;
-    this.scale = { k, vRef, bar: { mps: bar.mps, px: bar.px } };
+    this.scale = { k, vRef, hint: this.hint, bar: { mps: bar.mps, px: bar.px }, box: bar.box };
+  }
+
+  /** Top speed the factor is based on, m/s: the expected one, the fastest seen, or the fading seed without a hint. */
+  private vRef(): number {
+    const seed = this.hint > 0 ? 0 : SEED_MPS * Math.max(0, 1 - this.frames / SEED_FRAMES);
+    return Math.max(this.hint, this.vMax, seed, MIN_VREF_MPS);
   }
 
   /** Show / hide with hysteresis; a sudden stop parks the arrow until a clear restart. */
   private updateShown(t: Track, b: Matter.Body, speed: number) {
-    const vRef = Math.max(this.vMax, SEED_MPS * Math.max(0, 1 - this.frames / SEED_FRAMES), MIN_VREF_MPS);
+    const vRef = this.vRef();
     const base = Math.max(SHOW_FRACTION * vRef, SHOW_MIN_MPS);
     const p = b.position;
     if (t.speed >= CRASH_FROM * vRef && speed <= CRASH_TO * vRef) {
@@ -519,6 +544,24 @@ interface ScaleBar {
   lineX: number;
   textX: number;
   y: number;
+}
+
+const grow = (b: Box, d: number): Box => ({ x: b.x - d, y: b.y - d, w: b.w + 2 * d, h: b.h + 2 * d });
+
+/**
+ * The most room the scale bar can ever take (world px): its line is at most 0.8 × Lmax (a round number of m/s
+ * below 0.8 × vRef), its text at most as wide as "0.05 m/s". Other labels keep off this from the first frame.
+ */
+export function scaleBarZone(ctx: CanvasRenderingContext2D, css: number, W: number, H: number): Box {
+  ctx.save();
+  ctx.font = `800 ${LABEL_CSS * css}px ${FONT}`;
+  const tw = ctx.measureText('0.05 m/s').width;
+  ctx.restore();
+  const px = 0.8 * LMAX_FRACTION * Math.min(W, H);
+  const padX = 10 * css, padY = 6 * css, gap = 8 * css;
+  const w = padX * 2 + px + gap + tw;
+  const h = padY * 2 + LABEL_CSS * css;
+  return { x: BAR_MARGIN_CSS * css, y: H - BAR_MARGIN_CSS * css - h, w, h };
 }
 
 /** Bottom-left pill: a line as long as a round number of m/s at the current factor, and that number. */
