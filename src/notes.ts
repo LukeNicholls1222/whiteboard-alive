@@ -64,6 +64,8 @@ const PATH_STEP = 6;
 const OBSERVED_MAX = 1500;
 /** After a search that found no clean spot, frames until the next one. */
 const RETRY_FRAMES = 15;
+/** Buttons starting this close to the picture's top edge (CSS px) form the top row kept clear across the width. */
+const TOP_ROW_CSS = 40;
 
 interface Pill {
   part: PartName;
@@ -211,16 +213,18 @@ export class QuantityLabels {
       const w = cols * cw + (cols - 1) * gap;
       const H = nRows * h + (nRows - 1) * gap;
       const boxAt = (c: Point): Box => ({ x: c.x - w / 2, y: c.y - H / 2, w, h: H });
-      // Always: on the picture, LABEL_SPACE_CSS off the other cards and the scale bar, off the drawing's parts,
-      // and off whatever moves right now (bodies and their arrows).
-      const base = (b: Box) =>
+      /** On the picture, LABEL_SPACE_CSS off the other cards, the scale bar and the buttons over the picture. */
+      const fixedOk = (b: Box) =>
         b.x >= vis.x + 2 * css &&
         b.y >= vis.y + 2 * css &&
         b.x + b.w <= vis.x + worldW - 2 * css &&
         b.y + b.h <= vis.y + worldH - 2 * css &&
         !placed.some((o) => overlap(grow(o, space), b)) &&
         !overlap(grow(bar, space), b) &&
-        !floats.some((o) => overlap(grow(o, space), b)) &&
+        !floats.some((o) => overlap(grow(o, space), b));
+      // Always: that, off the drawing's parts, and off whatever moves right now (bodies and their arrows).
+      const base = (b: Box) =>
+        fixedOk(b) &&
         !keepBoxes.some((o) => overlap(o, b)) &&
         !keepCircles.some((k) => boxCircleOverlap(b, k.c, k.r)) &&
         clearOf(b, now, false);
@@ -258,9 +262,10 @@ export class QuantityLabels {
             group.at = pushed[k];
             group.retry = 0;
           } else {
-            // Nothing fits cleanly: the preferred spot, kept on the picture; look again in a moment.
-            k = 0;
-            group.at = pushed[0];
+            // Nothing fits cleanly: the first spot that is at least off the buttons and the other cards (else the
+            // preferred one), kept on the picture; look again in a moment.
+            k = Math.max(0, pushed.findIndex((s) => fixedOk(boxAt(s))));
+            group.at = pushed[k];
             group.retry = RETRY_FRAMES;
           }
         }
@@ -296,6 +301,13 @@ export class QuantityLabels {
       const r = el.getBoundingClientRect();
       if (!r.width || !r.height) continue;
       boxes.push({ x: vis.x + (r.left - cr.left) * css, y: vis.y + (r.top - cr.top) * css, w: r.width * css, h: r.height * css });
+    }
+    // The row of buttons along the top edge is kept clear across the whole width (also the gap between them, and the
+    // spot of a button that shows up a moment later), so no card sits half behind one.
+    const top = boxes.filter((b) => b.y - vis.y < TOP_ROW_CSS * css);
+    if (top.length) {
+      const y0 = Math.min(...top.map((b) => b.y)), y1 = Math.max(...top.map((b) => b.y + b.h));
+      boxes.push({ x: vis.x, y: y0, w: vis.w, h: y1 - y0 });
     }
     this.floats = { boxes, css, x0: vis.x, y0: vis.y, age: 0 };
     return boxes;
