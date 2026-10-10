@@ -218,8 +218,14 @@ async function run(file: Blob, example?: string) {
   // An older photo may still be waiting for Gemini: its glowing lines must not draw over this one.
   stopWaiting();
   try {
+    // Nothing from the previous drawing (graph, period, value labels, arrows, sliders, slow-motion badge) stays
+    // on screen while this one loads; the graph card keeps its height so the page does not jump.
     overlay.reset();
     notes.reset();
+    arrows.reset();
+    graph.reset();
+    controls.hide();
+    explain.textContent = '';
     setStep('load');
     const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
     const photo = toWorkingCanvas(bitmap, bitmap.width, bitmap.height);
@@ -244,8 +250,6 @@ async function run(file: Blob, example?: string) {
       // guess is worked out in the meantime, so a failure or timeout can start on it at once.
       sim?.stop();
       sim = null;
-      controls.hide();
-      explain.textContent = '';
       showWaiting(vision);
       mark('waiting');
       // Another photo or example may replace this one while it waits; the generation check drops the old answer.

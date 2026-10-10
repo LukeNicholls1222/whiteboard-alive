@@ -98,7 +98,8 @@ export class LiveGraph {
         <span><i style="background:${BLUE}"></i>Kinetic</span>
         <span><i style="background:${ORANGE}"></i>Potential</span>
         <span><i style="background:${GREEN}"></i>Total</span>
-      </div>`;
+      </div>
+      <div class="lg-wait">Waiting for the drawing…</div>`;
     after.insertAdjacentElement('afterend', this.root);
     this.canvas = this.root.querySelector('canvas')!;
     this.ctx = this.canvas.getContext('2d')!;
@@ -113,8 +114,22 @@ export class LiveGraph {
     });
   }
 
+  /**
+   * A new photo is on its way: stop following the old drawing and hide its numbers and curves. The card keeps
+   * its size (no jump in the layout below) and shows a quiet placeholder until the next attach().
+   */
+  reset() {
+    this.sim = null;
+    this.samples = [];
+    this.root.classList.add('lg-waiting');
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.metricValue.textContent = '--';
+  }
+
   attach(sim: Simulation, diagram: DiagramType) {
     this.sim = sim;
+    this.root.classList.remove('lg-waiting');
     this.diagram = diagram;
     this.scale = scaleOf(sim.scene);
     this.kg = massesOf(sim.scene);
@@ -509,6 +524,10 @@ function injectStyle() {
   #stage { transition: filter 0.4s; }
   .lg-card { background: #fff; border: 2px solid #e5e5e5; border-bottom-width: 4px; border-radius: 20px; padding: 12px 14px 10px; display: flex; flex-direction: column; gap: 8px; }
   .lg-card[hidden] { display: none; }
+  .lg-card { position: relative; }
+  .lg-card.lg-waiting > :not(.lg-wait) { visibility: hidden; }
+  .lg-wait { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; font-size: 15px; font-weight: 800; color: #afafaf; }
+  .lg-card.lg-waiting .lg-wait { display: flex; }
   .lg-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .lg-metric { display: flex; flex-direction: column; min-width: 0; }
   .lg-metric-label { font-size: 12px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: #afafaf; }
