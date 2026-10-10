@@ -33,6 +33,7 @@ export class Simulation {
   start() {
     const loop = () => {
       Matter.Engine.update(this.engine, STEP_MS);
+      this.scene.onStep?.(this.engine);
       this.draw();
       this.raf = requestAnimationFrame(loop);
     };
@@ -58,6 +59,11 @@ export class Simulation {
     const s = canvas.width / this.worldW;
     ctx.setTransform(s, 0, 0, s, 0, 0);
     ctx.drawImage(this.scene.background, 0, 0);
+    if (this.scene.onDraw) {
+      ctx.save();
+      this.scene.onDraw(ctx);
+      ctx.restore();
+    }
     for (const sp of this.scene.sprites) drawSprite(ctx, sp);
     if (new URLSearchParams(location.search).has('debug')) this.drawDebug();
   }

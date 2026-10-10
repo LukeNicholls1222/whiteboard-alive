@@ -108,6 +108,10 @@ export interface BuiltScene {
   /** Paper with the moving parts erased; drawn as the static background. */
   background: HTMLCanvasElement;
   label: string;
+  /** Optional per-step hook (after each Engine.update), e.g. to relaunch a projectile. */
+  onStep?: (engine: Matter.Engine) => void;
+  /** Optional overlay drawn in world coordinates after the background, before the sprites. */
+  onDraw?: (ctx: CanvasRenderingContext2D) => void;
 }
 
 export type SceneBuilder = (input: SceneInput) => BuiltScene;
