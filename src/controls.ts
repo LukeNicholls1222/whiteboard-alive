@@ -1,11 +1,20 @@
 // Sliders + voice for the running simulation. Gravity is shared by every scene; scene-specific
 // sliders come from a table keyed by diagram type (scenes themselves stay untouched).
 
-import { voiceToParams, type VoiceParamSpec } from './ai';
+import { hasApiKey, voiceToParams, type VoiceParamSpec } from './ai';
 import { airSubtitle } from './air';
 import type { Entries, EntryField, EntryKey } from './entries';
 import type { DiagramType, SimParams } from './types';
-import { PLANETS, listenOnce, parseKeywords, speechSupported } from './voice';
+import {
+  PLANETS,
+  isEmptyResult,
+  listenOnce,
+  parseVoice,
+  speechSupported,
+  type VoiceContext,
+  type VoiceKey,
+  type VoiceResult,
+} from './voice';
 
 export interface ParamSpec extends VoiceParamSpec {
   step: number;
@@ -61,7 +70,35 @@ export interface ControlsHost {
   apply(set: Partial<SimParams>, rebuild: boolean): void;
   /** "Your numbers" changed (all current entries; `reset` = the Reset button): rebuild the scene with them. */
   enter(entries: Entries, reset: boolean): void;
+  /** Voice: turn the velocity arrows on or off. */
+  showArrows?(on: boolean): void;
 }
+
+/** What a spoken (or typed) command did, for the toast and the tests. */
+export interface VoiceOutcome {
+  /** "String length 1.00 m", "Air resistance on". */
+  changes: string[];
+  /** Why something heard was not done ("Angle 80°: use 5 to 75°"). */
+  problems: string[];
+  /** 'keywords' = understood instantly offline; 'ai' = Gemini was asked because the keywords found nothing. */
+  via: 'keywords' | 'ai';
+  /** The one line shown under the controls. */
+  message: string;
+}
+
+/** A sentence to suggest for each number box (the first box on screen gives the hint). */
+const SAY_EXAMPLE: Record<EntryKey, string> = {
+  stringLength: 'make the string 1 meter',
+  bobMass: 'bob mass 2 kilograms',
+  springMass: 'mass 2 kilograms',
+  springK: 'spring constant 50',
+  blockMass: 'block mass 3 kilograms',
+  rampAngle: 'angle 45 degrees',
+  launchSpeed: 'launch at 10 meters per second',
+  groundLength: 'ground 5 meters',
+  leftMass: 'left weight 3 kilograms',
+  rightMass: 'right weight 1 kilogram',
+};
 
 /** Pause after the last keystroke before an entered number is applied. */
 const ENTRY_MS = 900;
@@ -308,28 +345,32 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
       host.enter({ ...entries }, false);
       return;
     }
-    let v = Number(text);
-    const range = `${num(f.min)} to ${num(f.fitMax ?? f.max)}${f.unit === '°' ? '°' : ` ${f.unit}`}`;
-    if (!/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(text) || !Number.isFinite(v)) return setError(key, `Type a number, ${range}`);
-    if (v < f.min || v > f.max) return setError(key, `Use ${range}`);
-    let lowered = false;
-    if (f.fitMax !== undefined && v > f.fitMax) {
-      // A ramp stretched that steep would leave the picture: take the steepest that fits, and say so.
-      v = f.fitMax;
-      input.value = num(v);
-      lowered = true;
-    }
+    if (!/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(text)) return setError(key, `Type a number, ${rangeText(f)}`);
+    const c = checkEntry(f, Number(text));
+    if (!c.ok) return setError(key, c.msg);
+    // A ramp stretched that steep would leave the picture: take the steepest that fits, and say so.
+    if (c.lowered) input.value = num(c.v);
     shown[key] = input.value;
-    if (lowered) setError(key, `${num(v)}° is the most that fits this drawing`);
+    if (c.lowered) setError(key, `${num(c.v)}° is the most that fits this drawing`);
     else clearError(key);
-    if (entries[key] === v) return;
-    entries[key] = v;
+    if (entries[key] === c.v) return;
+    entries[key] = c.v;
     haptic();
     host.enter({ ...entries }, false);
   }
 
-  numReset.addEventListener('click', () => {
-    haptic();
+  const rangeText = (f: EntryField) => `${num(f.min)} to ${num(f.fitMax ?? f.max)}${f.unit === '°' ? '°' : ` ${f.unit}`}`;
+
+  /** The range rule for a number box, shared by typing and voice: refused (with the box's message) or accepted. */
+  function checkEntry(f: EntryField, v: number): { ok: false; msg: string } | { ok: true; v: number; lowered: boolean } {
+    if (!Number.isFinite(v)) return { ok: false, msg: `Type a number, ${rangeText(f)}` };
+    if (v < f.min || v > f.max) return { ok: false, msg: `Use ${rangeText(f)}` };
+    if (f.fitMax !== undefined && v > f.fitMax) return { ok: true, v: f.fitMax, lowered: true };
+    return { ok: true, v, lowered: false };
+  }
+
+  /** Empty every box (without rebuilding: the caller sends host.enter). */
+  function clearNumbers() {
     for (const f of fields) {
       clearTimeout(entryTimers[f.key]);
       clearError(f.key);
@@ -338,40 +379,173 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
       shown[f.key] = '';
     }
     entries = {};
+  }
+
+  numReset.addEventListener('click', () => {
+    haptic();
+    clearNumbers();
     host.enter({}, true);
   });
 
   let toastTimer = 0;
-  function say(text: string, kind: 'ok' | 'info' | 'warn' = 'ok') {
+  function say(text: string, kind: 'ok' | 'info' | 'warn' = 'ok', ms = 4000) {
     toast.textContent = text;
     toast.className = `toast show ${kind}`;
     clearTimeout(toastTimer);
-    toastTimer = window.setTimeout(() => toast.classList.remove('show'), 4000);
+    toastTimer = window.setTimeout(() => toast.classList.remove('show'), ms);
   }
 
-  function describe(changed: Record<string, number>) {
-    return Object.entries(changed)
-      .map(([k, v]) => {
-        const s = specs.find((x) => x.key === k)!;
-        return `${s.label} → ${fmt(s, v)}`;
-      })
-      .join(', ');
+  // ---- Voice ----------------------------------------------------------------------------------------------
+  let diagramShown: DiagramType = 'fallback';
+
+  /** The sentence to suggest for the scene on screen. */
+  const example = () => (fields.length ? SAY_EXAMPLE[fields[0].key] : diagramShown === 'incline' ? 'no friction' : 'make it the moon');
+  const updateHint = () => (hint.textContent = `Tap Talk and say “${example()}” or “moon”.`);
+
+  /** Value as shown for a number box: "1.00 m", "45°", "2.00 kg". */
+  const fmtEntry = (f: EntryField, v: number) =>
+    f.unit === '°' ? `${num(v)}°` : `${Math.abs(v) >= 100 ? num(v) : v.toPrecision(3)} ${f.unit}`;
+
+  /** Settings the scene on screen offers, with their current values: sliders, number boxes, switches. */
+  function voiceContext(): VoiceContext {
+    return {
+      targets: [
+        ...specs.map((s) => ({ key: s.key as VoiceKey, value: values[s.key], min: s.min, max: s.max })),
+        ...fields.map((f) => ({
+          key: f.key,
+          // An empty box: the value the scene assumed / measured, from its placeholder ("0.43 assumed", "31° drawn").
+          value: entries[f.key] ?? f.mirror ?? parseFloat(f.placeholder),
+          min: f.min,
+          max: f.fitMax ?? f.max,
+        })),
+      ],
+      air: airFactor > 0 && !airRow.hidden,
+      numbers: fields.length > 0,
+    };
   }
 
-  /** Voice / typed command: Gemini first, keyword parsing if that fails or finds nothing. */
-  async function command(utterance: string): Promise<Record<string, number>> {
-    const current = Object.fromEntries(specs.map((s) => [s.key, values[s.key]]));
-    let diff: Record<string, number> = {};
-    try {
-      diff = await voiceToParams(utterance, current, specs);
-    } catch (err) {
-      console.info('[voice] AI unavailable, using keywords', err);
+  /** The same settings for Gemini (keys, labels, units, ranges); the launch speed slider is its box when there is one. */
+  function aiSpecs(ctx: VoiceContext): VoiceParamSpec[] {
+    const hasBox = fields.some((f) => f.key === 'launchSpeed');
+    const out: VoiceParamSpec[] = [
+      ...specs.filter((s) => !(s.key === 'speed' && hasBox)).map(({ key, label, min, max, unit }) => ({ key, label, min, max, unit })),
+      ...fields.map((f) => ({ key: f.key, label: f.label, min: f.min, max: f.fitMax ?? f.max, unit: f.unit })),
+      { key: 'arrows', label: 'Velocity arrows switch', min: 0, max: 1 },
+    ];
+    if (ctx.air) out.push({ key: 'air', label: 'Air resistance switch', min: 0, max: 1 });
+    if (ctx.numbers) out.push({ key: 'reset', label: 'Clear every typed number (1 = clear)', min: 0, max: 1 });
+    return out;
+  }
+
+  /** Gemini's {"set": {...}} as a parser result. */
+  function fromAI(set: Record<string, number>): VoiceResult {
+    const r: VoiceResult = { set: {}, problems: [] };
+    for (const [k, v] of Object.entries(set)) {
+      if (k === 'air') r.air = v >= 0.5;
+      else if (k === 'arrows') r.arrows = v >= 0.5;
+      else if (k === 'reset') r.reset = v >= 0.5 || undefined;
+      else r.set[k as VoiceKey] = v;
     }
-    if (!Object.keys(diff).length) diff = parseKeywords(utterance, current);
-    const changed = set(diff, 'voice');
-    if (Object.keys(changed).length) say(`“${utterance}” — ${describe(changed)}`);
-    else say(`“${utterance}” — try “moon gravity” or “double gravity”.`, 'warn');
-    return changed;
+    return r;
+  }
+
+  /**
+   * Apply what was heard exactly like the controls would: sliders through set(), numbers through the boxes'
+   * range rule and host.enter (as if typed), switches as if flipped. Out-of-range values are refused with a reason.
+   */
+  function applyVoice(utterance: string, r: VoiceResult, via: VoiceOutcome['via']): VoiceOutcome {
+    const changes: string[] = [];
+    const problems = [...r.problems];
+    let rebuild = false;
+    let reset = false;
+    if (r.reset && fields.length) {
+      clearNumbers();
+      changes.push('Your numbers cleared');
+      rebuild = reset = true;
+    }
+    for (const [k, v] of Object.entries(r.set) as [VoiceKey, number][]) {
+      const f = fields.find((x) => x.key === k);
+      const input = f && box(f.key);
+      if (!f || !input) continue;
+      const c = checkEntry(f, v);
+      if (!c.ok) {
+        setError(f.key, c.msg);
+        problems.push(`${f.label} ${fmtEntry(f, v)} is out of range: ${c.msg.replace(/^Use /, 'use ')}.`);
+        continue;
+      }
+      // Into the box as if typed: same text, same refusal / lowering, same rebuild.
+      clearTimeout(entryTimers[f.key]);
+      input.value = num(c.v);
+      shown[f.key] = input.value;
+      if (c.lowered) {
+        setError(f.key, `${num(c.v)}° is the most that fits this drawing`);
+        problems.push(`${num(c.v)}° is the most that fits this drawing.`);
+      } else clearError(f.key);
+      changes.push(`${f.label} ${fmtEntry(f, c.v)}`);
+      if (entries[f.key] !== c.v) {
+        entries[f.key] = c.v;
+        rebuild = true;
+      }
+    }
+    // Numbers first: the rebuild must not undo a gravity change made in the same sentence (Moon mode re-applies
+    // its gravity to a new scene until its switch has seen the change). Sliders and switches then go to the new scene.
+    if (rebuild) host.enter({ ...entries }, reset);
+    const diff: Record<string, number> = {};
+    for (const [k, v] of Object.entries(r.set) as [VoiceKey, number][]) {
+      const s = specs.find((x) => x.key === k);
+      if (!s) continue;
+      if (!(v >= s.min && v <= s.max)) {
+        problems.push(`${s.label} ${fmt(s, v)} is out of range: use ${fmt(s, s.min)} to ${fmt(s, s.max)}.`);
+        continue;
+      }
+      diff[k] = v;
+      const planet = k === 'gravity' ? Object.keys(PLANETS).find((p) => Math.abs(PLANETS[p] - v) < 0.005) : undefined;
+      changes.push(`${s.label} ${fmt(s, Number(v.toFixed(s.digits + 1)))}${planet ? ` (${planet[0].toUpperCase()}${planet.slice(1)})` : ''}`);
+    }
+    set(diff, 'voice');
+    if (r.air !== undefined) {
+      if (airFactor > 0 && !airRow.hidden) {
+        if (airInput.checked !== r.air) {
+          airInput.checked = r.air;
+          host.apply({ airDrag: r.air ? airFactor : 0 }, false);
+        }
+        changes.push(`Air resistance ${r.air ? 'on' : 'off'}`);
+      } else if (!problems.includes('This drawing has no air resistance.')) problems.push('This drawing has no air resistance.');
+    }
+    if (r.arrows !== undefined && host.showArrows) {
+      host.showArrows(r.arrows);
+      changes.push(`Velocity arrows ${r.arrows ? 'on' : 'off'}`);
+    }
+    if (changes.length || problems.length) haptic();
+
+    const heard = `“${utterance}”`;
+    let message: string;
+    if (changes.length) message = `${heard} → ${changes.join(', ')}${problems.length ? `. ${problems.join(' ')}` : ''}`;
+    else if (problems.length) message = `${heard} — ${problems.join(' ')}`;
+    else message = `${heard} — I didn't catch a setting. Try “${example()}”.`;
+    say(message, changes.length ? 'ok' : 'warn', 6000);
+    return { changes, problems, via, message };
+  }
+
+  /**
+   * Voice / typed command. The instant keyword parser first (offline, free); only when it understands nothing at
+   * all is Gemini asked (≤ 6 s, skipping models out of quota).
+   */
+  async function command(utterance: string): Promise<VoiceOutcome> {
+    const ctx = voiceContext();
+    let r = parseVoice(utterance, ctx);
+    let via: VoiceOutcome['via'] = 'keywords';
+    if (isEmptyResult(r) && hasApiKey()) {
+      say(`“${utterance}” — thinking…`, 'info', 7000);
+      const current = Object.fromEntries(ctx.targets.filter((t) => Number.isFinite(t.value)).map((t) => [t.key, t.value]));
+      try {
+        r = fromAI(await voiceToParams(utterance, current, aiSpecs(ctx)));
+        via = 'ai';
+      } catch (err) {
+        console.info('[voice] AI unavailable', err);
+      }
+    }
+    return applyVoice(utterance, r, via);
   }
 
   let listening: { stop: () => void } | null = null;
@@ -412,6 +586,7 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
      * sets its own slider (`tune`, e.g. a launch speed in this drawing's m/s).
      */
     show(diagram: DiagramType, params: Partial<SimParams>, tune: SliderTune = {}, air?: number) {
+      diagramShown = diagram;
       specs = specsFor(diagram).map((s) => (tune[s.key] ? { ...s, ...tune[s.key] } : s));
       for (const s of specs) {
         const own = tune[s.key]?.value;
@@ -441,6 +616,7 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
         for (const k of Object.keys(shown) as EntryKey[]) delete shown[k];
         renderNumbers();
       }
+      updateHint();
     },
     /** Current values (for tests / debugging). */
     values: () => ({ ...values }),

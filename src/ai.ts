@@ -352,30 +352,46 @@ export interface VoiceParamSpec {
   unit?: string;
 }
 
+/** Whole budget for one spoken sentence, and the most the first model may take of it. */
+const VOICE_MS = 6000;
+const VOICE_FIRST_MODEL_MS = 4000;
+
 /**
- * Ask Gemini (text only) which parameters a spoken command changes. Returns only keys from `specs`,
- * clamped to their ranges. Throws on no key / network / bad JSON so the caller can use keyword parsing.
+ * Ask Gemini (text only) which settings a spoken command changes; used only when the instant keyword parser
+ * found nothing. Returns only keys from `specs`, as numbers in each spec's unit, NOT clamped: the caller checks
+ * them against the same ranges as typed numbers. Skips models remembered as out of quota / missing (and remembers
+ * new ones), at most `timeoutMs` in all. Throws on no key / ?offline / every model failing.
  */
 export async function voiceToParams(
   utterance: string,
   current: Record<string, number>,
   specs: VoiceParamSpec[],
-  timeoutMs = 6000,
+  timeoutMs = VOICE_MS,
 ): Promise<Record<string, number>> {
   if (!hasApiKey()) throw new Error('no api key');
-  const text = `You control a physics simulation for students. Current parameters: ${JSON.stringify(current)}.
-Parameters you may change (key, meaning, allowed range):
+  if (new URLSearchParams(location.search).has('offline')) throw new Error('offline');
+  const models = MODELS.filter((m) => {
+    const s = skipped(m);
+    if (s) debugLog(`voice: skip ${m} (${s.why})`);
+    return !s;
+  });
+  if (!models.length) throw new Error('every model is out of quota');
+  const text = `You control a physics simulation for students. Current values: ${JSON.stringify(current)}.
+Settings you may change (key, meaning, unit, allowed range):
 ${specs.map((s) => `- ${s.key}: ${s.label}${s.unit ? ` in ${s.unit}` : ''}, ${s.min} to ${s.max}`).join('\n')}
 Reference gravities in m/s²: Earth 9.8, Moon 1.62, Mars 3.71, Jupiter 24.8, zero gravity 0.
 The student said: ${JSON.stringify(utterance)}
-Reply with JSON only: {"set": {<key>: <new number>}} containing only the parameters that should change.
+Reply with JSON only: {"set": {<key>: <new number>}} containing only the settings that should change, converted to the
+unit listed above (e.g. 50 cm for a length in m is 0.5). Switches are 1 = on, 0 = off.
 Relative requests ("double", "half", "a bit more") are relative to the current value. If nothing should change, reply {"set": {}}.`;
   const deadline = Date.now() + timeoutMs;
   let lastErr: unknown = new Error('no model');
-  for (const model of MODELS) {
-    if (Date.now() > deadline) break;
+  for (const [i, model] of models.entries()) {
+    const left = deadline - Date.now();
+    if (left < 300) break;
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), Math.max(500, deadline - Date.now()));
+    // A hung first model must not eat the whole budget.
+    const timer = setTimeout(() => ctrl.abort(), i === 0 ? Math.min(left, VOICE_FIRST_MODEL_MS) : left);
     try {
       const generationConfig: Record<string, unknown> = {
         responseMimeType: 'application/json',
@@ -389,9 +405,11 @@ Relative requests ("double", "half", "a bit more") are relative to the current v
         signal: ctrl.signal,
       });
       if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        // 429 (quota) / 404 (no such model): the photo reader skips it from now on too.
+        if (res.status === 429 || res.status === 404) markSkip(model, res.status, errBody);
         lastErr = Object.assign(new Error(`Gemini ${res.status}`), { status: res.status });
-        if (res.status === 404 || res.status === 403 || res.status === 400) continue; // try the next model
-        throw lastErr;
+        continue; // busy, missing or refused: the next model while time remains
       }
       const json = await res.json();
       const out: string = json.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? '').join('') ?? '';
@@ -400,9 +418,12 @@ Relative requests ("double", "half", "a bit more") are relative to the current v
       for (const s of specs) {
         if (!raw?.set || !(s.key in raw.set)) continue;
         const v = Number(raw.set[s.key]);
-        if (Number.isFinite(v)) set[s.key] = clamp(v, s.min, s.max);
+        if (Number.isFinite(v)) set[s.key] = v;
       }
       return set;
+    } catch (err) {
+      console.warn(`[voice] ${model} failed`, err);
+      lastErr = err;
     } finally {
       clearTimeout(timer);
     }
