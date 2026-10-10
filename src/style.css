@@ -99,6 +99,36 @@ h1 { margin: 8px 0 0; font-weight: 900; font-size: 28px; color: var(--green); }
 @keyframes mic-pulse { 50% { box-shadow: 0 0 0 8px rgba(88, 204, 2, 0.18); } }
 .voice-hint { margin: -4px 0 0; color: var(--muted); font-size: 14px; }
 .voice-hint[hidden] { display: none; }
+/* ---- "Your numbers": typed values for the drawing (controls.ts) ---- */
+.numbers { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; border-bottom: 2px solid var(--line); }
+.numbers[hidden] { display: none; }
+.numbers-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.numbers h3 { margin: 0; font-size: 16px; font-weight: 900; }
+.numbers-reset {
+  min-height: 36px; padding: 0 14px; border-radius: 12px; border: 2px solid var(--line); border-bottom-width: 4px; background: #fff;
+  font: inherit; font-weight: 800; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: #1899d6; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.numbers-reset:active { transform: translateY(2px); border-bottom-width: 2px; }
+.numbers-reset:disabled { color: #afafaf; cursor: default; transform: none; border-bottom-width: 4px; }
+.num-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 10px; }
+.num { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.num label { font-weight: 800; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.num-box {
+  display: flex; align-items: center; min-height: 48px; padding: 0 12px; gap: 6px; border-radius: 14px;
+  border: 2px solid var(--line); border-bottom-width: 4px; background: var(--soft); transition: border-color 0.15s, background 0.15s;
+}
+.num-box:focus-within { border-color: var(--blue); background: #fff; }
+.num-box input {
+  flex: 1; min-width: 0; width: 100%; border: 0; outline: 0; background: transparent; padding: 0;
+  font: inherit; font-size: 17px; font-weight: 800; color: var(--ink); font-variant-numeric: tabular-nums;
+}
+.num-box input::placeholder { color: #afafaf; font-size: 14px; font-weight: 700; }
+.num-unit { flex: none; color: var(--muted); font-weight: 800; font-size: 14px; }
+.num-msg { margin: 0; min-height: 0; font-size: 12.5px; font-weight: 700; color: #ea2b2b; line-height: 1.25; }
+.num-msg:empty { display: none; }
+.num.bad .num-box { border-color: #ff4b4b; background: #fff0f0; }
+.num.bad label { color: #ea2b2b; }
 .sliders { display: flex; flex-direction: column; gap: 14px; }
 .param-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
 .param label { font-weight: 800; font-size: 16px; }

@@ -253,7 +253,7 @@ export const buildPulley: SceneBuilder = (input) => {
   if (mL > mR * MAX_MASS_RATIO) mL = mR * MAX_MASS_RATIO;
   if (mR > mL * MAX_MASS_RATIO) mR = mL * MAX_MASS_RATIO;
 
-  // Handwritten kg replace the drawn ratio: both written = as written; one written = the other keeps the drawn
+  // Entered kg replace the drawn ratio: both entered = as entered; one entered = the other keeps the drawn
   // ratio to it; none = the lighter weight is 1 kg. (The motion only depends on the ratio.)
   const noteL = noteFor(input.analysis, 'mass', ['left weight'])?.value;
   const noteR = noteFor(input.analysis, 'mass', ['right weight'])?.value;
@@ -262,7 +262,7 @@ export const buildPulley: SceneBuilder = (input) => {
   if (noteL !== undefined && noteR !== undefined) {
     mL = noteL;
     mR = noteR;
-    fromL = fromR = 'note';
+    fromL = fromR = 'input';
     // Exactly equal weights would hang still forever: tip the bigger drawing a little and say so.
     if (Math.abs(mL - mR) / Math.max(mL, mR) < 1e-3) {
       if (left.pixels > right.pixels) {
@@ -276,11 +276,11 @@ export const buildPulley: SceneBuilder = (input) => {
   } else if (noteL !== undefined) {
     mR = noteL * (mR / mL);
     mL = noteL;
-    fromL = 'note';
+    fromL = 'input';
   } else if (noteR !== undefined) {
     mL = noteR * (mL / mR);
     mR = noteR;
-    fromR = 'note';
+    fromR = 'input';
   }
   const anyNote = noteL !== undefined || noteR !== undefined;
   const kgL = anyNote ? mL : mL / Math.min(mL, mR);

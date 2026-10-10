@@ -3,6 +3,7 @@
 
 import { voiceToParams, type VoiceParamSpec } from './ai';
 import { airSubtitle } from './air';
+import type { Entries, EntryField, EntryKey } from './entries';
 import type { DiagramType, SimParams } from './types';
 import { PLANETS, listenOnce, parseKeywords, speechSupported } from './voice';
 
@@ -58,7 +59,12 @@ const PRESETS:{ name: string; g: number }[] = [
 export interface ControlsHost {
   /** Apply a parameter diff. `rebuild` = a build-time parameter changed, rebuild the scene. */
   apply(set: Partial<SimParams>, rebuild: boolean): void;
+  /** "Your numbers" changed (all current entries; `reset` = the Reset button): rebuild the scene with them. */
+  enter(entries: Entries, reset: boolean): void;
 }
+
+/** Pause after the last keystroke before an entered number is applied. */
+const ENTRY_MS = 900;
 
 export const specsFor = (diagram: DiagramType): ParamSpec[] => [GRAVITY, ...(SCENE_PARAMS[diagram] ?? [])];
 
@@ -79,6 +85,13 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
       </button>
     </div>
     <p class="voice-hint" id="voice-hint">Tap Talk and say “make it the moon”.</p>
+    <section class="numbers" id="numbers" hidden aria-labelledby="numbers-title">
+      <div class="numbers-head">
+        <h3 id="numbers-title">Your numbers</h3>
+        <button type="button" class="numbers-reset" id="numbers-reset">Reset</button>
+      </div>
+      <div class="num-grid" id="num-grid"></div>
+    </section>
     <div class="sliders" id="sliders"></div>
     <div id="air-row" hidden>
       <label class="va-toggle">
@@ -95,6 +108,9 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
   const airRow = root.querySelector<HTMLDivElement>('#air-row')!;
   const airInput = root.querySelector<HTMLInputElement>('#air')!;
   const airSub = root.querySelector<HTMLSpanElement>('#air-sub')!;
+  const numbersEl = root.querySelector<HTMLElement>('#numbers')!;
+  const numGrid = root.querySelector<HTMLDivElement>('#num-grid')!;
+  const numReset = root.querySelector<HTMLButtonElement>('#numbers-reset')!;
   /** Factor on real air this scene uses when the switch is on (0 = the scene has no air drag, switch hidden). */
   let airFactor = 0;
   // Live like the sliders: the scenes read params.airDrag every step, so nothing is rebuilt.
@@ -164,6 +180,7 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
     }
     if (!Object.keys(changed).length) return changed;
     syncUI();
+    mirrorSpeed(changed);
     const live = Object.fromEntries(Object.entries(changed).filter(([k]) => !specs.find((s) => s.key === k)?.rebuild));
     if (Object.keys(live).length) host.apply(live as Partial<SimParams>, false);
     if (rebuild) {
@@ -189,6 +206,140 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
     }
     if (any) syncUI();
   }
+
+  /** The launch speed box follows its slider (and the slider follows the box, through the rebuilt scene). */
+  function mirrorSpeed(changed: Record<string, number>) {
+    const f = fields.find((x) => x.key === 'launchSpeed');
+    if (!f || !('speed' in changed)) return;
+    f.mirror = changed.speed;
+    const input = box('launchSpeed');
+    if (!input || document.activeElement === input) return;
+    input.value = num(changed.speed);
+    shown.launchSpeed = input.value;
+    clearError('launchSpeed');
+  }
+
+  // ---- Your numbers ----------------------------------------------------------------------------------
+  let fields: EntryField[] = [];
+  let entries: Entries = {};
+  /** Text each box showed when it was last applied or rendered: an unchanged box is never applied again. */
+  const shown: Partial<Record<EntryKey, string>> = {};
+  const entryTimers: Partial<Record<EntryKey, number>> = {};
+  const box = (key: EntryKey) => numGrid.querySelector<HTMLInputElement>(`#n-${key}`);
+  const num = (v: number) => String(Number(v.toPrecision(4)));
+
+  function renderNumbers() {
+    numbersEl.hidden = !fields.length;
+    numGrid.innerHTML = fields
+      .map(
+        (f) => `
+      <div class="num" data-key="${f.key}">
+        <label for="n-${f.key}">${f.label}</label>
+        <div class="num-box">
+          <input id="n-${f.key}" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" autocorrect="off"
+            autocapitalize="off" spellcheck="false" aria-describedby="m-${f.key}" />
+          <span class="num-unit">${f.unit}</span>
+        </div>
+        <p class="num-msg" id="m-${f.key}" aria-live="polite"></p>
+      </div>`,
+      )
+      .join('');
+    for (const f of fields) {
+      const input = box(f.key)!;
+      const v = entries[f.key] ?? f.mirror;
+      input.value = v === undefined ? '' : num(v);
+      shown[f.key] = input.value;
+      input.addEventListener('input', () => {
+        clearError(f.key);
+        clearTimeout(entryTimers[f.key]);
+        entryTimers[f.key] = window.setTimeout(() => commit(f.key), ENTRY_MS);
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        commit(f.key);
+        input.blur(); // closes the phone keyboard
+      });
+      input.addEventListener('blur', () => commit(f.key));
+    }
+    syncNumbers();
+  }
+
+  /** Placeholders / limits / mirrored values of the boxes already on screen (keeps focus, text and errors). */
+  function syncNumbers() {
+    for (const f of fields) {
+      const input = box(f.key);
+      if (!input) continue;
+      input.placeholder = f.placeholder;
+      if (entries[f.key] === undefined && f.mirror !== undefined && document.activeElement !== input) {
+        input.value = num(f.mirror);
+        shown[f.key] = input.value;
+      }
+    }
+    numReset.disabled = !Object.keys(entries).length && !fields.some((f) => f.mirror !== undefined);
+  }
+
+  function setError(key: EntryKey, text: string) {
+    numGrid.querySelector(`.num[data-key="${key}"]`)?.classList.add('bad');
+    box(key)?.setAttribute('aria-invalid', 'true');
+    const m = numGrid.querySelector<HTMLParagraphElement>(`#m-${key}`);
+    if (m) m.textContent = text;
+  }
+  function clearError(key: EntryKey) {
+    numGrid.querySelector(`.num[data-key="${key}"]`)?.classList.remove('bad');
+    box(key)?.removeAttribute('aria-invalid');
+    const m = numGrid.querySelector<HTMLParagraphElement>(`#m-${key}`);
+    if (m) m.textContent = '';
+  }
+
+  /** Read one box: empty = back to assumed, a number in range = applied, anything else = red border, not applied. */
+  function commit(key: EntryKey) {
+    clearTimeout(entryTimers[key]);
+    const f = fields.find((x) => x.key === key);
+    const input = box(key);
+    if (!f || !input) return;
+    const text = input.value.trim().replace(',', '.');
+    if (text === (shown[key] ?? '')) return;
+    if (text === '') {
+      shown[key] = '';
+      clearError(key);
+      if (entries[key] === undefined) return;
+      delete entries[key];
+      host.enter({ ...entries }, false);
+      return;
+    }
+    let v = Number(text);
+    const range = `${num(f.min)} to ${num(f.fitMax ?? f.max)}${f.unit === '°' ? '°' : ` ${f.unit}`}`;
+    if (!/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(text) || !Number.isFinite(v)) return setError(key, `Type a number, ${range}`);
+    if (v < f.min || v > f.max) return setError(key, `Use ${range}`);
+    let lowered = false;
+    if (f.fitMax !== undefined && v > f.fitMax) {
+      // A ramp stretched that steep would leave the picture: take the steepest that fits, and say so.
+      v = f.fitMax;
+      input.value = num(v);
+      lowered = true;
+    }
+    shown[key] = input.value;
+    if (lowered) setError(key, `${num(v)}° is the most that fits this drawing`);
+    else clearError(key);
+    if (entries[key] === v) return;
+    entries[key] = v;
+    haptic();
+    host.enter({ ...entries }, false);
+  }
+
+  numReset.addEventListener('click', () => {
+    haptic();
+    for (const f of fields) {
+      clearTimeout(entryTimers[f.key]);
+      clearError(f.key);
+      const input = box(f.key);
+      if (input) input.value = '';
+      shown[f.key] = '';
+    }
+    entries = {};
+    host.enter({}, true);
+  });
 
   let toastTimer = 0;
   function say(text: string, kind: 'ok' | 'info' | 'warn' = 'ok') {
@@ -277,8 +428,23 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
     hide() {
       root.hidden = true;
     },
+    /**
+     * "Your numbers" for the scene on screen. `fresh` = a new photo: every box starts empty. Otherwise boxes that are
+     * already there keep their text, focus and errors and only get new placeholders.
+     */
+    numbers(next: EntryField[], current: Entries, fresh = false) {
+      const same = !fresh && next.length === fields.length && next.every((f, i) => f.key === fields[i].key);
+      fields = next;
+      entries = { ...current };
+      if (same) syncNumbers();
+      else {
+        for (const k of Object.keys(shown) as EntryKey[]) delete shown[k];
+        renderNumbers();
+      }
+    },
     /** Current values (for tests / debugging). */
     values: () => ({ ...values }),
+    entries: () => ({ ...entries }),
     set: (diff: Record<string, number>) => set(diff, 'slider'),
     sync,
     command,

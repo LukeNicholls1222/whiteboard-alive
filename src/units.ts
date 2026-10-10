@@ -3,8 +3,8 @@
 // The engine itself never changes. Every scene runs one physics step per frame (60 steps per screen second)
 // and Earth gravity is A_SCREEN = 1000 px/s² of screen time: the scenes are tuned (and stable) at exactly that.
 // A drawing then *represents* a real-size machine:
-//   pxPerMeter  how big it is: the paper's long side is 1 m, unless a handwritten length says otherwise
-//               ("1 m" next to the string: the drawn string is 1 m long);
+//   pxPerMeter  how big it is: the paper's long side is 1 m, unless the user entered a length for a part
+//               (String length 1 m: the drawn string is 1 m long);
 //   timeFactor  physical seconds per screen second, fixed by asking the engine's gravity to be 9.8 m/s²:
 //               9.8 = A_SCREEN · gravityScale / pxPerMeter / timeFactor²
 // A 960 px paper of 1 m gives timeFactor ≈ 0.33: the screen plays the motion at 0.33× (labelled "Slow motion").
@@ -23,15 +23,15 @@ export const STEP_ACCEL = BASE_SCALE * STEP_MS * STEP_MS;
 /** The same in px per screen second² (= 1000). */
 export const A_SCREEN = STEP_ACCEL / (STEP_S * STEP_S);
 export const EARTH_G = 9.8;
-/** Without a handwritten length, the paper's long side is this many metres. */
+/** Without an entered length, the paper's long side is this many metres. */
 export const PAPER_M = 1;
 /** Matter 0.20 (2 constraint iterations): a soft constraint swings with ω² ≈ 6.67 × stiffness per step², for any mass (measured 0.0001-0.01). */
 export const OMEGA2_PER_STIFFNESS = 6.67;
-/** Without a handwritten mass, every moving body is 1 kg. */
+/** Without an entered mass, every moving body is 1 kg. */
 export const DEFAULT_KG = 1;
 
 /**
- * Scale of a drawing: from the first handwritten length that names a part the scene measured, else paper = 1 m.
+ * Scale of a drawing: from the first entered length that names a part the scene measured, else paper = 1 m.
  * `gravityScale` = how much of the engine's gravity the scene integrates (the pulley runs slower than the engine).
  */
 export function scaleFor(
@@ -74,9 +74,9 @@ export const springK = (stiffness: number, kg: number, s: Scale) =>
 export const stiffnessFor = (k: number, kg: number, s: Scale) =>
   ((k / kg) * (STEP_S * s.timeFactor) ** 2) / OMEGA2_PER_STIFFNESS;
 
-// ---- Handwritten values ---------------------------------------------------------------------------
+// ---- Entered values ("Your numbers") ----------------------------------------------------------------
 
-/** The first handwritten value of this quantity, preferring the given parts in order (any part if none given). */
+/** The first entered value of this quantity, preferring the given parts in order (any part if none given). */
 export function noteFor(analysis: Pick<Analysis, 'annotations'>, quantity: Quantity, parts?: PartName[]): Annotation | undefined {
   const list = (analysis.annotations ?? []).filter((a) => a.quantity === quantity);
   if (!parts) return list[0];
@@ -114,7 +114,7 @@ export function timeLabel(s: Scale): string {
 }
 
 export const SOURCE_TEXT: Record<ValueSource, string> = {
-  note: 'your note',
+  input: 'you entered',
   assumed: 'assumed',
   drawn: 'drawn',
   auto: 'auto',

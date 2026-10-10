@@ -2,6 +2,7 @@ import './style.css';
 import { aiPlan, analyze, askGemini, hasApiKey, offlineAnalysis } from './ai';
 import { cachedAnalysis, EXAMPLES, exampleBlob, exampleThumb, fingerprint, preloadExamples } from './examples';
 import { createControls, launchSpeedTune } from './controls';
+import { annotationsFrom, fieldsFor, type Entries } from './entries';
 import { LiveGraph } from './graph';
 import { QuantityLabels } from './notes';
 import { buildScene } from './scenes';
@@ -22,13 +23,34 @@ let sim: Simulation | null = null;
 const overlay = new AIOverlay(stage, $<HTMLButtonElement>('ai-toggle'));
 /** Inputs of the scene on screen, kept so build-time params (e.g. launch speed) can rebuild it. */
 let current: SceneInput | null = null;
+/** "Your numbers" for the photo on screen; emptied for every new photo. */
+let entered: Entries = {};
 
 const controls = createControls($<HTMLElement>('controls'), {
   apply(set, rebuild) {
     if (!current) return;
     Object.assign(current.analysis.params, set);
-    if (rebuild) startScene(current);
-    else sim?.setParams(set);
+    if (rebuild) {
+      const input = current;
+      startScene(input).then((scene) => {
+        if (scene && input === current) controls.numbers(fieldsFor(scene, input.analysis), entered);
+      });
+    } else sim?.setParams(set);
+  },
+  enter(entries, reset) {
+    if (!current) return;
+    const input = current;
+    const a = input.analysis;
+    // Typed numbers go where the scenes read them (noteFor); no AI call. The launch speed is also its slider's value.
+    const hadSpeed = entered.launchSpeed !== undefined;
+    entered = entries;
+    a.annotations = annotationsFrom(entries);
+    if (entries.launchSpeed !== undefined) a.params.speed = entries.launchSpeed;
+    else if (reset || hadSpeed) delete a.params.speed;
+    mark('numbers');
+    startScene(input).then((scene) => {
+      if (scene && input === current) showControls(scene, a);
+    });
   },
 });
 const arrows = new VelocityArrows();
@@ -36,7 +58,7 @@ arrows.mountToggle($<HTMLElement>('controls'));
 /** Physical values next to the parts ("L = 0.42 m assumed") and the slow-motion badge. */
 const notes = new QuantityLabels(stage.parentElement!);
 arrows.avoid = () => notes.boxes;
-if (import.meta.env.DEV) (window as any).__wa = { controls, arrows, notes, events: [], get sim() { return sim; }, get current() { return current; } };
+if (import.meta.env.DEV) (window as any).__wa = { controls, arrows, notes, events: [], get sim() { return sim; }, get current() { return current; }, get entered() { return entered; } };
 /** Dev-only timeline of a photo's life (photo picked, moving, AI answer...) for the headless tests. */
 function mark(e: string, forGen = gen) {
   if (import.meta.env.DEV) (window as any).__wa.events.push({ e, t: Math.round(performance.now()), gen: forGen });
@@ -78,8 +100,11 @@ async function startScene(input: SceneInput, opts: StartOptions = {}): Promise<B
   return scene;
 }
 
-/** Sliders for a freshly built scene (buildScene drops to the fallback when the chosen builder fails). */
-function showControls(scene: BuiltScene, analysis: Analysis) {
+/**
+ * Sliders and "Your numbers" for a freshly built scene (buildScene drops to the fallback when the chosen builder
+ * fails). `fresh` = a new photo: the number boxes start empty.
+ */
+function showControls(scene: BuiltScene, analysis: Analysis, fresh = false) {
   // The launch speed slider is in this drawing's m/s, ranged around the speed that lands in the picture.
   const ls = scene.physics?.launchSpeed;
   // The air resistance switch shows only for scenes that read params.airDrag (pendulum, projectile).
@@ -89,6 +114,7 @@ function showControls(scene: BuiltScene, analysis: Analysis) {
     ls ? launchSpeedTune(ls.fit, ls.value) : {},
     scene.physics?.airDrag,
   );
+  controls.numbers(fieldsFor(scene, analysis), entered, fresh);
 }
 const graph = new LiveGraph(stage.parentElement!);
 
@@ -290,10 +316,13 @@ async function run(file: Blob, example?: string) {
     setStep('run');
     await nextFrame();
     if (stale()) return;
+    // A new photo starts with every number box empty: nothing typed for the last drawing carries over.
+    entered = {};
+    analysis.annotations = [];
     current = { ...vision, analysis };
     const scene = await startScene(current, { intro: true, forGen: my });
     if (!scene) return;
-    showControls(scene, analysis);
+    showControls(scene, analysis, true);
     setStep('done');
     explain.textContent = analysis.explanation || `${scene.label}${analysis.source === 'heuristic' && !hasApiKey() ? ' (offline mode)' : ''}`;
   } catch (err) {

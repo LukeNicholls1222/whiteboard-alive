@@ -122,7 +122,7 @@ export const buildPendulum: SceneBuilder = (input) => {
     measures: { string: length },
     parts: {
       string: { at: () => ({ x: (pivot.x + body.position.x) / 2, y: (pivot.y + body.position.y) / 2 }) },
-      bob: { at: () => body.position, clear: bobRadius, body, kg: kg ?? DEFAULT_KG, kgFrom: kg ? 'note' : 'assumed' },
+      bob: { at: () => body.position, clear: bobRadius, body, kg: kg ?? DEFAULT_KG, kgFrom: kg ? 'input' : 'assumed' },
     },
     physics: { airDrag: airFactor },
     // Fastest at the bottom of the swing: v² = (L·ω₀)² + 2gL(1 − cos θ₀) (evaluated now, from the starting state).
