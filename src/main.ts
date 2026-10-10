@@ -100,8 +100,10 @@ async function startScene(input: SceneInput, opts: StartOptions = {}): Promise<B
   // Value labels first, so the velocity arrows draw on top of them.
   notes.attach(sim, input.analysis);
   arrows.attach(sim);
-  // A new photo: the drawing turns into the clean figure first (morph.ts). Rebuilds switch at once.
-  sim.start({ morph: !!opts.intro });
+  // A new photo: the drawing turns into the clean figure first (morph.ts), starting from the overlay's last frame so
+  // the colours flow into the lights with no frame of the plain drawing in between. Rebuilds switch at once.
+  sim.start({ morph: !!opts.intro, intro: opts.intro ? overlay.handoff() : null });
+  if (opts.intro) overlay.release(sim.morphing);
   mark('moving');
   return scene;
 }
