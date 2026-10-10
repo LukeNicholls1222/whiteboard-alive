@@ -25,6 +25,7 @@ const TRAIL_EVERY = 2; // steps between trail samples
 const CELL = 5;
 /** Give up on a flight after this long and fire again (never leave the scene stuck). */
 const MAX_FLIGHT_MS = 9000;
+const DEBUG = typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug');
 
 interface Axis {
   centroid: Point;
@@ -695,6 +696,12 @@ export const buildProjectile: SceneBuilder = (input) => {
   if (typeof userSpeed === 'number' && userSpeed > 0) speed *= userSpeed / DEFAULT_SPEED;
   const v0 = { x: unit.x * speed, y: unit.y * speed };
   Matter.Body.setVelocity(body, v0);
+  if (DEBUG) {
+    const deg = (p: Point) => Math.round((Math.atan2(-p.y, Math.abs(p.x)) * 1800) / Math.PI) / 10;
+    console.log(
+      `[projectile] arrow=${deg(dir)}° launch=${deg(v0)}° speed=${speed.toFixed(2)} ball=(${Math.round(start.x)},${Math.round(start.y)}) r=${r.toFixed(1)}`,
+    );
+  }
 
   // --- Loop: fly, land, wait 1.5 s, fire again. Keep the previous arc as a faint ghost. ---
   let trail: Point[] = [{ ...start }];
@@ -713,6 +720,10 @@ export const buildProjectile: SceneBuilder = (input) => {
   const onStep = (engine: Matter.Engine) => {
     steps++;
     const p = body.position;
+    if (DEBUG && (steps === 3 || steps === 8))
+      console.log(
+        `[projectile] step${steps} moved at ${(Math.atan2(-(p.y - start.y), Math.abs(p.x - start.x)) * 180 / Math.PI).toFixed(1)}°`,
+      );
     if (ghost) {
       const away = Math.hypot(p.x - start.x, p.y - start.y) > 1.5 * r;
       if (away && (!ghostAtStart || !overlapping())) {
