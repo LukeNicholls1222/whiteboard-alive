@@ -17,6 +17,8 @@ export class Simulation {
   private ctx: CanvasRenderingContext2D;
   /** Called after every physics step (graphs, readouts). */
   stepListeners: Array<(engine: Matter.Engine) => void> = [];
+  /** Called after every setParams, whoever made the change (slider, chip, voice, Moon switch). */
+  paramListeners: Array<(p: Partial<SimParams>) => void> = [];
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -36,6 +38,7 @@ export class Simulation {
         const plugin = b.plugin as { inclineMu?: number } | undefined;
         if (plugin && plugin.inclineMu !== undefined) plugin.inclineMu = p.friction;
       }
+    for (const fn of this.paramListeners) fn(p);
   }
 
   /** Current gravity in m/s² (read back from the engine, so there is one source of truth). */

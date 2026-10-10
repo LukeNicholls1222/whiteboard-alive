@@ -35,6 +35,12 @@ async function startScene(input: SceneInput, intro = false): Promise<BuiltScene>
   // Show what the AI understood on top of the paper, then let it come alive.
   if (intro) await overlay.playIntro({ ...input, scene });
   sim = new Simulation(stage, scene, input.width, input.height);
+  // The sim is the single source of truth: any change (incl. the Moon switch) flows back to the
+  // stored params (used on rebuild) and to the sliders / chips.
+  sim.paramListeners.push((p) => {
+    Object.assign(input.analysis.params, p);
+    controls.sync(p);
+  });
   sim.setParams(input.analysis.params);
   graph.attach(sim, input.analysis.diagram);
   sim.start();
