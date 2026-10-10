@@ -88,7 +88,8 @@ Reply with JSON only, shaped like:
 export async function analyze(annotated: HTMLCanvasElement, contours: Contour[]): Promise<Analysis> {
   const override = new URLSearchParams(location.search).get('diagram') as DiagramType | null;
   if (override && DIAGRAMS.includes(override)) return heuristic(contours, annotated, override);
-  if (!hasApiKey()) return heuristic(contours, annotated);
+  // ?offline skips Gemini (saves the small free-tier quota during testing and shows the shape-based guess).
+  if (!hasApiKey() || new URLSearchParams(location.search).has('offline')) return heuristic(contours, annotated);
 
   const jpeg = annotated.toDataURL('image/jpeg', 0.85).split(',')[1];
   const text = prompt(contours, annotated.width, annotated.height);
