@@ -1,7 +1,8 @@
 // "What the AI saw": the detected contours drawn over the original drawing, coloured by role.
 // Shown for ~1.5 s before the simulation starts, then on demand via a toggle button.
 
-import type { Analysis, BodyRole, BuiltScene, Contour, Point } from './types';
+import type { Analysis, BodyRole, BuiltScene, Contour, Point, Sprite } from './types';
+import { contourMask, deepestPoint, maskBounds } from './scenes/common';
 
 const C = {
   green: '#58cc02',
@@ -20,7 +21,7 @@ const ROLE_STYLE: Record<BodyRole, { label: string; color: string }> = {
   mass: { label: 'block', color: C.orange },
   incline: { label: 'ramp', color: C.green },
   ground: { label: 'ground', color: C.green },
-  wheel: { label: 'pulley', color: C.purple },
+  wheel: { label: 'wheel', color: C.purple },
   cannon: { label: 'cannon', color: C.red },
   arrow: { label: 'arrow', color: C.red },
   projectile: { label: 'ball', color: C.orange },
@@ -145,53 +146,50 @@ export class AIOverlay {
     this.stage.style.height = `${(cssW * d.height) / d.width}px`;
   }
 
+  /**
+   * Colour every outline point by the part of the drawing it belongs to. One contour often holds several
+   * parts (ceiling + string + bob drawn touching), so outlines are split into runs, not coloured whole.
+   */
   private classify(input: OverlayInput) {
     this.runs = [];
     this.labels = [];
-    const roles = new Map(input.analysis.bodies.map((b) => [b.contourId, b]));
-    if (roles.size) {
-      for (const k of input.contours) {
-        if (k.points.length < 2) continue;
-        const body = roles.get(k.id);
-        const style = body ? ROLE_STYLE[body.role] : null;
-        this.runs.push({ points: k.points, closed: true, color: style?.color ?? C.grey });
-        if (style && body!.role !== 'other') this.labels.push({ text: style.label, color: style.color, at: labelPoint(k.points) });
-      }
-      return;
-    }
-    // No AI roles: what moves is whatever the scene cut out into sprites; the rest stays in the background.
-    const moving = spriteHitTest(input.scene);
+    const { parts, partOf } = partsFor(input);
+    const best = new Map<string, Point[]>(); // longest run per part, for label placement
+    const note = (key: string, run: Point[]) => {
+      const b = best.get(key);
+      if (!b || run.length > b.length) best.set(key, run);
+    };
     for (const k of input.contours) {
       if (k.points.length < 2) continue;
       const pts = densify(k.points, 6);
-      const flags = pts.map(moving);
-      // Split the closed outline into runs of equal kind.
-      let start = flags.findIndex((f, i) => f !== flags[(i + flags.length - 1) % flags.length]);
+      const keys = pts.map((p) => partOf(p, k));
+      const n = pts.length;
+      const start = keys.findIndex((f, i) => f !== keys[(i + n - 1) % n]);
       if (start < 0) {
-        const s = flags[0] ? MOVING : FIXED;
-        this.runs.push({ points: k.points, closed: true, color: s.color });
-        this.labels.push({ text: s.label, color: s.color, at: labelPoint(k.points) });
+        this.runs.push({ points: k.points, closed: true, color: parts[keys[0]].color });
+        note(keys[0], pts);
         continue;
       }
-      const n = pts.length;
-      const best: Record<string, Point[]> = {};
       let cur: Point[] = [];
       for (let j = 0; j <= n; j++) {
         const i = (start + j) % n;
         const p = pts[i];
-        if (j > 0 && (j === n || flags[i] !== flags[(i + n - 1) % n])) {
+        if (j > 0 && (j === n || keys[i] !== keys[(i + n - 1) % n])) {
           cur.push(p);
-          const f = flags[(i + n - 1) % n];
-          const s = f ? MOVING : FIXED;
-          this.runs.push({ points: cur, closed: false, color: s.color });
-          if (!best[s.label] || cur.length > best[s.label].length) best[s.label] = cur;
+          const key = keys[(i + n - 1) % n];
+          this.runs.push({ points: cur, closed: false, color: parts[key].color });
+          note(key, cur);
           cur = [];
         }
         cur.push(p);
       }
-      for (const s of [MOVING, FIXED])
-        if (best[s.label] && best[s.label].length >= 4)
-          this.labels.push({ text: s.label, color: s.color, at: best[s.label][Math.floor(best[s.label].length / 2)] });
+    }
+    for (const [key, part] of Object.entries(parts)) {
+      if (!part.text) continue;
+      const run = best.get(key);
+      if (!run) continue; // part not in the drawing
+      if (!part.anchor && run.length < 4) continue;
+      this.labels.push({ text: part.text, color: part.color, at: part.anchor ?? run[Math.floor(run.length / 2)] });
     }
   }
 
@@ -241,10 +239,14 @@ export class AIOverlay {
     for (const l of this.labels) {
       const w = ctx.measureText(l.text).width + 14 * px;
       const h = 22 * px;
-      let x = Math.min(d.width - w - 4 * px, Math.max(4 * px, l.at.x - w / 2));
-      let y = Math.min(d.height - h - 4 * px, Math.max(4 * px, l.at.y - h / 2));
-      for (let tries = 0; tries < 8 && placed.some((b) => overlap(b, { x, y, w, h })); tries++) {
-        y = Math.min(d.height - h - 4 * px, y + h + 3 * px);
+      // Centred on the part; if another label is already there, nudge it up/down/sideways a little.
+      const dy = h + 3 * px, dx = w * 0.6;
+      const tries = [[0, 0], [0, -dy], [0, dy], [dx, 0], [-dx, 0], [dx, -dy], [-dx, -dy], [dx, dy], [-dx, dy], [0, -2 * dy], [0, 2 * dy]];
+      let x = 0, y = 0;
+      for (const [ox, oy] of tries) {
+        x = Math.min(d.width - w - 4 * px, Math.max(4 * px, l.at.x + ox - w / 2));
+        y = Math.min(d.height - h - 4 * px, Math.max(4 * px, l.at.y + oy - h / 2));
+        if (!placed.some((b) => overlap(b, { x, y, w, h }))) break;
       }
       placed.push({ x, y, w, h });
       ctx.globalAlpha = la;
@@ -266,8 +268,192 @@ export class AIOverlay {
   }
 }
 
-/** Returns a test "is this drawn point part of something that moves?" from the sprites' cut-out alpha. */
-function spriteHitTest(scene: BuiltScene): (p: Point) => boolean {
+interface Part {
+  /** Label text; empty = coloured but not labelled. */
+  text: string;
+  color: string;
+  /** Where the label goes; default = middle of the part's longest outline run. */
+  anchor?: Point;
+}
+interface PartMap {
+  parts: Record<string, Part>;
+  partOf: (p: Point, k: Contour) => string;
+}
+
+const style = (s: { label: string; color: string }, anchor?: Point): Part => ({ text: s.label, color: s.color, anchor });
+const center = (sp: Sprite): Point => ({ x: sp.offset.x + sp.image.width / 2, y: sp.offset.y + sp.image.height / 2 });
+const bodyHome = (sp: Sprite): Point => (sp.follow.kind === 'body' ? sp.follow.origin : center(sp));
+const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
+
+/**
+ * Parts of the drawing per diagram, from what the scene builder actually did: the sprites are what moves
+ * (and how: body / swing / stretch), everything else is the static background.
+ */
+function partsFor(input: OverlayInput): PartMap {
+  const { scene } = input;
+  const hit = spriteHitTest(scene);
+  switch (scene.label) {
+    case 'Pendulum': {
+      const sp = scene.sprites.find((s) => s.follow.kind === 'swing');
+      if (!sp || sp.follow.kind !== 'swing') break;
+      const f = sp.follow;
+      const bob = { x: f.pivot.x + Math.cos(f.originAngle) * f.originLength, y: f.pivot.y + Math.sin(f.originAngle) * f.originLength };
+      const r = f.body.circleRadius ?? 12;
+      return {
+        parts: {
+          pivot: style(ROLE_STYLE.pivot, f.pivot),
+          string: style(ROLE_STYLE.rope, { x: (f.pivot.x + bob.x) / 2, y: (f.pivot.y + bob.y) / 2 }),
+          bob: style(ROLE_STYLE.bob, bob),
+        },
+        partOf: (p) => (hit(p) < 0 ? 'pivot' : dist(p, bob) <= r * 1.5 + 6 ? 'bob' : 'string'),
+      };
+    }
+    case 'Spring and mass': {
+      const blockSp = scene.sprites.find((s) => s.follow.kind === 'body');
+      const springSp = scene.sprites.find((s) => s.follow.kind === 'stretch');
+      const c = scene.constraints[0];
+      const anchor = springSp?.follow.kind === 'stretch' ? springSp.follow.anchor : c?.pointA && !c.bodyA ? c.pointA : null;
+      const block = blockSp ? bodyHome(blockSp) : null;
+      // Which side the spring hangs from decides the name of the fixed part.
+      const vertical = anchor && block ? Math.abs(block.y - anchor.y) >= Math.abs(block.x - anchor.x) : true;
+      const fixedName = vertical ? 'ceiling' : 'wall';
+      const out = anchor && block ? { x: anchor.x - block.x, y: anchor.y - block.y } : { x: 0, y: -1 };
+      const ol = Math.hypot(out.x, out.y) || 1;
+      const parts: Record<string, Part> = {
+        fixed: { text: fixedName, color: C.green, anchor: anchor ? { x: anchor.x + (out.x / ol) * 16, y: anchor.y + (out.y / ol) * 16 } : undefined },
+        spring: style(ROLE_STYLE.spring, springSp ? center(springSp) : anchor && block ? { x: (anchor.x + block.x) / 2, y: (anchor.y + block.y) / 2 } : undefined),
+        block: style(ROLE_STYLE.mass, block ?? undefined),
+      };
+      return {
+        parts,
+        partOf: (p) => {
+          const i = hit(p);
+          if (i >= 0) return scene.sprites[i].follow.kind === 'stretch' ? 'spring' : 'block';
+          // Spring left in the background (no cut-out): ink along the anchor -> block line, past the wall.
+          if (!springSp && anchor && block) {
+            const dx = block.x - anchor.x, dy = block.y - anchor.y, l2 = dx * dx + dy * dy || 1;
+            const t = ((p.x - anchor.x) * dx + (p.y - anchor.y) * dy) / l2;
+            const off = Math.abs((p.x - anchor.x) * dy - (p.y - anchor.y) * dx) / Math.sqrt(l2);
+            if (t * Math.sqrt(l2) > 12 && t < 1 && off < 30) return 'spring';
+          }
+          return 'fixed';
+        },
+      };
+    }
+    case 'Incline': {
+      const parts: Record<string, Part> = { ramp: style(ROLE_STYLE.incline) };
+      scene.sprites.forEach((sp, i) => (parts[`block${i}`] = style(ROLE_STYLE.mass, bodyHome(sp))));
+      return { parts, partOf: (p) => (hit(p) < 0 ? 'ramp' : `block${hit(p)}`) };
+    }
+    case 'Pulley': {
+      const { center: C0, radius: R } = findWheel(input);
+      const parts: Record<string, Part> = {
+        pulley: { text: 'pulley', color: C.purple, anchor: C0 },
+        rope: { text: 'rope', color: C.blue },
+        ground: style(ROLE_STYLE.ground),
+      };
+      scene.sprites.forEach((sp, i) => (parts[`weight${i}`] = { text: 'weight', color: C.orange, anchor: bodyHome(sp) }));
+      const bottom = Math.max(...scene.sprites.map((s) => s.offset.y + s.image.height));
+      return {
+        parts,
+        partOf: (p) => {
+          const i = hit(p);
+          if (i >= 0) return `weight${i}`;
+          if (dist(p, C0) <= R * 1.35 + 4 || p.y < C0.y - R) return 'pulley'; // wheel and what holds it up
+          if (scene.sprites.length && p.y > bottom + 8) return 'ground';
+          return 'rope';
+        },
+      };
+    }
+    case 'Projectile': {
+      const ballSp = scene.sprites[0];
+      const roles = new Map(input.analysis.bodies.map((b) => [b.contourId, b.role]));
+      // The safety floor sits on the drawn ground line (or the photo's bottom if none was drawn).
+      const floor = scene.bodies.filter((b) => b.isStatic).sort((a, b) => b.bounds.max.x - b.bounds.min.x - (a.bounds.max.x - a.bounds.min.x))[0];
+      const floorY = floor ? floor.bounds.min.y : input.height;
+      const tol = Math.max(10, input.height * 0.025);
+      // Hand-drawn ground lines tilt: fit y = a x + b to the ink near the floor, then follow that line.
+      let line = { a: 0, b: floorY };
+      if (floorY < input.height - 2) {
+        const ink = input.contours.flatMap((k) => densify(k.points, 6)).filter((p) => hit(p) < 0);
+        for (let pass = 0; pass < 3; pass++) {
+          const near = ink.filter((p) => Math.abs(p.y - (line.a * p.x + line.b)) <= tol * (pass ? 1 : 1.5));
+          if (near.length < 6) break;
+          const mx = near.reduce((s, p) => s + p.x, 0) / near.length, my = near.reduce((s, p) => s + p.y, 0) / near.length;
+          let sxy = 0, sxx = 0;
+          for (const p of near) {
+            sxy += (p.x - mx) * (p.y - my);
+            sxx += (p.x - mx) ** 2;
+          }
+          const a = sxx > 0 ? Math.max(-0.2, Math.min(0.2, sxy / sxx)) : 0;
+          line = { a, b: my - a * mx };
+        }
+      }
+      const parts: Record<string, Part> = {
+        ball: style(ROLE_STYLE.projectile, ballSp ? bodyHome(ballSp) : undefined),
+        cannon: style(ROLE_STYLE.cannon),
+        arrow: style(ROLE_STYLE.arrow),
+        wheel: style(ROLE_STYLE.wheel),
+        ground: style(ROLE_STYLE.ground),
+        other: { text: '', color: C.grey },
+      };
+      const round = (k: Contour) => k.hasHole && k.bbox.w / Math.max(1, k.bbox.h) > 0.7 && k.bbox.w / Math.max(1, k.bbox.h) < 1.4;
+      return {
+        parts,
+        partOf: (p, k) => {
+          if (hit(p) >= 0) return 'ball';
+          if (floorY < input.height - 2 && Math.abs(p.y - (line.a * p.x + line.b)) <= tol) return 'ground';
+          const role = roles.get(k.id);
+          if (role === 'arrow' || role === 'cannon' || role === 'wheel') return role;
+          if (role === 'ground' || role === 'incline') return 'ground';
+          if (role === 'other') return 'other';
+          if (!role && round(k) && k.bbox.w < input.width * 0.2) return 'wheel';
+          return k.hasHole ? 'cannon' : 'arrow';
+        },
+      };
+    }
+  }
+  // Falling objects / unknown: colour by AI role per contour, else simply moving vs fixed.
+  const roles = new Map(input.analysis.bodies.map((b) => [b.contourId, b.role]));
+  if (roles.size) {
+    const parts: Record<string, Part> = { none: { text: '', color: C.grey } };
+    for (const [role, s] of Object.entries(ROLE_STYLE)) parts[role] = role === 'other' ? { text: '', color: s.color } : style(s);
+    return { parts, partOf: (_p, k) => roles.get(k.id) ?? 'none' };
+  }
+  return { parts: { moving: style(MOVING), fixed: style(FIXED) }, partOf: (p) => (hit(p) >= 0 ? 'moving' : 'fixed') };
+}
+
+/** Same guess as the pulley scene: a round wheel stroke if it is its own contour, else the thickest ink near the top. */
+function findWheel(input: OverlayInput): { center: Point; radius: number } {
+  const isRound = (c: Contour) => {
+    const r = c.bbox.w / Math.max(1, c.bbox.h);
+    return r > 0.6 && r < 1.6;
+  };
+  const W = input.width, H = input.height;
+  const all = contourMask({ ...input, ink: new Uint8Array(0) }, input.contours);
+  const b = maskBounds(all, W, H) ?? { x: 0, y: 0, w: W, h: H };
+  const byRole = input.contours.filter((c) => input.analysis.bodies.some((x) => x.contourId === c.id && x.role === 'wheel'));
+  let wheel: Contour | null = null;
+  if (byRole.length) {
+    const best = byRole.sort((a, c) => c.area - a.area)[0];
+    if (isRound(best)) wheel = best;
+  } else {
+    const limit = b.y + b.h * 0.55;
+    wheel = input.contours
+      .filter((c) => c.hasHole && isRound(c) && c.centroid.y < limit && c.bbox.w > 12)
+      .sort((a, c) => a.centroid.y - c.centroid.y)[0] ?? null;
+  }
+  if (wheel) {
+    const { x, y, w, h } = wheel.bbox;
+    return { center: { x: x + w / 2, y: y + h / 2 }, radius: (w + h) / 4 };
+  }
+  all.fill(0, Math.max(0, Math.round(b.y + b.h * 0.45)) * W);
+  const { point, radius } = deepestPoint(all, W, H);
+  return { center: point, radius: Math.max(10, radius) };
+}
+
+/** Returns "which sprite (index) does this drawn point belong to, or -1" from the sprites' cut-out alpha. */
+function spriteHitTest(scene: BuiltScene): (p: Point) => number {
   const maps = scene.sprites.map((sp) => {
     const w = sp.image.width, h = sp.image.height;
     let alpha: Uint8ClampedArray | null = null;
@@ -280,7 +466,7 @@ function spriteHitTest(scene: BuiltScene): (p: Point) => boolean {
   });
   const R = 4; // stroke margin: outline points sit just outside the ink
   return (p) =>
-    maps.some((m) => {
+    maps.findIndex((m) => {
       const lx = Math.round(p.x - m.x), ly = Math.round(p.y - m.y);
       if (lx < -R || ly < -R || lx >= m.w + R || ly >= m.h + R) return false;
       if (!m.alpha) return true;
@@ -302,13 +488,6 @@ function densify(pts: Point[], step: number): Point[] {
     for (let j = 0; j < n; j++) out.push({ x: a.x + ((b.x - a.x) * j) / n, y: a.y + ((b.y - a.y) * j) / n });
   }
   return out;
-}
-
-/** Top-most point of the outline, so the label sits on the stroke rather than in empty space. */
-function labelPoint(pts: Point[]): Point {
-  let best = pts[0];
-  for (const p of pts) if (p.y < best.y) best = p;
-  return best;
 }
 
 function strokePartial(ctx: CanvasRenderingContext2D, pts: Point[], closed: boolean, progress: number) {
