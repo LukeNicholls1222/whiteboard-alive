@@ -9,7 +9,7 @@
 //   - once everything has come to rest, it waits a moment and falls again from the start.
 
 import Matter from 'matter-js';
-import type { SceneBuilder, Sprite } from '../types';
+import type { Contour, Point, SceneBuilder, Sprite } from '../types';
 import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
 import { replayWhenStopped } from './replay';
 import { STEP_ACCEL } from '../sim';
@@ -20,6 +20,19 @@ const MIN_DROP = 0.25;
 const HOP = 0.2;
 /** Initial spin, rad per step. */
 const SPIN = 0.025;
+
+/** Is `p` inside (or on) the convex polygon `hull`, whichever way it winds? */
+function insideHull(p: Point, hull: Point[]): boolean {
+  let sign = 0;
+  for (let i = 0; i < hull.length; i++) {
+    const a = hull[i], b = hull[(i + 1) % hull.length];
+    const s = Math.sign((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x));
+    if (!s) continue;
+    if (sign && s !== sign) return false;
+    sign = s;
+  }
+  return true;
+}
 
 export const buildFallback: SceneBuilder = (input) => {
   const { width: W, height: H } = input;
@@ -44,11 +57,35 @@ export const buildFallback: SceneBuilder = (input) => {
     });
   };
 
-  for (const c of input.contours) {
+  const isStaticContour = (c: Contour) => {
     const r = roleOf(input, c.id);
-    const isStatic = !!r && (r.role === 'ground' || r.role === 'incline');
-    if (c.hull.length < 3) continue;
-    addBody(c.hull, c.bbox, isStatic, isStatic ? null : contourMask(input, [c]));
+    return !!r && (r.role === 'ground' || r.role === 'incline');
+  };
+  // A stroke drawn inside another one (the axle dot in a cannon wheel) is part of it, not a body of its own:
+  // as a separate body it would start inside the other's solid hull, and the two would push each other
+  // around forever. It moves with the smallest outline that contains it (or stays on paper if that is static).
+  const parentOf = new Map<Contour, Contour>();
+  for (const c of input.contours) {
+    if (isStaticContour(c) || !c.hull.length) continue;
+    let best: Contour | null = null;
+    for (const d of input.contours) {
+      if (d === c || d.hull.length < 3 || d.area <= c.area) continue;
+      if (!c.hull.every((p) => insideHull(p, d.hull))) continue;
+      if (!best || d.area < best.area) best = d;
+    }
+    if (best) parentOf.set(c, best);
+  }
+  const rootOf = (c: Contour) => {
+    let r = c;
+    for (let p = parentOf.get(r); p; p = parentOf.get(r)) r = p;
+    return r;
+  };
+
+  for (const c of input.contours) {
+    if (parentOf.has(c) || c.hull.length < 3) continue;
+    const isStatic = isStaticContour(c);
+    const group = input.contours.filter((k) => rootOf(k) === c);
+    addBody(c.hull, c.bbox, isStatic, isStatic ? null : contourMask(input, group));
   }
 
   // Nothing movable (all lines, or everything marked static): drop the whole drawing as one box.
