@@ -5,7 +5,7 @@ import type { Analysis, Contour, DiagramType } from './types';
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY ?? '';
 // Newest Flash first; older ones only if the newer model is unavailable for this key (see docs/research/gemini-json.md).
 const MODELS = import.meta.env.VITE_GEMINI_MODEL ? [import.meta.env.VITE_GEMINI_MODEL] : ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-2.5-flash'];
-const TIMEOUT_MS = 12000;
+const TIMEOUT_MS = 18000;
 
 export const hasApiKey = () => API_KEY.length > 0;
 
@@ -91,8 +91,9 @@ export async function analyze(annotated: HTMLCanvasElement, contours: Contour[])
         return sanitize(raw, contours);
       } catch (err: any) {
         console.warn(`[ai] ${model} schema=${withSchema} failed`, err);
-        if (err?.status === 404 || err?.status === 403) break; // model not available: next model
-        if (err?.status !== 400) return heuristic(contours); // timeout / network: give up fast
+        // 400 = schema field rejected: retry this model without it. Anything else (busy 503/429,
+        // missing model 404/403, timeout, network): move on to the next model while time remains.
+        if (err?.status !== 400) break;
       }
     }
   }
