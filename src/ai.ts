@@ -3,8 +3,9 @@
 import type { Analysis, Contour, DiagramType } from './types';
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY ?? '';
-const MODEL = import.meta.env.VITE_GEMINI_MODEL || 'gemini-2.5-flash';
-const TIMEOUT_MS = 20000;
+// Newest Flash first; older ones only if the newer model is unavailable for this key (see docs/research/gemini-json.md).
+const MODELS = import.meta.env.VITE_GEMINI_MODEL ? [import.meta.env.VITE_GEMINI_MODEL] : ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-2.5-flash'];
+const TIMEOUT_MS = 12000;
 
 export const hasApiKey = () => API_KEY.length > 0;
 
@@ -68,7 +69,9 @@ wheel, cannon, arrow, projectile, other. Mark static=true for things that should
 mass: relative mass (1.0 default; bigger drawn weights heavier). A single contour may contain several connected parts
 (e.g. string and bob drawn touching); then give it the role of its main moving part.
 constraints: connections between contour ids (rope / spring / pin). Use the same id for from and to if a part connects to itself.
-explanation: one short friendly English sentence describing what will happen.`;
+explanation: one short friendly English sentence describing what will happen.
+Reply with JSON only, shaped like:
+{"diagram":"pendulum","confidence":0.9,"bodies":[{"contourId":0,"role":"bob","static":false,"mass":1.0}],"constraints":[{"type":"rope","from":0,"to":1}],"explanation":"..."}`;
 }
 
 export async function analyze(annotated: HTMLCanvasElement, contours: Contour[]): Promise<Analysis> {
@@ -77,36 +80,47 @@ export async function analyze(annotated: HTMLCanvasElement, contours: Contour[])
   if (!hasApiKey()) return heuristic(contours);
 
   const jpeg = annotated.toDataURL('image/jpeg', 0.85).split(',')[1];
-  const body = {
-    contents: [
-      {
-        parts: [{ inline_data: { mime_type: 'image/jpeg', data: jpeg } }, { text: prompt(contours, annotated.width, annotated.height) }],
-      },
-    ],
-    generationConfig: {
-      responseMimeType: 'application/json',
-      responseSchema: RESPONSE_SCHEMA,
-      temperature: 0.2,
-      ...(MODEL.includes('2.5') ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
-    },
-  };
+  const text = prompt(contours, annotated.width, annotated.height);
+  const deadline = Date.now() + TIMEOUT_MS;
+  for (const model of MODELS) {
+    // Structured output first; if the API rejects the schema field, retry with plain JSON mode.
+    for (const withSchema of [true, false]) {
+      if (Date.now() > deadline) return heuristic(contours);
+      try {
+        const raw = await callGemini(model, jpeg, text, withSchema, deadline - Date.now());
+        return sanitize(raw, contours);
+      } catch (err: any) {
+        console.warn(`[ai] ${model} schema=${withSchema} failed`, err);
+        if (err?.status === 404 || err?.status === 403) break; // model not available: next model
+        if (err?.status !== 400) return heuristic(contours); // timeout / network: give up fast
+      }
+    }
+  }
+  return heuristic(contours);
+}
 
+async function callGemini(model: string, jpeg: string, text: string, withSchema: boolean, timeoutMs: number): Promise<any> {
+  const generationConfig: Record<string, unknown> = { responseMimeType: 'application/json', temperature: 0.2 };
+  if (withSchema) generationConfig.responseSchema = RESPONSE_SCHEMA;
+  if (model.includes('2.5')) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+  else generationConfig.thinkingConfig = { thinkingLevel: 'LOW' };
+  const body = {
+    contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: jpeg } }, { text }] }],
+    generationConfig,
+  };
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': API_KEY },
       body: JSON.stringify(body),
       signal: ctrl.signal,
     });
-    if (!res.ok) throw new Error(`Gemini ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    if (!res.ok) throw Object.assign(new Error(`Gemini ${res.status}: ${(await res.text()).slice(0, 300)}`), { status: res.status });
     const json = await res.json();
-    const text: string = json.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? '').join('') ?? '';
-    return sanitize(JSON.parse(text), contours);
-  } catch (err) {
-    console.warn('[ai] falling back to heuristic', err);
-    return heuristic(contours);
+    const out: string = json.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? '').join('') ?? '';
+    return JSON.parse(out.replace(/^```(?:json)?|```$/g, '').trim());
   } finally {
     clearTimeout(timer);
   }
