@@ -3,7 +3,7 @@
 // An entered angle (Your numbers) stretches the drawn triangle up or down to that slope, base kept as drawn.
 
 import Matter from 'matter-js';
-import type { Contour, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
+import type { CleanPart, Contour, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
 import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
 import { replayWhenStopped } from './replay';
 import { PAPER_FILL, STEP_ACCEL } from '../sim';
@@ -776,10 +776,18 @@ export const buildIncline: SceneBuilder = (input) => {
     };
   } else background = eraseFromPaper(input, masks);
   const angleFrom: ValueSource = asked === undefined ? 'drawn' : fit.adjusted ? 'adjusted' : 'input';
+  // Clean figure: the floor line, the ramp as the physics triangle (stretched to an entered angle like the body) and
+  // each block as its physics outline.
+  const clean: CleanPart[] = [
+    { kind: 'ground', y: floorY },
+    { kind: 'solid', points: [a, b, c] },
+    ...moving.map((body): CleanPart => ({ kind: 'body', body, tone: 'mass' })),
+  ];
   return {
     bodies,
     constraints: [],
     sprites,
+    clean,
     background,
     label: 'Incline',
     // The picture shows the blank strip too (the photo plus `pad` above it, in this scene's lowered world).

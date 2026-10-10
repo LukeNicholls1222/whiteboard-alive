@@ -7,7 +7,8 @@
 // collision cells, so the ball lands on what was actually drawn.
 
 import Matter from 'matter-js';
-import type { Contour, PartInfo, PartName, Point, SceneBuilder, SceneInput, Sprite, ValueSource, ViewRect } from '../types';
+import type { CleanPart, Contour, PartInfo, PartName, Point, SceneBuilder, SceneInput, Sprite, ValueSource, ViewRect } from '../types';
+import { DRAWN_STYLE, inkImage } from '../clean';
 import { contourMask, cutSprite, eraseFromPaper, maskBounds, roleOf } from './common';
 import { STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, EARTH_G, mps, noteFor, pxPerStep, scaleFor } from '../units';
@@ -578,16 +579,24 @@ export const buildProjectile: SceneBuilder = (input) => {
   // --- Launch direction ---
   let dir: Point | null = null;
   let launch: Point | null = null; // only used when no ball was drawn
+  /** The drawn launch arrow, tail to head (the clean figure draws a straight arrow there), and its ink. */
+  let arrowSeg: { from: Point; to: Point } | null = null;
+  const arrowInk = new Uint8Array(W * H);
+  const segOf = (ax: Axis, d: Point) => {
+    const fwd = d.x * ax.dir.x + d.y * ax.dir.y > 0;
+    const at = (t: number) => ({ x: ax.centroid.x + ax.dir.x * t, y: ax.centroid.y + ax.dir.y * t });
+    return { from: at(fwd ? ax.min : ax.max), to: at(fwd ? ax.max : ax.min) };
+  };
   if (arrows.length) {
     const ax = inkAxis(input, [arrows.reduce((a, b) => (b.area + b.inkPixels > a.area + a.inkPixels ? b : a))]);
     if (ax && ax.elongation > 1.5) {
       dir = arrowDirection(ax);
-      const tail = dir.x * ax.dir.x + dir.y * ax.dir.y > 0 ? ax.min : ax.max; // opposite end to the head
-      launch = { x: ax.centroid.x + ax.dir.x * tail, y: ax.centroid.y + ax.dir.y * tail };
+      arrowSeg = segOf(ax, dir);
+      launch = { ...arrowSeg.from }; // the tail: opposite end to the head
     }
     // The arrow is a hint, not scenery.
     const am = contourMask(input, arrows, 3);
-    for (let i = 0; i < am.length; i++) if (am[i]) exclude[i] = 1;
+    for (let i = 0; i < am.length; i++) if (am[i]) exclude[i] = arrowInk[i] = 1;
   }
   if (ball && !dir) {
     // Ink split into strokes once the ball is cut out (the arrow is often drawn touching the ball).
@@ -597,8 +606,10 @@ export const buildProjectile: SceneBuilder = (input) => {
     const arrow = arrowFromBall(ball, comps);
     if (arrow) {
       dir = arrow.dir;
+      const ax = axisOf(arrow.pixels);
+      if (ax) arrowSeg = segOf(ax, arrow.dir);
       for (const p of arrow.pixels) {
-        exclude[p.y * W + p.x] = 1;
+        exclude[p.y * W + p.x] = arrowInk[p.y * W + p.x] = 1;
         ball.mask[p.y * W + p.x] = 0; // the arrow stays drawn on the paper, it does not fly with the ball
       }
     } else {
@@ -878,7 +889,8 @@ export const buildProjectile: SceneBuilder = (input) => {
     const a = ctx.getTransform().a;
     const zoom = Math.max(1, ctx.canvas.width / W / a);
     const w = lw * zoom;
-    if (zoom > 1.01) {
+    // (The clean figure keeps its ball visible itself.)
+    if (zoom > 1.01 && DRAWN_STYLE) {
       const minR = (MIN_BALL_CSS * (window.devicePixelRatio || 1)) / a;
       if (bodyR < minR) {
         ctx.fillStyle = '#3c3c3c';
@@ -922,10 +934,31 @@ export const buildProjectile: SceneBuilder = (input) => {
   const ground = span;
   if (ground) parts.ground = { at: () => ({ x: (ground.x0 + ground.x1) / 2, y: floorY }), side: 'below' };
 
+  // Clean figure. The drawn scenery the ball can hit (cannon, cliff, target) stays as its own ink, recoloured to the
+  // scenery grey (minus specks); the drawn ground becomes a straight line at the floor; the launch arrow a straight
+  // arrow where it was drawn; the ball the physics circle. The dotted trail is drawn by onDraw as before.
+  const clean: CleanPart[] = [];
+  const keep = new Uint8Array(W * H);
+  const groundBand = Math.max(8, Math.round(H * 0.04));
+  const ballInk = ball?.mask;
+  const notScenery = new Uint8Array(W * H);
+  for (let i = 0; i < notScenery.length; i++) {
+    const y = (i / W) | 0;
+    if (arrowInk[i] || (ballInk && ballInk[i]) || (floorY < H && y >= floorY - groundBand && y <= floorY + groundBand / 2)) notScenery[i] = 1;
+  }
+  const minPx = Math.max(30, Math.round(0.0015 * W * H));
+  for (const comp of inkComponents(ink, notScenery, W, H, minPx)) for (const p of comp) keep[p.y * W + p.x] = 1;
+  const sceneryInk = inkImage(input, (i) => keep[i] === 1);
+  if (sceneryInk) clean.push({ kind: 'image', ...sceneryInk });
+  clean.push({ kind: 'ground', y: floorY });
+  if (arrowSeg) clean.push({ kind: 'arrow', ...arrowSeg });
+  clean.push({ kind: 'ball', body, radius: bodyR, tone: 'mass', minCss: MIN_BALL_CSS });
+
   return {
     bodies: [body, ...statics],
     constraints: [],
     sprites: [sprite],
+    clean,
     background: eraseFromPaper(input, masks),
     label: 'Projectile',
     view: flightView,
