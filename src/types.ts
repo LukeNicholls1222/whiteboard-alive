@@ -108,6 +108,10 @@ export interface BuiltScene {
   /** Paper with the moving parts erased; drawn as the static background. */
   background: HTMLCanvasElement;
   label: string;
+  /** Optional: called once per fixed step, right after Matter.Engine.update (scene-specific kinematics). */
+  onStep?: (engine: Matter.Engine) => void;
+  /** Optional: extra drawing in world coordinates, after the background and before the sprites. */
+  onDraw?: (ctx: CanvasRenderingContext2D) => void;
 }
 
 export type SceneBuilder = (input: SceneInput) => BuiltScene;
