@@ -28,7 +28,7 @@ export const buildPendulum: SceneBuilder = (input) => {
   const pivot = traceString(all, W, H, bob, bobRadius);
 
   // The swinging part = bob disc + a band along the string. Everything else (ceiling) stays as background.
-  const band = Math.max(8, bobRadius * 0.25);
+  const band = Math.max(12, bobRadius * 0.4);
   const swing = new Uint8Array(W * H);
   for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++) {
