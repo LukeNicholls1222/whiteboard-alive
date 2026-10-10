@@ -21,18 +21,9 @@ Anything else? Draw it anyway. If we can't tell what it is, it still falls.
 - **Keep lines connected**: the string touches the ceiling, the zig-zag touches the box.
 - **Keep words and numbers away from the parts**, about one finger's width, so they don't get mixed up with the lines.
 
-## 3. Optional: add numbers
+You don't need to write any numbers. Values such as string length and mass can be changed in the app's input fields.
 
-Write a number and a unit next to a part, and the simulation uses that value. For example:
-
-- next to the string: **1 m**
-- inside or next to a weight: **2 kg**
-- next to a spring: **k = 20 N/m**
-- near the bottom corner of a ramp: **30°**
-
-Use plain digits and units, written in English.
-
-## 4. Taking the photo
+## 3. Taking the photo
 
 - Hold the phone **straight above** the paper.
 - Make sure the **whole sheet** is in the shot.
