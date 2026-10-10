@@ -45,7 +45,40 @@ export type BodyRole =
   | 'cannon'
   | 'arrow'
   | 'projectile'
+  /** Handwritten text / numbers ("1 m", "2 kg"): read as annotations, never simulated. */
+  | 'label'
   | 'other';
+
+/** Parts of a drawing a handwritten value can refer to. */
+export type PartName =
+  | 'string'
+  | 'bob'
+  | 'spring'
+  | 'block'
+  | 'ramp'
+  | 'ground'
+  | 'ball'
+  | 'arrow'
+  | 'left weight'
+  | 'right weight'
+  | 'wheel';
+
+export type Quantity = 'length' | 'mass' | 'angle' | 'speed' | 'friction' | 'spring_constant';
+
+/** A value written on the paper next to a part (read by the AI; never a coordinate). */
+export interface Annotation {
+  /** As written, e.g. "30 cm". */
+  text: string;
+  quantity: Quantity;
+  /** Normalised in ai.ts: m, kg, degrees, m/s, μ (no unit), N/m. */
+  value: number;
+  /** Unit of `value` after normalising ('m', 'kg', '°', 'm/s', '', 'N/m'). */
+  unit: string;
+  part: PartName;
+}
+
+/** Where a value shown on the drawing came from. */
+export type ValueSource = 'note' | 'assumed' | 'drawn' | 'auto' | 'slider' | 'adjusted' | 'scaled';
 
 export interface AIBody {
   contourId: number;
@@ -69,6 +102,8 @@ export interface Analysis {
   explanation: string;
   /** Where the analysis came from (for the debug/status line). */
   source: 'gemini' | 'heuristic' | 'cached';
+  /** Handwritten values (only from Gemini; offline analyses have none). */
+  annotations?: Annotation[];
 }
 
 export interface SimParams {
@@ -116,6 +151,51 @@ export interface BuiltScene {
   onDraw?: (ctx: CanvasRenderingContext2D) => void;
   /** Optional per-step hook, called before each Engine.update (e.g. to keep a spring from dying out). */
   step?: (engine: Matter.Engine) => void;
+
+  // ---- Physical units (see units.ts). Read-only facts about the drawing; they never change the motion. ----
+  /**
+   * Drawn size in working-image px of parts a handwritten length can refer to (string = pivot to bob centre,
+   * spring = drawn length, ramp = slope edge, ground = drawn ground line, wheel = diameter).
+   */
+  measures?: Partial<Record<PartName, number>>;
+  /** Where each part is (world px, read every frame so labels follow moving parts), its body and mass. */
+  parts?: Partial<Record<PartName, PartInfo>>;
+  /** The scene integrates gravity × this (the pulley runs its own slower gravity). Default 1. */
+  gravityScale?: number;
+  /** Values the scene settled itself, in physical units. */
+  physics?: {
+    /** Spring: how the engine stiffness was chosen (from a written k, or the tuned default). */
+    springK?: { from: ValueSource; note?: number };
+    /** Projectile: launch speed actually used and the auto-fitted one (lands inside the picture), m/s. */
+    launchSpeed?: { value: number; fit: number; from: ValueSource };
+    /** Incline: slope angle as drawn, degrees. */
+    rampAngle?: number;
+  };
+  /** px per metre and the time factor; set by buildScene for every scene. */
+  scale?: Scale;
+}
+
+export interface PartInfo {
+  /** Current position in world px (label anchor). */
+  at: () => Point;
+  /** World px to keep clear around `at`, so the label does not cover the part itself. */
+  clear?: number;
+  /** Preferred side for the label (default: right of the part; center = on the anchor, e.g. inside a ramp). */
+  side?: 'right' | 'left' | 'above' | 'below' | 'center';
+  /** The moving body of this part, with its physical mass. */
+  body?: Matter.Body;
+  kg?: number;
+  kgFrom?: ValueSource;
+}
+
+/** How the drawing maps to real units (units.ts). */
+export interface Scale {
+  /** Working-image px per metre. */
+  pxPerMeter: number;
+  /** Physical seconds per screen second (< 1 = slow motion). */
+  timeFactor: number;
+  /** The handwritten length that set the scale, if any (else the paper's long side is 1 m). */
+  note?: Annotation;
 }
 
 export type SceneBuilder = (input: SceneInput) => BuiltScene;

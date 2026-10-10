@@ -7,12 +7,11 @@
 // collision cells, so the ball lands on what was actually drawn.
 
 import Matter from 'matter-js';
-import type { Contour, Point, SceneBuilder, SceneInput, Sprite } from '../types';
+import type { Contour, PartInfo, PartName, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
 import { contourMask, cutSprite, eraseFromPaper, maskBounds, roleOf } from './common';
 import { STEP_ACCEL, STEP_MS } from '../sim';
+import { DEFAULT_KG, mps, noteFor, pxPerStep, scaleFor } from '../units';
 
-/** params.speed is read relative to this value (speed 10 = the auto-fitted launch speed). */
-const DEFAULT_SPEED = 10;
 const RELAUNCH_MS = 1500;
 /** Minimum elevation when the ball starts on the ground (a flat shot would just roll). */
 const MIN_ELEV_GROUND_DEG = 15;
@@ -512,6 +511,20 @@ function sceneryBodies(ink: Uint8Array, exclude: Uint8Array, W: number, H: numbe
   return bodies;
 }
 
+/** Left and right end of the ink just above `floorY` (the drawn ground line's length), outside `exclude`. */
+function groundSpan(ink: Uint8Array, exclude: Uint8Array, W: number, H: number, floorY: number): { x0: number; x1: number } | null {
+  const band = Math.max(8, Math.round(H * 0.04));
+  let x0 = W, x1 = -1;
+  for (let y = Math.max(0, Math.floor(floorY - band)); y <= Math.min(H - 1, Math.ceil(floorY + 2)); y++)
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (!ink[i] || exclude[i]) continue;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+    }
+  return x1 > x0 ? { x0, x1 } : null;
+}
+
 /** Lowest long, roughly horizontal band of ink below `belowY` (the ground). Returns the lowest ink y in it. */
 function groundLine(ink: Uint8Array, W: number, H: number, belowY: number): number | null {
   const band = Math.max(8, Math.round(H * 0.04));
@@ -621,6 +634,15 @@ export const buildProjectile: SceneBuilder = (input) => {
   }
   if (floorY < start.y + r) floorY = H;
 
+  // Drawn ground length (a handwritten "5 m" under it sets the scale): the AI's ground stroke, else the ink on the line.
+  let span: { x0: number; x1: number } | null = null;
+  if (floorY < H) {
+    const g = grounds.length ? grounds.reduce((a, b) => (b.bbox.w > a.bbox.w ? b : a)) : null;
+    span = g && g.bbox.h < g.bbox.w * 0.3 ? { x0: g.bbox.x, x1: g.bbox.x + g.bbox.w } : groundSpan(ink, exclude, W, H, floorY);
+  }
+  const measures: Partial<Record<PartName, number>> = span ? { ground: span.x1 - span.x0 } : {};
+  const scale = scaleFor(input, measures);
+
   const drop = floorY - (start.y + r);
   const angle = clampElevation(dir, drop > 3 * r ? MIN_ELEV_DROP_DEG : MIN_ELEV_GROUND_DEG);
   const unit = { x: Math.cos(angle), y: Math.sin(angle) };
@@ -671,7 +693,7 @@ export const buildProjectile: SceneBuilder = (input) => {
   setGhost(true);
   let ghost = true;
 
-  // --- Launch speed: fitted so the arc lands inside the picture, scaled by params.speed ---
+  // --- Launch speed: fitted so the arc lands inside the picture, unless params.speed (m/s) says otherwise ---
   const g = STEP_ACCEL * ((input.analysis.params.gravity || 9.8) / 9.8);
   const fall = Math.max(0, floorY - bodyR - start.y);
   const landX = (s: number) => {
@@ -692,8 +714,15 @@ export const buildProjectile: SceneBuilder = (input) => {
   const vUp0 = -unit.y * speed;
   if (vUp0 > 0 && (vUp0 * vUp0) / (2 * g) > headroom)
     speed = Math.max(speed * 0.5, Math.sqrt(2 * g * Math.max(0, headroom)) / -unit.y);
+  // A handwritten launch speed or the slider (params.speed, m/s) replaces the fitted one, converted to px per step.
+  const fit = speed;
   const userSpeed = input.analysis.params.speed;
-  if (typeof userSpeed === 'number' && userSpeed > 0) speed *= userSpeed / DEFAULT_SPEED;
+  const speedNote = noteFor(input.analysis, 'speed');
+  let speedFrom: ValueSource = 'auto';
+  if (typeof userSpeed === 'number' && userSpeed > 0) {
+    speed = pxPerStep(userSpeed, scale);
+    speedFrom = speedNote && Math.abs(speedNote.value - userSpeed) < 1e-6 ? 'note' : 'slider';
+  }
   const v0 = { x: unit.x * speed, y: unit.y * speed };
   Matter.Body.setVelocity(body, v0);
   if (DEBUG) {
@@ -796,6 +825,15 @@ export const buildProjectile: SceneBuilder = (input) => {
     follow: { kind: 'body', body, origin: { ...start }, originAngle: 0 },
   };
 
+  const kg = noteFor(input.analysis, 'mass', ['ball', 'block', 'bob'])?.value;
+  const launchAt = { ...start };
+  const parts: Partial<Record<PartName, PartInfo>> = {
+    arrow: { at: () => launchAt, clear: r * 1.5, side: 'above' },
+    ball: { at: () => body.position, clear: r, body, kg: kg ?? DEFAULT_KG, kgFrom: kg ? 'note' : 'assumed' },
+  };
+  const ground = span;
+  if (ground) parts.ground = { at: () => ({ x: (ground.x0 + ground.x1) / 2, y: floorY }), side: 'below' };
+
   return {
     bodies: [body, ...statics],
     constraints: [],
@@ -804,5 +842,8 @@ export const buildProjectile: SceneBuilder = (input) => {
     label: 'Projectile',
     onStep,
     onDraw,
+    measures,
+    parts,
+    physics: { launchSpeed: { value: mps(speed, scale), fit: mps(fit, scale), from: speedFrom } },
   };
 };

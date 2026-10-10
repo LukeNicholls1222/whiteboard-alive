@@ -1,7 +1,7 @@
 // Gemini: annotated photo + contour list -> roles and constraints. The AI never invents coordinates.
 
 import { guessDiagram } from './guess';
-import type { Analysis, Contour, DiagramType } from './types';
+import type { Analysis, Annotation, Contour, DiagramType, PartName, Quantity } from './types';
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY ?? '';
 // Newest Flash first; older ones only if the newer model is unavailable for this key (see docs/research/gemini-json.md).
@@ -21,7 +21,46 @@ const TIMEOUT_MS = 20000;
 export const hasApiKey = () => API_KEY.length > 0;
 
 const DIAGRAMS: DiagramType[] = ['pendulum', 'spring', 'incline', 'projectile', 'pulley', 'fallback'];
-const ROLES = ['pivot', 'rope', 'bob', 'spring', 'mass', 'incline', 'ground', 'wheel', 'cannon', 'arrow', 'projectile', 'other'];
+const ROLES = ['pivot', 'rope', 'bob', 'spring', 'mass', 'incline', 'ground', 'wheel', 'cannon', 'arrow', 'projectile', 'label', 'other'];
+const QUANTITIES: Quantity[] = ['length', 'mass', 'angle', 'speed', 'friction', 'spring_constant'];
+const PARTS: PartName[] = ['string', 'bob', 'spring', 'block', 'ramp', 'ground', 'ball', 'arrow', 'left weight', 'right weight', 'wheel'];
+/** Names a model may use instead of the fixed part list (only matters in plain-JSON mode, without the schema). */
+const PART_ALIASES: Record<string, PartName> = {
+  rope: 'string',
+  rod: 'string',
+  box: 'block',
+  mass: 'block',
+  weight: 'block',
+  incline: 'ramp',
+  slope: 'ramp',
+  floor: 'ground',
+  projectile: 'ball',
+  pulley: 'wheel',
+  'left mass': 'left weight',
+  'right mass': 'right weight',
+  'left block': 'left weight',
+  'right block': 'right weight',
+};
+
+/** Written unit (lower case, no spaces) -> factor to this app's unit, per quantity. Unknown units are dropped. */
+const UNIT_FACTORS: Record<Quantity, Record<string, number>> = {
+  length: { m: 1, meter: 1, meters: 1, metre: 1, metres: 1, cm: 0.01, mm: 0.001, km: 1000, in: 0.0254, inch: 0.0254, inches: 0.0254, ft: 0.3048, foot: 0.3048, feet: 0.3048 },
+  mass: { kg: 1, kgs: 1, kilogram: 1, kilograms: 1, g: 0.001, gram: 0.001, grams: 0.001, lb: 0.45359237, lbs: 0.45359237 },
+  angle: { '': 1, '°': 1, deg: 1, degree: 1, degrees: 1, rad: 180 / Math.PI },
+  speed: { 'm/s': 1, mps: 1, 'm/sec': 1, 'cm/s': 0.01, 'km/h': 1 / 3.6, 'km/hr': 1 / 3.6, kph: 1 / 3.6, kmh: 1 / 3.6, mph: 0.44704, 'ft/s': 0.3048 },
+  friction: { '': 1, '-': 1, none: 1, 'μ': 1, mu: 1 },
+  spring_constant: { 'n/m': 1, 'n/cm': 100, 'n/mm': 1000, 'kn/m': 1000 },
+};
+/** Plausible range per quantity after normalising (friction matches the slider). Outside = misread, dropped. */
+const RANGES: Record<Quantity, [number, number]> = {
+  length: [0.005, 1000],
+  mass: [0.001, 10000],
+  angle: [1, 89],
+  speed: [0.05, 300],
+  friction: [0, 1.5],
+  spring_constant: [0.1, 1e6],
+};
+const SI_UNIT: Record<Quantity, string> = { length: 'm', mass: 'kg', angle: '°', speed: 'm/s', friction: '', spring_constant: 'N/m' };
 
 const RESPONSE_SCHEMA = {
   type: 'OBJECT',
@@ -53,9 +92,23 @@ const RESPONSE_SCHEMA = {
         required: ['type', 'from', 'to'],
       },
     },
+    annotations: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          text: { type: 'STRING' },
+          quantity: { type: 'STRING', enum: QUANTITIES },
+          value: { type: 'NUMBER' },
+          unit: { type: 'STRING' },
+          part: { type: 'STRING', enum: PARTS },
+        },
+        required: ['text', 'quantity', 'value', 'unit', 'part'],
+      },
+    },
     explanation: { type: 'STRING' },
   },
-  required: ['diagram', 'confidence', 'bodies', 'constraints', 'explanation'],
+  required: ['diagram', 'confidence', 'bodies', 'constraints', 'annotations', 'explanation'],
 };
 
 function prompt(contours: Contour[], w: number, h: number): string {
@@ -76,13 +129,21 @@ Classify the diagram as exactly one of: pendulum (fixed point/ceiling, string, b
 incline (triangle/slope + block), projectile (cannon or arrow showing a launch), pulley (wheel, rope, two weights),
 or fallback if none fit.
 Assign a role to every contour id: pivot (fixed point or ceiling line), rope, bob, spring, mass, incline, ground,
-wheel, cannon, arrow, projectile, other. Mark static=true for things that should not move (ceiling, ground, incline, wheel axle, cannon).
+wheel, cannon, arrow, projectile, label (handwritten letters or numbers such as "1 m", "2 kg", "30°", "μ = 0.2";
+never part of the machine), other. Mark static=true for things that should not move (ceiling, ground, incline, wheel axle, cannon, label).
 mass: relative mass (1.0 default; bigger drawn weights heavier). A single contour may contain several connected parts
 (e.g. string and bob drawn touching); then give it the role of its main moving part.
 constraints: connections between contour ids (rope / spring / pin). Use the same id for from and to if a part connects to itself.
+annotations: values the student wrote next to parts, e.g. "1 m" beside the string, "2 kg" on a box, "30°" at the ramp
+corner, "μ = 0.2" on the slope, "10 m/s" by the launch arrow, "3 kg" and "1 kg" on the two pulley weights, "k = 20 N/m"
+by the spring. One item per written value: text (exactly as written), quantity (length, mass, angle, speed, friction,
+spring_constant), value (the number as written), unit (as written: m, cm, mm, kg, g, deg, m/s, km/h, N/m; "" for a
+friction coefficient), part (what it labels: string, bob, spring, block, ramp, ground, ball, arrow, left weight,
+right weight, wheel; left/right = which side of the pulley wheel it hangs on). Only values you can actually read;
+use [] if nothing is written. A written value is never a coordinate.
 explanation: one short friendly English sentence describing what will happen.
 Reply with JSON only, shaped like:
-{"diagram":"pendulum","confidence":0.9,"bodies":[{"contourId":0,"role":"bob","static":false,"mass":1.0}],"constraints":[{"type":"rope","from":0,"to":1}],"explanation":"..."}`;
+{"diagram":"pendulum","confidence":0.9,"bodies":[{"contourId":0,"role":"bob","static":false,"mass":1.0}],"constraints":[{"type":"rope","from":0,"to":1}],"annotations":[],"explanation":"..."}`;
 }
 
 export async function analyze(annotated: HTMLCanvasElement, contours: Contour[]): Promise<Analysis> {
@@ -154,15 +215,50 @@ function sanitize(raw: any, contours: Contour[]): Analysis {
   const constraints = (Array.isArray(raw?.constraints) ? raw.constraints : []).filter(
     (c: any) => ids.has(c?.from) && ids.has(c?.to) && ['rope', 'spring', 'pin'].includes(c?.type),
   );
+  const annotations = (Array.isArray(raw?.annotations) ? raw.annotations : [])
+    .map(normalizeNote)
+    .filter((a: Annotation | null): a is Annotation => !!a);
+  // Written values that have a slider go straight into the params the scene is built with.
+  const params: Analysis['params'] = { gravity: 9.8 };
+  const mu = annotations.find((a: Annotation) => a.quantity === 'friction');
+  if (mu) params.friction = mu.value;
+  const v0 = annotations.find((a: Annotation) => a.quantity === 'speed');
+  if (v0) params.speed = v0.value; // m/s; the projectile converts it to px per step
   return {
     diagram,
     confidence: clamp(Number(raw?.confidence) || 0, 0, 1),
     bodies,
     constraints,
-    params: { gravity: 9.8 },
+    params,
     explanation: typeof raw?.explanation === 'string' ? raw.explanation : '',
     source: 'gemini',
+    annotations,
   };
+}
+
+/**
+ * One handwritten value -> this app's units (m, kg, °, m/s, μ, N/m), or null if the quantity, part or unit is
+ * unknown or the value is implausible (a misread "1 m" must not turn a pendulum into a 1000 m one).
+ */
+export function normalizeNote(a: any): Annotation | null {
+  if (!a || typeof a !== 'object') return null;
+  const quantity: Quantity | null = QUANTITIES.includes(a.quantity) ? a.quantity : null;
+  const partName = String(a.part ?? '').trim().toLowerCase();
+  const part: PartName | undefined = (PARTS as string[]).includes(partName) ? (partName as PartName) : PART_ALIASES[partName];
+  const value = Number(a.value);
+  if (!quantity || !part || !Number.isFinite(value)) return null;
+  const text = String(a.text ?? '').slice(0, 40);
+  const clean = (u: string) => u.toLowerCase().replace(/\s+/g, '').replace(/µ/g, 'μ').replace(/\.$/, '').replace(/^n\/a$/, '');
+  const table = UNIT_FACTORS[quantity];
+  let unit = clean(String(a.unit ?? ''));
+  // No unit given but the text has one ("L = 30 cm"): take it from the text.
+  if (!unit && !('' in table)) unit = clean(text.replace(/^[^=]*=/, '').trim().replace(/^-?[\d.,]+/, ''));
+  const factor = table[unit];
+  if (factor === undefined) return null;
+  const v = value * factor;
+  const [lo, hi] = RANGES[quantity];
+  if (!(v >= lo && v <= hi)) return null;
+  return { text, quantity, value: v, unit: SI_UNIT[quantity], part };
 }
 
 /** Shape-based guess without calling Gemini (used if a built-in example's saved answer cannot be read). */

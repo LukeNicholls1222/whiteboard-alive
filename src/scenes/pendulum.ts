@@ -12,6 +12,7 @@ import Matter from 'matter-js';
 import type { Point, SceneBuilder } from '../types';
 import { contourMask, cutSprite, deepestPoint, eraseFromPaper, roleOf } from './common';
 import { STEP_ACCEL, STEP_MS } from '../sim';
+import { DEFAULT_KG, noteFor } from '../units';
 
 const KICK_DEG = 20;
 /** RK4 substeps per physics step. */
@@ -93,6 +94,7 @@ export const buildPendulum: SceneBuilder = (input) => {
     place();
   };
 
+  const kg = noteFor(input.analysis, 'mass', ['bob', 'block', 'ball'])?.value;
   return {
     bodies: [body],
     constraints: [],
@@ -105,6 +107,12 @@ export const buildPendulum: SceneBuilder = (input) => {
     background: eraseFromPaper(input, [swing]),
     label: 'Pendulum',
     onStep,
+    // L in 2π√(L/g) is pivot to bob centre.
+    measures: { string: length },
+    parts: {
+      string: { at: () => ({ x: (pivot.x + body.position.x) / 2, y: (pivot.y + body.position.y) / 2 }) },
+      bob: { at: () => body.position, clear: bobRadius, body, kg: kg ?? DEFAULT_KG, kgFrom: kg ? 'note' : 'assumed' },
+    },
   };
 };
 

@@ -6,9 +6,10 @@
 import Matter from 'matter-js';
 import { STEP_ACCEL, STEP_MS, type Simulation } from './sim';
 import type { BuiltScene } from './types';
+import { mps, scaleOf } from './units';
 
 const STEP_S = STEP_MS / 1000;
-/** Same conversion as the graph: 9.8 m/s² is STEP_ACCEL px/step², so 1 m = 1000 / 9.8 px. */
+/** Fixed screen conversion used only for the smoothing thresholds (a visual matter, independent of the drawing's scale). */
 const PX_PER_M = STEP_ACCEL / (STEP_S * STEP_S) / 9.8;
 
 /** The scene's top speed gets an arrow this long (fraction of the picture's short side). */
@@ -194,6 +195,7 @@ export class VelocityArrows {
 
   private draw(ctx: CanvasRenderingContext2D, scene: BuiltScene, pxScale: number) {
     const bodies = this.movingBodies(scene);
+    const scale = scaleOf(scene);
     // World px per CSS px.
     const css = (window.devicePixelRatio || 1) / pxScale;
     const worldW = ctx.canvas.width / ctx.getTransform().a;
@@ -220,7 +222,7 @@ export class VelocityArrows {
         t.x = p.x;
         t.y = p.y;
       }
-      const speed = Math.hypot(t.vx, t.vy) / STEP_S / PX_PER_M; // m/s
+      const speed = mps(Math.hypot(t.vx, t.vy), scale); // physical m/s (units.ts)
       this.updateShown(t, b, speed);
       t.speed = speed;
       maxNow = Math.max(maxNow, speed);
@@ -272,7 +274,7 @@ export class VelocityArrows {
       const site: LabelSite = { tip, ux, uy, headLen, origin: { x: p.x, y: p.y }, body: { x: bb.min.x, y: bb.min.y, w: bb.max.x - bb.min.x, h: bb.max.y - bb.min.y } };
       const label = placeLabel(site, tw + 6 * css, (LABEL_CSS + 4) * css, css, worldW, worldH, obstacles);
       labels.push({ text, box: label });
-      samples.push({ x: p.x, y: p.y, vx: (t.vx / STEP_S) / PX_PER_M, vy: (-t.vy / STEP_S) / PX_PER_M, speed, length, k, drawn, clipped: drawn < length, tip, label });
+      samples.push({ x: p.x, y: p.y, vx: mps(t.vx, scale), vy: mps(-t.vy, scale), speed, length, k, drawn, clipped: drawn < length, tip, label });
     }
     // The pill goes under the labels, so a label that had to land on it is still readable.
     paintScaleBar(ctx, css, bar);

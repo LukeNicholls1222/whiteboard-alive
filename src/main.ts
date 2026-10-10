@@ -1,8 +1,9 @@
 import './style.css';
 import { analyze, hasApiKey, offlineAnalysis } from './ai';
 import { cachedAnalysis, EXAMPLES, exampleBlob, exampleThumb, fingerprint, preloadExamples } from './examples';
-import { createControls } from './controls';
+import { createControls, launchSpeedTune } from './controls';
 import { LiveGraph } from './graph';
+import { QuantityLabels } from './notes';
 import { buildScene } from './scenes';
 import { AIOverlay } from './overlay';
 import { Simulation } from './sim';
@@ -31,7 +32,10 @@ const controls = createControls($<HTMLElement>('controls'), {
 });
 const arrows = new VelocityArrows();
 arrows.mountToggle($<HTMLElement>('controls'));
-if (import.meta.env.DEV) (window as any).__wa = { controls, arrows, get sim() { return sim; } };
+/** Physical values next to the parts ("L = 0.42 m assumed") and the slow-motion badge. */
+const notes = new QuantityLabels(stage.parentElement!);
+arrows.avoid = () => notes.boxes;
+if (import.meta.env.DEV) (window as any).__wa = { controls, arrows, notes, get sim() { return sim; } };
 
 async function startScene(input: SceneInput, intro = false): Promise<BuiltScene> {
   const scene = buildScene(input);
@@ -47,6 +51,8 @@ async function startScene(input: SceneInput, intro = false): Promise<BuiltScene>
   });
   sim.setParams(input.analysis.params);
   graph.attach(sim, input.analysis.diagram);
+  // Value labels first, so the velocity arrows draw on top of them.
+  notes.attach(sim, input.analysis);
   arrows.attach(sim);
   sim.start();
   return scene;
@@ -119,6 +125,7 @@ async function run(file: Blob, example?: string) {
   busy = true;
   try {
     overlay.reset();
+    notes.reset();
     setStep('load');
     const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
     const photo = toWorkingCanvas(bitmap, bitmap.width, bitmap.height);
@@ -147,7 +154,9 @@ async function run(file: Blob, example?: string) {
     current = { ...vision, analysis };
     const scene = await startScene(current, true);
     // buildScene drops to the fallback when the chosen builder fails; show that scene's sliders.
-    controls.show(scene.label === 'Falling objects' ? 'fallback' : analysis.diagram, analysis.params);
+    // The launch speed slider is in this drawing's m/s, ranged around the speed that lands in the picture.
+    const ls = scene.physics?.launchSpeed;
+    controls.show(scene.label === 'Falling objects' ? 'fallback' : analysis.diagram, analysis.params, ls ? launchSpeedTune(ls.fit, ls.value) : {});
     setStep('done');
     explain.textContent = analysis.explanation || `${scene.label}${analysis.source === 'heuristic' && !hasApiKey() ? ' (offline mode)' : ''}`;
   } catch (err) {

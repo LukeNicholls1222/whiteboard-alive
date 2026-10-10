@@ -14,8 +14,9 @@
 // engine each step, so slider/voice/moon-mode gravity changes apply instantly.
 
 import Matter from 'matter-js';
-import type { Contour, SceneBuilder, SceneInput, Sprite } from '../types';
+import type { Contour, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
 import { STEP_MS } from '../sim';
+import { noteFor } from '../units';
 import { buildFallback } from './fallback';
 import { contourMask, cutSprite, deepestPoint, eraseFromPaper, maskBounds, roleOf } from './common';
 
@@ -38,11 +39,10 @@ const MIN_TRAVEL = 30;
  */
 const MAX_MASS_RATIO = 3;
 /**
- * How long the fall should take at Earth gravity, seconds. A drawing is a picture of a real-size machine,
- * so instead of the default scale (1 m ≈ 102 px, where a 300 px drop at a = g/2 lasts ~1.1 s) we pick the
- * pixels-per-metre for this drawing so the full travel takes this long. The acceleration in m/s² stays
- * exactly a = g(m1 - m2)/(m1 + m2); only the size the drawing represents changes. Lower gravity (moon
- * mode) therefore still slows it down further, as it should.
+ * How long the fall should take on screen at Earth gravity, seconds. The scene integrates its own gravity,
+ * slowed down by `scale` (≤ 1) so the full travel takes this long whatever the masses; lower gravity (moon mode)
+ * still slows it down further, as it should. The slowdown is reported as `gravityScale`, so units.ts plays the
+ * physical time at the matching slow-motion factor and every readout still says a = g(m1 - m2)/(m1 + m2).
  */
 const TARGET_FALL_S = 3.5;
 /** Default Matter scale: px per metre at which 9.8 m/s² is engine gravity 1. Never move faster than that. */
@@ -253,6 +253,39 @@ export const buildPulley: SceneBuilder = (input) => {
   if (mL > mR * MAX_MASS_RATIO) mL = mR * MAX_MASS_RATIO;
   if (mR > mL * MAX_MASS_RATIO) mR = mL * MAX_MASS_RATIO;
 
+  // Handwritten kg replace the drawn ratio: both written = as written; one written = the other keeps the drawn
+  // ratio to it; none = the lighter weight is 1 kg. (The motion only depends on the ratio.)
+  const noteL = noteFor(input.analysis, 'mass', ['left weight'])?.value;
+  const noteR = noteFor(input.analysis, 'mass', ['right weight'])?.value;
+  let fromL: ValueSource = 'assumed';
+  let fromR: ValueSource = 'assumed';
+  if (noteL !== undefined && noteR !== undefined) {
+    mL = noteL;
+    mR = noteR;
+    fromL = fromR = 'note';
+    // Exactly equal weights would hang still forever: tip the bigger drawing a little and say so.
+    if (Math.abs(mL - mR) / Math.max(mL, mR) < 1e-3) {
+      if (left.pixels > right.pixels) {
+        mL = mR * TIE_BREAK_RATIO;
+        fromL = 'adjusted';
+      } else {
+        mR = mL * TIE_BREAK_RATIO;
+        fromR = 'adjusted';
+      }
+    }
+  } else if (noteL !== undefined) {
+    mR = noteL * (mR / mL);
+    mL = noteL;
+    fromL = 'note';
+  } else if (noteR !== undefined) {
+    mL = noteR * (mL / mR);
+    mR = noteR;
+    fromR = 'note';
+  }
+  const anyNote = noteL !== undefined || noteR !== undefined;
+  const kgL = anyNote ? mL : mL / Math.min(mL, mR);
+  const kgR = anyNote ? mR : mR / Math.min(mL, mR);
+
   const makeBody = (s: Side) => {
     const b = s.weightBox;
     return Matter.Bodies.rectangle(b.x + b.w / 2, b.y + b.h / 2, b.w, b.h, {
@@ -279,7 +312,8 @@ export const buildPulley: SceneBuilder = (input) => {
   };
   const maxDown = mL > mR ? travel(left, right) : travel(right, left);
 
-  // Scale of this drawing (see TARGET_FALL_S): s = a t² / 2  =>  px/m = 2 * travel / (a * T²), at 9.8 m/s².
+  // Slowdown of this scene's gravity (see TARGET_FALL_S): s = a t² / 2  =>  px/m = 2 * travel / (a * T²), at 9.8 m/s².
+  // Only the on-screen speed; the readouts use units.ts (paper = 1 m) with gravityScale = `scale`.
   const aRel = Math.abs(mL - mR) / (mL + mR);
   const pxPerM = Math.min(DEFAULT_PX_PER_M, (2 * maxDown) / (aRel * 9.8 * TARGET_FALL_S ** 2));
   const scale = pxPerM / DEFAULT_PX_PER_M;
@@ -363,6 +397,7 @@ export const buildPulley: SceneBuilder = (input) => {
   if (wheelMask) erased.push(wheelMask);
   if (junk.length) erased.push(contourMask(input, junk));
 
+  const half = (s: Side) => Math.max(s.weightBox.w, s.weightBox.h) / 2;
   return {
     bodies: [bodyL, bodyR],
     constraints: [],
@@ -371,5 +406,12 @@ export const buildPulley: SceneBuilder = (input) => {
     label: 'Pulley',
     onStep,
     onDraw,
+    gravityScale: scale,
+    measures: { wheel: 2 * R },
+    parts: {
+      'left weight': { at: () => bodyL.position, clear: half(left), side: 'left', body: bodyL, kg: kgL, kgFrom: fromL },
+      'right weight': { at: () => bodyR.position, clear: half(right), side: 'right', body: bodyR, kg: kgR, kgFrom: fromR },
+      wheel: { at: () => C, clear: R, side: 'above' },
+    },
   };
 };

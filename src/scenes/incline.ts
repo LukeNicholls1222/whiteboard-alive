@@ -6,9 +6,10 @@ import type { Contour, Point, SceneBuilder, SceneInput, Sprite } from '../types'
 import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
 import { replayWhenStopped } from './replay';
 import { STEP_ACCEL } from '../sim';
+import { DEFAULT_KG, noteFor } from '../units';
 
 /** Coulomb friction coefficient μ used when the AI gives no `params.friction`. */
-const DEFAULT_FRICTION = 0.3;
+export const DEFAULT_FRICTION = 0.3;
 /** Minimum visible slide, as a fraction of the ramp's slope length, even when friction would hold the block. */
 const MIN_SLIDE_FRACTION = 0.35;
 /** Minimum starting speed along the slope, px per step. */
@@ -600,6 +601,7 @@ export const buildIncline: SceneBuilder = (input) => {
     });
   }
   if (bodies.length < 2) throw new Error('incline: block bodies could not be built');
+  const block = bodies[1];
 
   // Floor at the ramp's base and walls at the image edges keep the block on screen.
   const floorY = Math.min(H, Math.max(a.y, b.y, c.y));
@@ -610,6 +612,12 @@ export const buildIncline: SceneBuilder = (input) => {
     Matter.Bodies.rectangle(W + 50, H / 2, 100, H * 4, wallOpts),
   );
 
+  const kg = noteFor(input.analysis, 'mass', ['block', 'ball', 'bob'])?.value;
+  const x0 = Math.min(a.x, b.x, c.x), x1 = Math.max(a.x, b.x, c.x);
+  // Incentre: the point inside the ramp farthest from all three edges (labels there never touch the slope).
+  const la = Math.hypot(b.x - c.x, b.y - c.y), lb = Math.hypot(a.x - c.x, a.y - c.y), lc = Math.hypot(a.x - b.x, a.y - b.y);
+  const per = la + lb + lc || 1;
+  const inner = { x: (la * a.x + lb * b.x + lc * c.x) / per, y: (la * a.y + lb * b.y + lc * c.y) / per };
   // The ramp stays in the background exactly as drawn; only the moving blocks are erased.
   return {
     bodies,
@@ -618,5 +626,20 @@ export const buildIncline: SceneBuilder = (input) => {
     background: eraseFromPaper(input, masks),
     label: 'Incline',
     onStep: replayWhenStopped(moving),
+    measures: { ramp: slope.length, ground: x1 - x0 },
+    parts: {
+      // Inside the triangle: blank paper, and never where the block slides.
+      ramp: { at: () => inner, side: 'center' },
+      ground: { at: () => ({ x: (x0 + x1) / 2, y: floorY }), side: 'below' },
+      block: {
+        at: () => block.position,
+        clear: Math.max(block.bounds.max.x - block.bounds.min.x, block.bounds.max.y - block.bounds.min.y) / 2,
+        side: 'above',
+        body: block,
+        kg: kg ?? DEFAULT_KG,
+        kgFrom: kg ? 'note' : 'assumed',
+      },
+    },
+    physics: { rampAngle: (slope.angle * 180) / Math.PI },
   };
 };
