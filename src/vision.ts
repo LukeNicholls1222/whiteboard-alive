@@ -16,6 +16,15 @@
 //      otherwise (sun stripes, no desk) the whole photo is used and step 7 removes desk bits.
 //   4. Candidate ink = darkness above a weak threshold that follows the paper's own grain, and not "light coloured
 //      printing" (much darker in luma than in max(R,G,B)) - unless it is clearly dark in luma (blue / red pen).
+//      Black ink mode (default; the demo uses black markers): ink must also darken R, G and B about equally, each
+//      relative to that channel's own local background ("neutral" = least / most darkened channel; black marker
+//      ~0.97, pencil ~0.9, blue / red pen ~0.2-0.6, coffee stains / fold shadows / paper-edge lines / wood
+//      ~0.65-0.87). Pixels below BLACK_PIXEL are dropped after rule removal (pens, coloured rules, wood grain);
+//      in step 7 whole contours whose dark core is less neutral than BLACK_CONTOUR (lowered for a pencil drawing,
+//      see BLACK_BELOW_MAIN) are dropped (stains, fold shadows, paper-edge lines, desk). If there is little clearly
+//      black ink, more clearly coloured pen than black, or black mode keeps (next to) nothing, the photo is redone
+//      in "any dark ink" mode (the old behaviour, so blue / red pen drawings still work). ?ink=any forces the old
+//      mode, ?ink=black disables the fallback (testing). ?debug logs the decision as "[vision] ink mode: ...".
 //   5. Ruled / grid paper: if many long parallel rule-faint lines exist, erase straight runs as faint as them, and
 //      each rule along its fitted line across the whole sheet (broken stretches, ends at the margin).
 //      Then hysteresis: a blob survives if it has a dark seed, or is a long thin line; specks are dropped.
@@ -28,7 +37,8 @@
 //      (margin) that are much fainter in max(R,G,B) than the drawing; handwriting (rows of small letters, or a
 //      lone small word near the paper border far from the drawing).
 //
-// Cost: ~50-90 ms in Node (wasm) at WORK_SIZE; expect ~100-250 ms on a phone.
+// Cost: ~50-90 ms in Node (wasm) at WORK_SIZE (black ink mode adds ~4 ms; its fallback redoes steps 4-7 only for
+// coloured drawings that pass the first check); expect ~100-250 ms on a phone.
 
 import type { Contour, Point } from './types';
 
@@ -61,6 +71,24 @@ const STRONG_OVER_WEAK = 1.8;
 const COLOR_KEEP = 0.35;
 /** ...unless its luma darkness is at least this (pen ink of any colour; light printing never gets this dark). */
 const INK_SURE = 0.3;
+/** Black ink mode: a candidate pixel's least / most darkened channel ratio must be at least this (0..1). */
+const BLACK_PIXEL = 0.75;
+/**
+ * Black ink mode: a contour's dark core (channel darkness summed, then least / most) must reach this ratio (black
+ * marker ~0.97; stains, fold shadows, paper-edge lines, desk 0.78-0.87)...
+ */
+const BLACK_CONTOUR = 0.88;
+/** ...or, if the main contour is less neutral (pencil on tinted paper ~0.9), that contour's ratio minus this... */
+const BLACK_BELOW_MAIN = 0.06;
+/** ...but never less than this. */
+const BLACK_CONTOUR_MIN = 0.82;
+/** Black ink mode: use it only if clearly black ink (and later, the ink of the black contours kept) covers at least
+ * this share of the paper... */
+const BLACK_MIN_SHARE = 0.002;
+/** ...and clearly coloured dark ink (ratio below this) is not more than the black ink (a blue / red pen drawing). */
+const COLOURED = 0.5;
+/** Black ink mode is abandoned after the fact if clearly coloured strokes exceed this share of the black ink kept. */
+const COLOURED_OVER_BLACK = 0.5;
 /** Hysteresis: a blob with no dark seed is still kept if it is a line at least this long... */
 const LINE_KEEP = 0.1;
 /** ...and thin: pixel count <= length * LINE_THIN (i.e. average stroke width below LINE_THIN px). */
@@ -199,8 +227,24 @@ export function extractContours(cv: any, photo: HTMLCanvasElement): VisionResult
 
 const odd = (n: number, min = 3) => Math.max(min, Math.round(n) | 1);
 
+/** auto = black ink only, falling back to any dark ink; black = black only (no fallback); any = the old behaviour. */
+export type InkMode = 'auto' | 'black' | 'any';
+
+function urlParams(): URLSearchParams | null {
+  return typeof location === 'undefined' ? null : new URLSearchParams(location.search);
+}
+
+function inkModeFromUrl(): InkMode {
+  const v = urlParams()?.get('ink');
+  return v === 'any' || v === 'black' ? v : 'auto';
+}
+
 /** Core pipeline on an RGBA Mat. Separate from extractContours so it can be tested without a DOM. */
-export function findInk(cv: any, src: any): { ink: Uint8Array; contours: Contour[] } {
+export function findInk(
+  cv: any,
+  src: any,
+  mode: InkMode = inkModeFromUrl(),
+): { ink: Uint8Array; contours: Contour[]; inkMode: 'black' | 'any' } {
   const W = src.cols;
   const H = src.rows;
   const N = W * H;
@@ -230,176 +274,283 @@ export function findInk(cv: any, src: any): { ink: Uint8Array; contours: Contour
     const dark = G.dark;
 
     // 3. Paper region.
-    const paper = findPaper(cv, track, G.bgSmall, backgroundColor(cv, track, src, minSide), W, H);
+    const colorBg = backgroundColor(cv, track, src, minSide);
+    const paper = findPaper(cv, track, G.bgSmall, colorBg, W, H);
 
     // 4. Hysteresis threshold inside the paper. Thresholds follow the paper's own grain / JPEG noise.
     const { weakT, strongT } = thresholds(dark, paper.mask);
     const speck = Math.max(4, SPECK_AREA * minSide * minSide);
-    const maskMat = track(new cv.Mat(H, W, cv.CV_8UC1));
-    const mask = maskMat.data as Uint8Array;
     // Light coloured printing (blue rules, red margin) is dark in luma but nearly white in max(R,G,B); pen ink of
     // any colour keeps a good share of its darkness in both. Mixing with paper scales both, so the ratio holds.
     const vd = V.dark;
     // Saturated pen (blue / red marker) is also bright in max(R,G,B), but far darker in luma than any light
     // printing, so pixels past INK_SURE are ink whatever their colour.
     const inkSure = Math.round(INK_SURE * 255);
+
+    const anyMask = track(new cv.Mat(H, W, cv.CV_8UC1));
+    const am = anyMask.data as Uint8Array;
     for (let i = 0; i < N; i++) {
       const d = dark[i];
-      mask[i] = d >= weakT && paper.mask[i] && (d >= inkSure || vd[i] >= d * COLOR_KEEP) ? 255 : 0;
+      am[i] = d >= weakT && paper.mask[i] && (d >= inkSure || vd[i] >= d * COLOR_KEEP) ? 255 : 0;
     }
-    const lineKeep = minSide * LINE_KEEP;
     // 5. Ruled / grid lines (before hysteresis, so faint rules touching the drawing cannot ride along with it).
-    removeRuledLines(cv, track, maskMat, dark, paper.width);
-    hysteresis(cv, track, maskMat, dark, strongT, speck, lineKeep);
+    // Found on all candidate ink even in black mode: coloured rules then still form a family, and the faint stubs
+    // where a rule meets a black stroke are erased with them.
+    removeRuledLines(cv, track, anyMask, dark, paper.width);
 
-    // 6. Join broken strokes.
-    joinGaps(cv, track, maskMat, minSide);
+    // How evenly each candidate pixel darkens R, G and B (255 = grey / black ink, low = coloured).
+    const { neutral, chan } = neutrality(rgba, colorBg.bg, am, W, H);
+    const blackPix = Math.round(BLACK_PIXEL * 255);
+    const blackSure = Math.round(BLACK_CONTOUR * 255);
+    const colouredT = Math.round(COLOURED * 255);
 
-    // 7. Heal tiny breaks, find contours, filter.
-    const ck = odd(minSide * CLOSE_KERNEL);
-    const kernel = track(cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(ck, ck)));
-    const closed = track(new cv.Mat());
-    cv.morphologyEx(maskMat, closed, cv.MORPH_CLOSE, kernel);
-
-    const contoursVec = track(new cv.MatVector());
-    const hierarchy = track(new cv.Mat());
-    cv.findContours(closed, contoursVec, hierarchy, cv.RETR_CCOMP, cv.CHAIN_APPROX_SIMPLE);
-    const hier = hierarchy.data32S;
-
-    interface Cand {
-      idx: number;
-      rect: { x: number; y: number; width: number; height: number };
-      area: number;
-      hasHole: boolean;
-    }
-    let cands: Cand[] = [];
-    const atBorder: Cand[] = [];
-    const minArea = minSide * minSide * MIN_AREA;
-    for (let i = 0; i < contoursVec.size(); i++) {
-      if (hier[i * 4 + 3] !== -1) continue;
-      const c = contoursVec.get(i);
-      const rect = cv.boundingRect(c);
-      const area = cv.contourArea(c);
-      const long = Math.max(rect.width, rect.height);
-      const touchesEdge = rect.x <= 1 || rect.y <= 1 || rect.x + rect.width >= W - 1 || rect.y + rect.height >= H - 1;
-      const huge = rect.width > W * 0.9 || rect.height > H * 0.9;
-      const tiny = long < minSide * MIN_SIDE || (area < minArea && long < minSide * MIN_SIDE_AREA_GATE);
-      // Desk / paper-edge leftovers: hug the photo border and are big, or are a thin sliver along that border.
-      const along =
-        ((rect.y <= 1 || rect.y + rect.height >= H - 1) && rect.width > rect.height * 4) ||
-        ((rect.x <= 1 || rect.x + rect.width >= W - 1) && rect.height > rect.width * 4);
-      let edgeJunk = touchesEdge && (huge || long > minSide * 0.5 || along);
-      if (!tiny && !edgeJunk) {
-        // Desk peeking inside the paper hull (curled / rotated paper): outline mostly on desk, hugging the paper edge.
-        const pts = c.data32S as Int32Array;
-        let desk = 0, nearEdge = Infinity, farEdge = 0;
-        const step = Math.max(2, Math.floor(pts.length / 120) * 2);
-        let n = 0;
-        for (let k = 0; k < pts.length; k += step) {
-          n++;
-          if (!paper.bright(pts[k], pts[k + 1])) desk++;
-          const de = paper.distToEdge(pts[k], pts[k + 1]);
-          nearEdge = Math.min(nearEdge, de);
-          farEdge = Math.max(farEdge, de);
-        }
-        edgeJunk = desk > n * 0.5 && nearEdge < minSide * DESK_EDGE;
-        // Paper edge / its shadow / the desk line just beyond it: a thin line whose whole length stays within a
-        // narrow band along the paper or photo border. A drawn line never hugs the sheet's edge like that.
-        const across = Math.min(rect.width, rect.height);
-        if (across <= minSide * 0.04 && long >= across * 4 && farEdge < minSide * EDGE_LINE) edgeJunk = true;
+    let useBlack = mode !== 'any';
+    let paperN = 0, colouredAll = 0;
+    if (mode === 'auto') {
+      // Enough clearly black ink, and not a drawing in coloured pen (with maybe a few black bits)? Counted on the
+      // candidate ink after rule removal, so blue rules do not count as coloured pen.
+      let black = 0, coloured = 0;
+      for (let i = 0; i < N; i++) {
+        if (!paper.mask[i]) continue;
+        paperN++;
+        const d = dark[i];
+        if (!am[i]) continue;
+        if (neutral[i] < colouredT) colouredAll++;
+        if (d < strongT) continue;
+        if (neutral[i] >= blackSure) black++;
+        else if (d >= inkSure && neutral[i] < colouredT) coloured++;
       }
-      c.delete();
-      if (tiny || edgeJunk) continue;
-      const cand = { idx: i, rect, area, hasHole: hier[i * 4 + 2] !== -1 };
-      // Desk / paper-corner leftovers: something pressed against a photo border and lying wholly in a narrow band
-      // along it (the drawing sits inside the sheet, away from the photo border).
-      const touch = minSide * BORDER_TOUCH;
-      const band = minSide * BORDER_BAND;
-      const squeezed =
-        (rect.x <= touch && rect.x + rect.width <= band) ||
-        (rect.y <= touch && rect.y + rect.height <= band) ||
-        (W - rect.x - rect.width <= touch && W - rect.x <= band) ||
-        (H - rect.y - rect.height <= touch && H - rect.y <= band);
-      (squeezed ? atBorder : cands).push(cand);
-    }
-    if (!cands.length) cands = atBorder; // never return nothing because of this filter
-
-    cands = dropHandwriting(cands, minSide, paper.distToEdge);
-
-    // Per-candidate ink stats. Mean max-channel darkness tells coloured printing apart from the drawing.
-    const vdMat = track(new cv.Mat(H, W, cv.CV_8UC1));
-    vdMat.data.set(V.dark);
-    interface Info { cand: Cand; inkPixels: number; meanV: number; drop: boolean }
-    const infos: Info[] = [];
-    for (const cand of cands) {
-      const c = contoursVec.get(cand.idx);
-      const one = new cv.MatVector();
-      one.push_back(c);
-      const filled = cv.Mat.zeros(H, W, cv.CV_8UC1);
-      cv.drawContours(filled, one, 0, new cv.Scalar(255), cv.FILLED);
-      const strokeOnly = new cv.Mat();
-      cv.bitwise_and(filled, closed, strokeOnly);
-      const inkPixels = cv.countNonZero(strokeOnly);
-      const meanV = cv.mean(vdMat, strokeOnly)[0];
-      [one, filled, strokeOnly, c].forEach((x) => x.delete());
-
-      // Binder holes / dark blobs at the paper border: solid, compact, small, near the edge.
-      const { rect, area } = cand;
-      const solid = inkPixels > 0.85 * Math.max(1, area);
-      const compact = Math.max(rect.width, rect.height) < minSide * 0.07 && rect.width < rect.height * 1.6 && rect.height < rect.width * 1.6;
-      const hole = solid && compact && paper.distToEdge(rect.x + rect.width / 2, rect.y + rect.height / 2) < minSide * BORDER_BAND * 0.6;
-      infos.push({ cand, inkPixels, meanV, drop: hole });
-    }
-    // Printed lines (notebook margin, a stray rule): long, straight, axis-aligned, thin, and much fainter in
-    // max(R,G,B) than the darkest part of the drawing.
-    const refV = Math.max(0, ...infos.filter((f) => !f.drop).map((f) => f.meanV));
-    for (const f of infos) {
-      const r = f.cand.rect;
-      const long = Math.max(r.width, r.height);
-      const across = Math.min(r.width, r.height);
-      // Allow a few degrees of tilt (a rotated sheet), which widens the box of a long line.
-      const lineLike = long >= minSide * PRINTED_LEN && across <= minSide * 0.04 + long * PRINTED_TILT && f.inkPixels <= long * LINE_THIN;
-      if (!lineLike || f.meanV >= refV * PRINTED_FAINT) continue;
-      // Printed lines run off to the paper edge; a drawn line usually stops well inside the sheet.
-      const cx = r.x + r.width / 2, cy = r.y + r.height / 2;
-      const ends = r.width >= r.height ? [[r.x, cy], [r.x + r.width, cy]] : [[cx, r.y], [cx, r.y + r.height]];
-      if (Math.min(...ends.map(([x, y]) => paper.distToEdge(x, y))) < minSide * PRINTED_EDGE) f.drop = true;
-    }
-    if (infos.every((f) => f.drop)) infos.forEach((f) => (f.drop = false)); // never return nothing because of these
-
-    const keepMask = track(cv.Mat.zeros(H, W, cv.CV_8UC1));
-    const out: Contour[] = [];
-    for (const f of infos) {
-      if (f.drop) continue;
-      const { cand, inkPixels } = f;
-      const { rect, area } = cand;
-      const c = contoursVec.get(cand.idx);
-      const one = new cv.MatVector();
-      one.push_back(c);
-      cv.drawContours(keepMask, one, 0, new cv.Scalar(255), cv.FILLED);
-      const approx = new cv.Mat();
-      cv.approxPolyDP(c, approx, Math.max(2, minSide * DP_EPS), true);
-      const hullMat = new cv.Mat();
-      cv.convexHull(c, hullMat, false, true);
-      const m = cv.moments(c);
-      out.push({
-        id: out.length,
-        points: matToPoints(approx),
-        hull: matToPoints(hullMat),
-        bbox: { x: rect.x, y: rect.y, w: rect.width, h: rect.height },
-        centroid: m.m00 > 0 ? { x: m.m10 / m.m00, y: m.m01 / m.m00 } : { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 },
-        area: Math.max(area, inkPixels),
-        inkPixels,
-        hasHole: cand.hasHole,
-      });
-      [approx, hullMat, one, c].forEach((x) => x.delete());
+      useBlack = black >= paperN * BLACK_MIN_SHARE && coloured <= black;
+      debugLog(`black ink ${black} px (${((black / Math.max(1, paperN)) * 100).toFixed(2)}% of paper), coloured ${coloured} px`);
     }
 
-    // Ink mask restricted to kept contours.
-    const inkMat = track(new cv.Mat());
-    cv.bitwise_and(closed, keepMask, inkMat);
-    const ink = new Uint8Array(inkMat.data);
-    return { ink, contours: out };
+    let result = useBlack ? pass(true, mode === 'auto') : null;
+    if (result && mode === 'auto') {
+      // A faint coloured pen drawing (thin blue ballpoint) is too light to trip the check above, and black mode
+      // then keeps only grey leftovers (paper edges, desk). If clearly coloured stroke-like ink outweighs what black
+      // mode kept, the drawing is coloured: redo it with any dark ink.
+      const kept = result.contours.reduce((s, c) => s + c.inkPixels, 0);
+      // (Stroke-sized pieces are a subset of all clearly coloured candidate pixels: skip the labelling when even all
+      // of them could not tip the balance.)
+      const coloured =
+        colouredAll > kept * COLOURED_OVER_BLACK ? colouredStrokes(cv, track, anyMask, neutral, colouredT, minSide * LINE_KEEP) : 0;
+      debugLog(`black contours ${kept} px (${((kept / Math.max(1, paperN)) * 100).toFixed(2)}% of paper), coloured strokes ${coloured} px`);
+      // Also give up if black mode kept next to nothing (a faint coloured drawing whose pixels are too washed out to
+      // count as clearly coloured; the grey leftovers are then all black mode found).
+      if (coloured > kept * COLOURED_OVER_BLACK || kept < paperN * BLACK_MIN_SHARE) result = null;
+    }
+    if (mode === 'auto') debugLog(`ink mode: ${result ? 'black' : 'fallback: any dark ink'}`);
+    else debugLog(`ink mode: ${mode} (forced by ?ink=)`);
+    if (!result) result = pass(false, false)!;
+    return result;
+
+    /**
+     * Steps 4-7 for one ink mode. black: only near-neutral ink. strict: return null instead of falling back to
+     * non-black contours when nothing black survives (the caller then redoes the photo in "any dark ink" mode).
+     */
+    function pass(black: boolean, strict: boolean): { ink: Uint8Array; contours: Contour[]; inkMode: 'black' | 'any' } | null {
+      const maskMat = track(anyMask.clone());
+      if (black) {
+        const mask = maskMat.data as Uint8Array;
+        for (let i = 0; i < N; i++) if (mask[i] && neutral[i] < blackPix) mask[i] = 0;
+      }
+      hysteresis(cv, track, maskMat, dark, strongT, speck, minSide * LINE_KEEP);
+      // Black mode: real ink pixels (before gap joining / closing add pixels that say nothing about the ink colour),
+      // and their dark core (past strongT; the faint rim is noisier). Used to judge each contour's colour in step 7.
+      let rawInk: any = null, coreMat: any = null;
+      if (black) {
+        rawInk = track(maskMat.clone());
+        coreMat = track(maskMat.clone());
+        const core = coreMat.data as Uint8Array;
+        for (let i = 0; i < N; i++) if (core[i] && dark[i] < strongT) core[i] = 0;
+      }
+
+      // 6. Join broken strokes.
+      joinGaps(cv, track, maskMat, minSide);
+
+      // 7. Heal tiny breaks, find contours, filter.
+      const ck = odd(minSide * CLOSE_KERNEL);
+      const kernel = track(cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(ck, ck)));
+      const closed = track(new cv.Mat());
+      cv.morphologyEx(maskMat, closed, cv.MORPH_CLOSE, kernel);
+
+      const contoursVec = track(new cv.MatVector());
+      const hierarchy = track(new cv.Mat());
+      cv.findContours(closed, contoursVec, hierarchy, cv.RETR_CCOMP, cv.CHAIN_APPROX_SIMPLE);
+      const hier = hierarchy.data32S;
+
+      interface Cand {
+        idx: number;
+        rect: { x: number; y: number; width: number; height: number };
+        area: number;
+        hasHole: boolean;
+      }
+      let cands: Cand[] = [];
+      const atBorder: Cand[] = [];
+      const minArea = minSide * minSide * MIN_AREA;
+      for (let i = 0; i < contoursVec.size(); i++) {
+        if (hier[i * 4 + 3] !== -1) continue;
+        const c = contoursVec.get(i);
+        const rect = cv.boundingRect(c);
+        const area = cv.contourArea(c);
+        const long = Math.max(rect.width, rect.height);
+        const touchesEdge = rect.x <= 1 || rect.y <= 1 || rect.x + rect.width >= W - 1 || rect.y + rect.height >= H - 1;
+        const huge = rect.width > W * 0.9 || rect.height > H * 0.9;
+        const tiny = long < minSide * MIN_SIDE || (area < minArea && long < minSide * MIN_SIDE_AREA_GATE);
+        // Desk / paper-edge leftovers: hug the photo border and are big, or are a thin sliver along that border.
+        const along =
+          ((rect.y <= 1 || rect.y + rect.height >= H - 1) && rect.width > rect.height * 4) ||
+          ((rect.x <= 1 || rect.x + rect.width >= W - 1) && rect.height > rect.width * 4);
+        let edgeJunk = touchesEdge && (huge || long > minSide * 0.5 || along);
+        if (!tiny && !edgeJunk) {
+          // Desk peeking inside the paper hull (curled / rotated paper): outline mostly on desk, hugging the paper edge.
+          const pts = c.data32S as Int32Array;
+          let desk = 0, nearEdge = Infinity, farEdge = 0;
+          const step = Math.max(2, Math.floor(pts.length / 120) * 2);
+          let n = 0;
+          for (let k = 0; k < pts.length; k += step) {
+            n++;
+            if (!paper.bright(pts[k], pts[k + 1])) desk++;
+            const de = paper.distToEdge(pts[k], pts[k + 1]);
+            nearEdge = Math.min(nearEdge, de);
+            farEdge = Math.max(farEdge, de);
+          }
+          edgeJunk = desk > n * 0.5 && nearEdge < minSide * DESK_EDGE;
+          // Paper edge / its shadow / the desk line just beyond it: a thin line whose whole length stays within a
+          // narrow band along the paper or photo border. A drawn line never hugs the sheet's edge like that.
+          const across = Math.min(rect.width, rect.height);
+          if (across <= minSide * 0.04 && long >= across * 4 && farEdge < minSide * EDGE_LINE) edgeJunk = true;
+        }
+        c.delete();
+        if (tiny || edgeJunk) continue;
+        const cand = { idx: i, rect, area, hasHole: hier[i * 4 + 2] !== -1 };
+        // Desk / paper-corner leftovers: something pressed against a photo border and lying wholly in a narrow band
+        // along it (the drawing sits inside the sheet, away from the photo border).
+        const touch = minSide * BORDER_TOUCH;
+        const band = minSide * BORDER_BAND;
+        const squeezed =
+          (rect.x <= touch && rect.x + rect.width <= band) ||
+          (rect.y <= touch && rect.y + rect.height <= band) ||
+          (W - rect.x - rect.width <= touch && W - rect.x <= band) ||
+          (H - rect.y - rect.height <= touch && H - rect.y <= band);
+        (squeezed ? atBorder : cands).push(cand);
+      }
+      if (!cands.length) cands = atBorder; // never return nothing because of this filter
+      if (strict && !cands.length) return null;
+
+      cands = dropHandwriting(cands, minSide, paper.distToEdge);
+
+      // Per-candidate ink stats. Mean max-channel darkness tells coloured printing apart from the drawing.
+      const vdMat = track(new cv.Mat(H, W, cv.CV_8UC1));
+      vdMat.data.set(V.dark);
+      interface Info { cand: Cand; inkPixels: number; meanV: number; drop: boolean; blackness: number; weight: number }
+      const infos: Info[] = [];
+      for (const cand of cands) {
+        const c = contoursVec.get(cand.idx);
+        const one = new cv.MatVector();
+        one.push_back(c);
+        const filled = cv.Mat.zeros(H, W, cv.CV_8UC1);
+        cv.drawContours(filled, one, 0, new cv.Scalar(255), cv.FILLED);
+        const strokeOnly = new cv.Mat();
+        cv.bitwise_and(filled, closed, strokeOnly);
+        const inkPixels = cv.countNonZero(strokeOnly);
+        const meanV = cv.mean(vdMat, strokeOnly)[0];
+        let blackness = 1, weight = 0;
+        if (black) {
+          // Black mode: least / most darkened channel, summed over the contour's dark core (or all its real ink if the
+          // core is tiny). Pixels added by gap joining / closing are not ink and say nothing about its colour.
+          const so = strokeOnly.data as Uint8Array, core = coreMat.data as Uint8Array, raw = rawInk.data as Uint8Array;
+          const r = cand.rect;
+          let nCore = 0;
+          const cs = [0, 0, 0], rs = [0, 0, 0];
+          for (let y = r.y; y < r.y + r.height; y++) {
+            for (let i = y * W + r.x, end = i + r.width; i < end; i++) {
+              if (!so[i] || !raw[i]) continue;
+              weight++;
+              const p = i * 3;
+              rs[0] += chan[p]; rs[1] += chan[p + 1]; rs[2] += chan[p + 2];
+              if (core[i]) { nCore++; cs[0] += chan[p]; cs[1] += chan[p + 1]; cs[2] += chan[p + 2]; }
+            }
+          }
+          const s = nCore >= 20 ? cs : rs;
+          blackness = Math.max(...s) > 0 ? Math.min(...s) / Math.max(...s) : 0;
+        }
+        [one, filled, strokeOnly, c].forEach((x) => x.delete());
+
+        // Binder holes / dark blobs at the paper border: solid, compact, small, near the edge.
+        const { rect, area } = cand;
+        const solid = inkPixels > 0.85 * Math.max(1, area);
+        const compact = Math.max(rect.width, rect.height) < minSide * 0.07 && rect.width < rect.height * 1.6 && rect.height < rect.width * 1.6;
+        const hole = solid && compact && paper.distToEdge(rect.x + rect.width / 2, rect.y + rect.height / 2) < minSide * BORDER_BAND * 0.6;
+        infos.push({ cand, inkPixels, meanV, drop: hole, blackness, weight });
+      }
+      if (black && infos.length) {
+        // Stains, fold shadows, paper-edge lines, desk: grey-ish but less neutral than ink. The bar follows the drawing
+        // itself (the contour with the most ink): black marker ~0.97 keeps it at BLACK_CONTOUR, a pencil drawing on
+        // tinted paper (~0.9) lowers it so its own fainter strokes stay, never below BLACK_CONTOUR_MIN.
+        const main = infos.reduce((a, b) => (b.weight > a.weight ? b : a));
+        const bar = Math.min(BLACK_CONTOUR, Math.max(BLACK_CONTOUR_MIN, main.blackness - BLACK_BELOW_MAIN));
+        for (const f of infos) {
+          const r = f.cand.rect;
+          debugLog(`contour [${r.x},${r.y} ${r.width}x${r.height}] black ${f.blackness.toFixed(2)} (bar ${bar.toFixed(2)})${f.blackness < bar ? ' -> dropped' : ''}`);
+        }
+        const kept = infos.filter((f) => f.blackness >= bar);
+        // Nothing black left: strict mode gives up (the caller retries with any dark ink); otherwise keep them all
+        // rather than return nothing.
+        if (!kept.length && strict) return null;
+        if (kept.length) infos.splice(0, infos.length, ...kept);
+      }
+      // Printed lines (notebook margin, a stray rule): long, straight, axis-aligned, thin, and much fainter in
+      // max(R,G,B) than the darkest part of the drawing.
+      const refV = Math.max(0, ...infos.filter((f) => !f.drop).map((f) => f.meanV));
+      for (const f of infos) {
+        const r = f.cand.rect;
+        const long = Math.max(r.width, r.height);
+        const across = Math.min(r.width, r.height);
+        // Allow a few degrees of tilt (a rotated sheet), which widens the box of a long line.
+        const lineLike = long >= minSide * PRINTED_LEN && across <= minSide * 0.04 + long * PRINTED_TILT && f.inkPixels <= long * LINE_THIN;
+        if (!lineLike || f.meanV >= refV * PRINTED_FAINT) continue;
+        // Printed lines run off to the paper edge; a drawn line usually stops well inside the sheet.
+        const cx = r.x + r.width / 2, cy = r.y + r.height / 2;
+        const ends = r.width >= r.height ? [[r.x, cy], [r.x + r.width, cy]] : [[cx, r.y], [cx, r.y + r.height]];
+        if (Math.min(...ends.map(([x, y]) => paper.distToEdge(x, y))) < minSide * PRINTED_EDGE) f.drop = true;
+      }
+      if (infos.every((f) => f.drop)) infos.forEach((f) => (f.drop = false)); // never return nothing because of these
+
+      const keepMask = track(cv.Mat.zeros(H, W, cv.CV_8UC1));
+      const out: Contour[] = [];
+      for (const f of infos) {
+        if (f.drop) continue;
+        const { cand, inkPixels } = f;
+        const { rect, area } = cand;
+        const c = contoursVec.get(cand.idx);
+        const one = new cv.MatVector();
+        one.push_back(c);
+        cv.drawContours(keepMask, one, 0, new cv.Scalar(255), cv.FILLED);
+        const approx = new cv.Mat();
+        cv.approxPolyDP(c, approx, Math.max(2, minSide * DP_EPS), true);
+        const hullMat = new cv.Mat();
+        cv.convexHull(c, hullMat, false, true);
+        const m = cv.moments(c);
+        out.push({
+          id: out.length,
+          points: matToPoints(approx),
+          hull: matToPoints(hullMat),
+          bbox: { x: rect.x, y: rect.y, w: rect.width, h: rect.height },
+          centroid: m.m00 > 0 ? { x: m.m10 / m.m00, y: m.m01 / m.m00 } : { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 },
+          area: Math.max(area, inkPixels),
+          inkPixels,
+          hasHole: cand.hasHole,
+        });
+        [approx, hullMat, one, c].forEach((x) => x.delete());
+      }
+
+      // Ink mask restricted to kept contours.
+      const inkMat = track(new cv.Mat());
+      cv.bitwise_and(closed, keepMask, inkMat);
+      const ink = new Uint8Array(inkMat.data);
+      return { ink, contours: out, inkMode: black ? 'black' : 'any' };
+    }
   } finally {
     mats.forEach((m) => m.delete());
   }
@@ -431,6 +582,74 @@ function darkness(cv: any, track: Track, ch: any, minSide: number): { dark: Uint
     dark[i] = d <= 0 ? 0 : d >= 1 ? 255 : (d * 255) | 0;
   }
   return { dark, bgSmall };
+}
+
+/**
+ * Per pixel (only where luma darkness >= weakT): how evenly the ink darkens R, G and B, each relative to that
+ * channel's own local background, as least / most darkened channel (0..255). Black / grey ink scales all channels
+ * alike (~255) even under a warm lamp or on tinted paper; a blue pen hardly darkens B (~50). Mixing with the paper
+ * (thin strokes, anti-aliasing) scales every channel's darkness alike, so the ratio holds on the rim of a stroke.
+ */
+function neutrality(rgba: Uint8Array, bgSmall: any, cand: Uint8Array, W: number, H: number): { neutral: Uint8Array; chan: Uint8Array } {
+  // Background sampled bilinearly from the small closed copy, only at candidate pixels (a few % of the photo).
+  const sw = bgSmall.cols, sh = bgSmall.rows;
+  const bg = bgSmall.data as Uint8Array;
+  const fx = sw / W, fy = sh / H;
+  const out = new Uint8Array(W * H);
+  /** Per-channel darkness (0..255, R G B interleaved), for per-contour sums in step 7. */
+  const chan = new Uint8Array(W * H * 3);
+  for (let y = 0; y < H; y++) {
+    const v = Math.min(sh - 1, Math.max(0, (y + 0.5) * fy - 0.5));
+    const y0 = v | 0, y1 = Math.min(sh - 1, y0 + 1), wy = v - y0;
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (!cand[i]) continue;
+      const u = Math.min(sw - 1, Math.max(0, (x + 0.5) * fx - 0.5));
+      const x0 = u | 0, x1 = Math.min(sw - 1, x0 + 1), wx = u - x0;
+      const a = (y0 * sw + x0) * 4, b = (y0 * sw + x1) * 4, c = (y1 * sw + x0) * 4, e = (y1 * sw + x1) * 4;
+      let mx = 0, mn = 1;
+      for (let ch = 0; ch < 3; ch++) {
+        let bgc = (bg[a + ch] * (1 - wx) + bg[b + ch] * wx) * (1 - wy) + (bg[c + ch] * (1 - wx) + bg[e + ch] * wx) * wy;
+        if (bgc < 8) bgc = 8;
+        let d = 1 - rgba[i * 4 + ch] / bgc;
+        if (d < 0) d = 0;
+        chan[i * 3 + ch] = Math.round(d * 255);
+        if (d > mx) mx = d;
+        if (d < mn) mn = d;
+      }
+      out[i] = mx > 0 ? Math.round((mn / mx) * 255) : 255;
+    }
+  }
+  return { neutral: out, chan };
+}
+
+/**
+ * Pixels of clearly coloured (neutral < colouredT) candidate ink in stroke-sized pieces: at least `minLong` long and
+ * not touching the photo border (desk). Rules were already erased from `cand`.
+ */
+function colouredStrokes(cv: any, track: Track, candMat: any, neutral: Uint8Array, colouredT: number, minLong: number): number {
+  const W = candMat.cols;
+  const H = candMat.rows;
+  const cand = candMat.data as Uint8Array;
+  const m = track(new cv.Mat(H, W, cv.CV_8UC1));
+  const md = m.data as Uint8Array;
+  for (let i = 0; i < md.length; i++) md[i] = cand[i] && neutral[i] < colouredT ? 255 : 0;
+  const labels = track(new cv.Mat());
+  const stats = track(new cv.Mat());
+  const cents = track(new cv.Mat());
+  const n = cv.connectedComponentsWithStats(m, labels, stats, cents, 8, cv.CV_32S);
+  const st = stats.data32S as Int32Array;
+  let sum = 0;
+  for (let l = 1; l < n; l++) {
+    const x = st[l * 5], y = st[l * 5 + 1], w = st[l * 5 + 2], h = st[l * 5 + 3];
+    if (x <= 0 || y <= 0 || x + w >= W || y + h >= H || Math.max(w, h) < minLong) continue;
+    sum += st[l * 5 + 4];
+  }
+  return sum;
+}
+
+function debugLog(msg: string) {
+  if (urlParams()?.has('debug')) console.log(`[vision] ${msg}`);
 }
 
 /** Weak / strong darkness thresholds from the paper noise (high percentile of darkness on the paper). */
