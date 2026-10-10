@@ -3,9 +3,11 @@
 import type { BuiltScene, DiagramType, SceneBuilder, SceneInput } from '../types';
 import { buildFallback } from './fallback';
 import { buildPendulum } from './pendulum';
+import { buildProjectile } from './projectile';
 
 const BUILDERS: Partial<Record<DiagramType, SceneBuilder>> = {
   pendulum: buildPendulum,
+  projectile: buildProjectile,
   fallback: buildFallback,
 };
 
