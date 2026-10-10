@@ -16,7 +16,7 @@
 // engine each step, so slider/voice/moon-mode gravity changes apply instantly.
 
 import Matter from 'matter-js';
-import type { Contour, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
+import type { CleanPart, Contour, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
 import { STEP_ACCEL, STEP_MS } from '../sim';
 import { noteFor } from '../units';
 import { buildFallback } from './fallback';
@@ -344,6 +344,40 @@ function aiMass(input: SceneInput, box: Side['weightBox']): number | null {
   return null;
 }
 
+/**
+ * A ceiling drawn above the wheel: the row (within a few wheel sizes above it) whose ink run through the wheel's
+ * column is the longest, at least the wheel's diameter. Returns the middle of that stroke and its ends.
+ */
+function drawnCeiling(ink: Uint8Array, W: number, C: Point, R: number): { y: number; x0: number; x1: number } | null {
+  const GAP = 3;
+  const runAt = (y: number) => {
+    let best: { x0: number; x1: number } | null = null;
+    for (let sx = Math.round(C.x - R * 0.5); sx <= Math.round(C.x + R * 0.5); sx++) {
+      if (sx < 0 || sx >= W || !ink[y * W + sx]) continue;
+      let x0 = sx, x1 = sx;
+      for (let x = sx - 1, gap = 0; x >= 0 && gap <= GAP; x--) ink[y * W + x] ? ((x0 = x), (gap = 0)) : gap++;
+      for (let x = sx + 1, gap = 0; x < W && gap <= GAP; x++) ink[y * W + x] ? ((x1 = x), (gap = 0)) : gap++;
+      if (!best || x1 - x0 > best.x1 - best.x0) best = { x0, x1 };
+      sx = x1 + GAP;
+    }
+    return best;
+  };
+  const yTop = Math.max(0, Math.floor(C.y - R - 5 * R)), yBot = Math.floor(C.y - R * 1.1);
+  let top: { y: number; x0: number; x1: number; len: number } | null = null;
+  const rows: { y: number; len: number; x0: number; x1: number }[] = [];
+  for (let y = yBot; y >= yTop; y--) {
+    const r = runAt(y);
+    const len = r ? r.x1 - r.x0 : 0;
+    rows.push({ y, len, x0: r?.x0 ?? 0, x1: r?.x1 ?? 0 });
+    if (r && len >= 2 * R && (!top || len > top.len)) top = { y, ...r, len };
+  }
+  if (!top) return null;
+  // The stroke's thickness: the rows next to the best one that are nearly as long.
+  const near = rows.filter((r) => Math.abs(r.y - top!.y) <= 12 && r.len >= 0.7 * top!.len);
+  const y = near.reduce((s, r) => s + r.y, 0) / near.length;
+  return { y, x0: top.x0, x1: top.x1 };
+}
+
 export const buildPulley: SceneBuilder = (input) => {
   const { width: W, height: H } = input;
 
@@ -538,7 +572,7 @@ export const buildPulley: SceneBuilder = (input) => {
     ctx.restore();
   };
 
-  const onDraw = (ctx: CanvasRenderingContext2D) => {
+  const drawnOnly = (ctx: CanvasRenderingContext2D) => {
     drawRope(ctx, left, ropeImgL, s);
     drawRope(ctx, right, ropeImgR, -s);
     if (wheelImg) {
@@ -560,6 +594,34 @@ export const buildPulley: SceneBuilder = (input) => {
   if (wheelMask) erased.push(wheelMask);
   if (junk.length) erased.push(contourMask(input, junk));
 
+  // Clean figure: a hanger from a ceiling (when there is room above the wheel), the ropes from the wheel's sides down
+  // to each weight (their length changes as they move), the wheel turning with the rope, the rope over its top and
+  // the two weights.
+  const ropeEnd = (b: Matter.Body, x: number) => {
+    const inside = x >= b.bounds.min.x + 2 && x <= b.bounds.max.x - 2;
+    return { x: inside ? x : b.position.x, y: b.bounds.min.y };
+  };
+  const clean: CleanPart[] = [];
+  // The ceiling where it was drawn (a long ink run above the wheel), else a short one just above the wheel.
+  const ceiling = drawnCeiling(input.ink, W, C, R);
+  const hangY = ceiling ? ceiling.y : C.y - R - Math.max(R * 1.2, 24);
+  if (hangY > 8) {
+    const half = Math.max(R * 1.6, 30);
+    const x0 = ceiling ? Math.min(ceiling.x0, C.x - R) : C.x - half, x1 = ceiling ? Math.max(ceiling.x1, C.x + R) : C.x + half;
+    clean.push(
+      { kind: 'support', from: { x: x0, y: hangY }, to: { x: x1, y: hangY }, side: { x: 0, y: -1 } },
+      { kind: 'rope', from: () => ({ x: C.x, y: hangY }), to: () => C },
+    );
+  }
+  clean.push(
+    { kind: 'rope', from: () => ({ x: C.x - R, y: C.y }), to: () => ropeEnd(bodyL, C.x - R) },
+    { kind: 'rope', from: () => ({ x: C.x + R, y: C.y }), to: () => ropeEnd(bodyR, C.x + R) },
+    { kind: 'wheel', center: C, radius: R, angle: () => -s / R },
+    { kind: 'arc', center: C, radius: R, from: Math.PI, to: 2 * Math.PI },
+    { kind: 'body', body: bodyL, tone: 'mass' },
+    { kind: 'body', body: bodyR, tone: 'mass' },
+  );
+
   const half = (s: Side) => Math.max(s.weightBox.w, s.weightBox.h) / 2;
   return {
     bodies: [bodyL, bodyR],
@@ -568,7 +630,8 @@ export const buildPulley: SceneBuilder = (input) => {
     background: eraseFromPaper(input, erased),
     label: 'Pulley',
     onStep,
-    onDraw,
+    drawnOnly,
+    clean,
     gravityScale: scale,
     // Fastest at the end of the fall: v² = 2·a·travel with a = g·scale·(m₁ − m₂)/(m₁ + m₂).
     speedHint: Math.sqrt(2 * STEP_ACCEL * ((input.analysis.params.gravity || 9.8) / 9.8) * scale * aRel * maxDown),

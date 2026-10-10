@@ -3,7 +3,8 @@
 // the zigzag cut-out stretches and squashes between its two ends.
 
 import Matter from 'matter-js';
-import type { BBox, Contour, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
+import type { BBox, CleanPart, Contour, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
+import { supportAcross } from '../clean';
 import { contourMask, cutSprite, deepestPoint, eraseFromPaper, maskBounds, roleOf } from './common';
 import { STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, noteFor, scaleFor, stiffnessFor } from '../units';
@@ -386,10 +387,30 @@ export const buildSpring: SceneBuilder = (input) => {
   sprites.push({ ...cutSprite(input, massMask), follow: { kind: 'body', body, origin: { ...body.position }, originAngle: body.angle } });
 
   const block = body;
+
+  // Clean figure: a hatched wall / ceiling across the spring's fixed end, an even zigzag from there to the block's
+  // attachment point (it stretches and squashes with the motion), the block as its physics outline. A spring lying on
+  // a floor also gets the floor line under the block.
+  const across = vertical ? bb.max.x - bb.min.x : bb.max.y - bb.min.y;
+  const zigWidth = Math.min(60, Math.max(16, 0.45 * across));
+  const coils = Math.min(12, Math.max(5, Math.round(L0 / (0.45 * zigWidth))));
+  const clean: CleanPart[] = [];
+  if (!vertical) {
+    const floorY = bb.max.y;
+    const x0 = Math.min(anchor.x, bb.min.x) - 4, x1 = Math.max(anchor.x, bb.max.x) + 2 * amp + 20;
+    clean.push({ kind: 'ground', y: floorY, x0: dir.x > 0 ? x0 : Math.min(anchor.x, bb.min.x) - 2 * amp - 20, x1: dir.x > 0 ? x1 : Math.max(anchor.x, bb.max.x) + 4 });
+  }
+  clean.push(
+    supportAcross(anchor, dir, Math.max(30, 0.8 * across)),
+    { kind: 'spring', from: () => anchor, to: () => Matter.Constraint.pointBWorld(spring), coils, width: zigWidth },
+    { kind: 'body', body: block, tone: 'mass' },
+  );
+
   return {
     bodies: [body, ...rails],
     constraints: [spring],
     sprites,
+    clean,
     background: eraseFromPaper(input, masks),
     label: 'Spring and mass',
     step,

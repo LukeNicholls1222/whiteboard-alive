@@ -1,8 +1,11 @@
-// Matter.js world + renderer that draws the hand-drawn cut-outs on top of the bodies.
+// Matter.js world + renderer. Default: the clean figure (clean.ts) over the faint original drawing, after a short
+// morph from the drawing (morph.ts). ?style=drawn: the hand-drawn cut-outs themselves move, as before.
 
 import Matter from 'matter-js';
 import decomp from 'poly-decomp';
 import { MotionTracker } from './motion';
+import { drawClean, drawnSnapshot, FAINT_ALPHA, usesClean } from './clean';
+import { drawMorph, morphHooks, morphProgress } from './morph';
 import type { BuiltScene, SimParams, Sprite, ViewRect } from './types';
 import { BASE_SCALE, STEP_MS } from './units';
 
@@ -59,6 +62,11 @@ export class Simulation {
   /** Called every frame after the sprites, in world coordinates. `pxScale` = canvas px per world px. */
   drawListeners: Array<(ctx: CanvasRenderingContext2D, scene: BuiltScene, pxScale: number) => void> = [];
 
+  /** Clean style: the whole drawing as the scene starts, shown faint behind the clean figure (null = drawn style). */
+  private drawn: HTMLCanvasElement | null = null;
+  /** performance.now() when the morph started; null = not morphing. */
+  private morphStart: number | null = null;
+
   constructor(
     private canvas: HTMLCanvasElement,
     readonly scene: BuiltScene,
@@ -68,6 +76,13 @@ export class Simulation {
     this.ctx = canvas.getContext('2d')!;
     Matter.Composite.add(this.engine.world, [...scene.bodies, ...scene.constraints]);
     this.motion = new MotionTracker(scene);
+    // Taken before the first step: every cut-out is still where it was drawn.
+    if (usesClean(scene)) this.drawn = drawnSnapshot(scene);
+  }
+
+  /** True while the morph plays (physics not started yet). */
+  get morphing(): boolean {
+    return this.morphStart !== null;
   }
 
   setParams(p: Partial<SimParams>) {
@@ -92,8 +107,26 @@ export class Simulation {
     return (this.engine.gravity.scale / BASE_SCALE) * 9.8;
   }
 
-  start() {
+  /**
+   * Run. `morph`: first turn the drawing into the clean figure (morph.ts), then start the physics. Only for a new
+   * photo after the AI intro; ignored in drawn style.
+   */
+  start(opts: { morph?: boolean } = {}) {
+    if (opts.morph && this.drawn) {
+      this.morphStart = performance.now();
+      for (const fn of morphHooks.start) fn(this.scene);
+    }
     const loop = () => {
+      if (this.morphStart !== null) {
+        const t = morphProgress(performance.now() - this.morphStart);
+        if (t !== null) {
+          this.draw(t);
+          this.raf = requestAnimationFrame(loop);
+          return;
+        }
+        this.morphStart = null;
+        for (const fn of morphHooks.end) fn(this.scene);
+      }
       this.scene.step?.(this.engine);
       Matter.Engine.update(this.engine, STEP_MS);
       this.scene.onStep?.(this.engine);
@@ -107,11 +140,13 @@ export class Simulation {
 
   stop() {
     cancelAnimationFrame(this.raf);
+    this.morphStart = null;
     Matter.World.clear(this.engine.world, false);
     Matter.Engine.clear(this.engine);
   }
 
-  private draw() {
+  /** One frame. `morphT` = morph progress 0..1 while the morph plays. */
+  private draw(morphT?: number) {
     const { canvas, ctx } = this;
     const dpr = window.devicePixelRatio || 1;
     const cssW = canvas.clientWidth;
@@ -123,21 +158,44 @@ export class Simulation {
       canvas.style.height = `${cssH}px`;
     }
     const { S: s, tx, ty } = pictureTransform(view, this.worldW, canvas.width, canvas.height);
-    if (view) {
+    const drawn = this.drawn;
+    if (view || drawn) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.fillStyle = PAPER_FILL;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
     ctx.setTransform(s, 0, 0, s, tx, ty);
-    ctx.drawImage(this.scene.background, 0, 0);
-    if (this.scene.onDraw) {
-      ctx.save();
-      this.scene.onDraw(ctx);
-      ctx.restore();
+    const px = (window.devicePixelRatio || 1) / s; // world px per CSS px
+    if (drawn && morphT !== undefined) drawMorph({ ctx, scene: this.scene, drawn, px, t: morphT });
+    else if (drawn) {
+      // The original drawing stays faint and still; the clean figure moves on top of it.
+      ctx.globalAlpha = FAINT_ALPHA;
+      ctx.drawImage(drawn, 0, 0);
+      ctx.globalAlpha = 1;
+      if (this.scene.onDraw) {
+        ctx.save();
+        this.scene.onDraw(ctx);
+        ctx.restore();
+      }
+      drawClean(ctx, this.scene.clean!, px);
+    } else {
+      ctx.drawImage(this.scene.background, 0, 0);
+      if (this.scene.onDraw) {
+        ctx.save();
+        this.scene.onDraw(ctx);
+        ctx.restore();
+      }
+      if (this.scene.drawnOnly) {
+        ctx.save();
+        this.scene.drawnOnly(ctx);
+        ctx.restore();
+      }
+      for (const sp of this.scene.sprites) drawSprite(ctx, sp);
     }
-    for (const sp of this.scene.sprites) drawSprite(ctx, sp);
     for (const fn of this.drawListeners) {
       ctx.save();
+      // Value labels and arrows fade in with the clean figure during the morph.
+      if (morphT !== undefined) ctx.globalAlpha = morphT;
       fn(ctx, this.scene, s);
       ctx.restore();
     }

@@ -13,7 +13,7 @@
 // time unit, so the slow-motion factor needs no conversion.
 
 import Matter from 'matter-js';
-import type { Point, SceneBuilder } from '../types';
+import type { CleanPart, Point, SceneBuilder } from '../types';
 import { contourMask, cutSprite, deepestPoint, eraseFromPaper, roleOf } from './common';
 import { STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, noteFor, scaleFor } from '../units';
@@ -106,9 +106,20 @@ export const buildPendulum: SceneBuilder = (input) => {
     place();
   };
 
+  // Clean figure: a hatched ceiling through the pivot, the string from the pivot to the bob's centre, the bob as the
+  // physics circle.
+  const ceilHalf = Math.max(2.2 * bobRadius, Math.min(0.3 * length, 0.2 * W), 30);
+  const clean: CleanPart[] = [
+    { kind: 'support', from: { x: pivot.x - ceilHalf, y: pivot.y }, to: { x: pivot.x + ceilHalf, y: pivot.y }, side: { x: 0, y: -1 } },
+    { kind: 'rope', from: () => pivot, to: () => body.position },
+    { kind: 'pin', at: () => pivot },
+    { kind: 'ball', body, radius: bobRadius, tone: 'mass' },
+  ];
+
   return {
     bodies: [body],
     constraints: [],
+    clean,
     sprites: [
       {
         ...cutSprite(input, swing),

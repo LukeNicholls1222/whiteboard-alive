@@ -9,7 +9,7 @@
 //   - once everything has come to rest, it waits a moment and falls again from the start.
 
 import Matter from 'matter-js';
-import type { Contour, Point, SceneBuilder, Sprite } from '../types';
+import type { CleanPart, Contour, Point, SceneBuilder, Sprite } from '../types';
 import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
 import { replayWhenStopped } from './replay';
 import { STEP_ACCEL } from '../sim';
@@ -103,6 +103,8 @@ export const buildFallback: SceneBuilder = (input) => {
   const sprites: Sprite[] = [];
   const masks: Uint8Array[] = [];
   const moving: Matter.Body[] = [];
+  /** Static bodies made from the drawing (a drawn ground or ramp): shown in the clean figure, unlike the walls. */
+  const drawnStatic: Matter.Body[] = [];
 
   const addBody = (hull: { x: number; y: number }[], bbox: { x: number; y: number }, isStatic: boolean, mask: Uint8Array | null) => {
     const body = Matter.Bodies.fromVertices(0, 0, [hull], { isStatic, friction: 0.4, restitution: 0.3 });
@@ -111,6 +113,7 @@ export const buildFallback: SceneBuilder = (input) => {
     const hb = body.bounds;
     Matter.Body.translate(body, { x: bbox.x - hb.min.x, y: bbox.y - hb.min.y });
     bodies.push(body);
+    if (isStatic) drawnStatic.push(body);
     if (isStatic || !mask) return;
     moving.push(body);
     masks.push(mask);
@@ -216,10 +219,18 @@ export const buildFallback: SceneBuilder = (input) => {
     Matter.Body.setAngularVelocity(body, (i % 2 ? -1 : 1) * SPIN);
   });
 
+  // Clean figure: the floor line, drawn static parts as fixed solids, and every falling body as its own physics outline
+  // (corners slightly rounded). With no lines found at all, the photo's patch itself keeps falling.
+  const clean: CleanPart[] = [{ kind: 'ground', y: floorTop }];
+  for (const b of drawnStatic) clean.push({ kind: 'solid', points: b.vertices.map((v) => ({ x: v.x, y: v.y })) });
+  if (!input.contours.length) for (const sprite of sprites) clean.push({ kind: 'sprite', sprite });
+  else for (const body of moving) clean.push({ kind: 'body', body, tone: 'mass' });
+
   return {
     bodies,
     constraints: [],
     sprites,
+    clean,
     background: eraseFromPaper(input, masks),
     label: 'Falling objects',
     onStep: replayWhenStopped(moving),
