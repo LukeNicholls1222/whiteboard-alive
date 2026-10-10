@@ -32,6 +32,7 @@ export class Simulation {
 
   start() {
     const loop = () => {
+      this.scene.step?.(this.engine);
       Matter.Engine.update(this.engine, STEP_MS);
       this.draw();
       this.raf = requestAnimationFrame(loop);
@@ -90,6 +91,16 @@ function drawSprite(ctx: CanvasRenderingContext2D, sp: Sprite) {
     ctx.translate(f.body.position.x, f.body.position.y);
     ctx.rotate(f.body.angle - f.originAngle);
     ctx.translate(-f.origin.x, -f.origin.y);
+  } else if (f.kind === 'stretch') {
+    const end = Matter.Constraint.pointBWorld(f.constraint);
+    const a = f.anchor;
+    const a0 = Math.atan2(f.origin.y - a.y, f.origin.x - a.x);
+    const l0 = Math.max(1, Math.hypot(f.origin.x - a.x, f.origin.y - a.y));
+    ctx.translate(a.x, a.y);
+    ctx.rotate(Math.atan2(end.y - a.y, end.x - a.x));
+    ctx.scale(Math.hypot(end.x - a.x, end.y - a.y) / l0, 1);
+    ctx.rotate(-a0);
+    ctx.translate(-a.x, -a.y);
   } else {
     const p = f.body.position;
     const ang = Math.atan2(p.y - f.pivot.y, p.x - f.pivot.x);
