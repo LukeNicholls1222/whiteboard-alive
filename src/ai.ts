@@ -154,11 +154,12 @@ function sanitize(raw: any, contours: Contour[]): Analysis {
 
 /** Offline guess so the pipeline always produces something that moves. */
 function heuristic(contours: Contour[], diagram: DiagramType = 'fallback'): Analysis {
-  const sorted = [...contours].sort((a, b) => a.bbox.y - b.bbox.y);
+  // No roles at all: scene builders then use their own geometric guesses ("no role" branches).
+  void contours;
   return {
     diagram,
     confidence: 0,
-    bodies: sorted.map((c) => ({ contourId: c.id, role: 'other', static: false, mass: 1 })),
+    bodies: [],
     constraints: [],
     params: { gravity: 9.8 },
     explanation: '',
