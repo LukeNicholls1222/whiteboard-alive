@@ -9,18 +9,22 @@
 //      darkness = 1 - pixel / background -> shadows, vignetting and lamp gradients cancel out.
 //   3. Paper region: if a coloured desk is visible (warm + saturated background: wood, cork, cardboard), paper =
 //      the near-grey background, so a shadow on the sheet stays paper and sunlit wood stays desk. Otherwise Otsu on
-//      the background brightness splits bright paper from a darker desk. Largest paper blob -> convex hull ->
+//      the background brightness splits bright paper from a darker desk - unless the split boundary is soft (a
+//      shadow across the sheet, not a desk edge), then the whole photo is paper. Desk strips too narrow for the
+//      background close are peeled in from the photo border by colour. Largest paper blob -> convex hull ->
 //      shrink a little (drops the paper edge). Only trusted when the blob is solid and clearly THE paper thing;
 //      otherwise (sun stripes, no desk) the whole photo is used and step 7 removes desk bits.
 //   4. Candidate ink = darkness above a weak threshold that follows the paper's own grain, and not "light coloured
 //      printing" (much darker in luma than in max(R,G,B)) - unless it is clearly dark in luma (blue / red pen).
-//   5. Ruled / grid paper: if several long parallel faint lines exist, erase straight runs as faint as them.
+//   5. Ruled / grid paper: if many long parallel rule-faint lines exist, erase straight runs as faint as them, and
+//      each rule along its fitted line across the whole sheet (broken stretches, ends at the margin).
 //      Then hysteresis: a blob survives if it has a dark seed, or is a long thin line; specks are dropped.
 //   6. Gap joining on the skeleton (spurs pruned): endpoint -> endpoint at a corner or on the same broken line,
 //      endpoint -> stroke just ahead. Distances are small so separate objects stay separate. Blobs touching the
 //      photo border (desk, paper-edge shadow) are never joined, so the drawing cannot get glued to them.
 //   7. Small close, contours, then filters: specks; desk / paper-edge slivers (incl. thin lines that run along
-//      the paper / photo border for their whole length); binder holes; long printed lines
+//      the paper / photo border for their whole length, and small bits pressed into a band along the photo border);
+//      binder holes; long printed lines
 //      (margin) that are much fainter in max(R,G,B) than the drawing; handwriting (rows of small letters, or a
 //      lone small word near the paper border far from the drawing).
 //
@@ -69,6 +73,8 @@ const PAPER_CONTRAST = 0.8;
 const DESK_WARM = 0.3;
 /** Paper detection by colour: non-desk background darker than this share of the paper brightness is not paper. */
 const PAPER_DARKEST = 0.4;
+/** Paper detection: a bright / dark boundary softer than this (see boundarySharpness) is a shadow, not the desk. */
+const SHADOW_SOFT = 0.5;
 /** Paper detection: the paper blob must cover at least this fraction of the photo. */
 const PAPER_MIN_FRACTION = 0.25;
 /** Paper detection: the bright blob must fill this much of its convex hull (a sheet is convex). */
@@ -85,10 +91,16 @@ const EDGE_LINE = 0.045;
 const RULE_SPAN = 0.45;
 /** Ruled-line removal: bridge dots along a rule up to this many half-size px. */
 const RULE_BRIDGE = 7;
-/** Ruled-line removal: need at least this many parallel candidates. */
-const RULE_MIN_COUNT = 3;
-/** Ruled-line removal: straight-run pixels up to this multiple of the rules' mean darkness are erased. */
-const RULE_FAINT = 1.6;
+/** Ruled-line removal: need at least this many parallel rule-faint candidates. */
+const RULE_MIN_COUNT = 5;
+/** Ruled-line removal: pixels on a rule up to this multiple of the rules' 90th-percentile darkness are erased... */
+const RULE_FAINT = 1.2;
+/** ...but never pixels darker than this (0..1): pen ink crossing a rule survives. */
+const RULE_CAP = 0.45;
+/** Ruled-line removal: a long run whose median darkness is above this multiple of the typical rule's is drawn. */
+const RULE_DRAWN = 1.6;
+/** Ruled-line removal: thickness (half-size px) of a rule's straight extension across the sheet. */
+const RULE_EXTEND = 5;
 /** Gap joining: endpoint -> endpoint at a corner (any angle that is not pointing away). */
 const JOIN_ENDPOINTS = 0.022;
 /** Gap joining: endpoint -> endpoint when both strokes point at each other (same line, broken). */
@@ -112,6 +124,8 @@ const MIN_SIDE_AREA_GATE = 1 / 12;
 const PRINTED_LEN = 0.35;
 /** ...whose max(R,G,B) darkness is below this share of the darkest contour's are coloured printing. */
 const PRINTED_FAINT = 0.45;
+/** ...that may lean by up to this much (box width per unit length, ~6 degrees)... */
+const PRINTED_TILT = 0.1;
 /** ...and that reach this close to the paper border at one end. */
 const PRINTED_EDGE = 0.1;
 /** Handwriting: a letter is at most this tall. */
@@ -120,6 +134,8 @@ const LETTER_H = 0.065;
 const LETTER_ROW_MIN = 3;
 /** Handwriting / binder holes: "near the paper border" band. */
 const BORDER_BAND = 0.14;
+/** Desk / paper-corner leftovers: a contour this close to a photo border and within BORDER_BAND of it is dropped. */
+const BORDER_TOUCH = 0.025;
 /** Handwriting: a lone word is removed only if it is at least this far from every other contour. */
 const WORD_ISOLATION = 0.08;
 
@@ -233,7 +249,7 @@ export function findInk(cv: any, src: any): { ink: Uint8Array; contours: Contour
     }
     const lineKeep = minSide * LINE_KEEP;
     // 5. Ruled / grid lines (before hysteresis, so faint rules touching the drawing cannot ride along with it).
-    removeRuledLines(cv, track, maskMat, dark, paper.width, strongT);
+    removeRuledLines(cv, track, maskMat, dark, paper.width);
     hysteresis(cv, track, maskMat, dark, strongT, speck, lineKeep);
 
     // 6. Join broken strokes.
@@ -257,6 +273,7 @@ export function findInk(cv: any, src: any): { ink: Uint8Array; contours: Contour
       hasHole: boolean;
     }
     let cands: Cand[] = [];
+    const atBorder: Cand[] = [];
     const minArea = minSide * minSide * MIN_AREA;
     for (let i = 0; i < contoursVec.size(); i++) {
       if (hier[i * 4 + 3] !== -1) continue;
@@ -293,8 +310,19 @@ export function findInk(cv: any, src: any): { ink: Uint8Array; contours: Contour
       }
       c.delete();
       if (tiny || edgeJunk) continue;
-      cands.push({ idx: i, rect, area, hasHole: hier[i * 4 + 2] !== -1 });
+      const cand = { idx: i, rect, area, hasHole: hier[i * 4 + 2] !== -1 };
+      // Desk / paper-corner leftovers: something pressed against a photo border and lying wholly in a narrow band
+      // along it (the drawing sits inside the sheet, away from the photo border).
+      const touch = minSide * BORDER_TOUCH;
+      const band = minSide * BORDER_BAND;
+      const squeezed =
+        (rect.x <= touch && rect.x + rect.width <= band) ||
+        (rect.y <= touch && rect.y + rect.height <= band) ||
+        (W - rect.x - rect.width <= touch && W - rect.x <= band) ||
+        (H - rect.y - rect.height <= touch && H - rect.y <= band);
+      (squeezed ? atBorder : cands).push(cand);
     }
+    if (!cands.length) cands = atBorder; // never return nothing because of this filter
 
     cands = dropHandwriting(cands, minSide, paper.distToEdge);
 
@@ -329,7 +357,8 @@ export function findInk(cv: any, src: any): { ink: Uint8Array; contours: Contour
       const r = f.cand.rect;
       const long = Math.max(r.width, r.height);
       const across = Math.min(r.width, r.height);
-      const lineLike = long >= minSide * PRINTED_LEN && across <= minSide * 0.04 && f.inkPixels <= long * LINE_THIN;
+      // Allow a few degrees of tilt (a rotated sheet), which widens the box of a long line.
+      const lineLike = long >= minSide * PRINTED_LEN && across <= minSide * 0.04 + long * PRINTED_TILT && f.inkPixels <= long * LINE_THIN;
       if (!lineLike || f.meanV >= refV * PRINTED_FAINT) continue;
       // Printed lines run off to the paper edge; a drawn line usually stops well inside the sheet.
       const cx = r.x + r.width / 2, cy = r.y + r.height / 2;
@@ -435,33 +464,56 @@ interface PaperInfo {
   bright: (x: number, y: number) => boolean;
 }
 
+interface ColorBg {
+  /** Per-channel close (thin ink removed). */
+  bg: any;
+  /** Plain downscaled copy (keeps desk strips narrower than the close kernel). */
+  raw: any;
+  /** Close kernel size (small px). */
+  k: number;
+}
+
 /** Background colour (per-channel close on a 1/BG_DOWNSCALE copy, same size as darkness()'s bgSmall). */
-function backgroundColor(cv: any, track: Track, src: any, minSide: number): any {
+function backgroundColor(cv: any, track: Track, src: any, minSide: number): ColorBg {
   const small = track(new cv.Mat());
   cv.resize(src, small, new cv.Size(Math.max(16, Math.round(src.cols / BG_DOWNSCALE)), Math.max(16, Math.round(src.rows / BG_DOWNSCALE))), 0, 0, cv.INTER_AREA);
   const k = odd((minSide * BG_KERNEL) / BG_DOWNSCALE);
   const kernel = track(cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(k, k)));
   const bg = track(new cv.Mat());
   cv.morphologyEx(small, bg, cv.MORPH_CLOSE, kernel);
-  return bg;
+  return { bg, raw: small, k };
 }
+
+const isWarm = (c: Uint8Array, p: number) => {
+  const r = c[p], g = c[p + 1], bl = c[p + 2];
+  const mx = r > g ? (r > bl ? r : bl) : g > bl ? g : bl;
+  const mn = r < g ? (r < bl ? r : bl) : g < bl ? g : bl;
+  return mx > 0 && (r - bl) >= mx * DESK_WARM && (mx - mn) >= mx * DESK_WARM;
+};
 
 /**
  * Desk by colour: wood / cork / cardboard is warm and saturated, while white paper stays near-grey even in a deep
  * shadow. Returns a 0/255 "paper-like" mask (small size), or null when there is no clearly coloured desk.
  */
-function paperByColor(bgSmall: any, colorBg: any): Uint8Array | null {
-  const n = bgSmall.cols * bgSmall.rows;
+function paperByColor(bgSmall: any, colorBg: ColorBg): Uint8Array | null {
+  const sw = bgSmall.cols;
+  const sh = bgSmall.rows;
+  const n = sw * sh;
   const b = bgSmall.data as Uint8Array;
-  const c = colorBg.data as Uint8Array;
+  const c = colorBg.bg.data as Uint8Array;
+  const raw = colorBg.raw.data as Uint8Array;
   const desk = new Uint8Array(n);
   let nDesk = 0;
-  for (let i = 0, p = 0; i < n; i++, p += 4) {
-    const r = c[p], g = c[p + 1], bl = c[p + 2];
-    const mx = r > g ? (r > bl ? r : bl) : g > bl ? g : bl;
-    const mn = r < g ? (r < bl ? r : bl) : g < bl ? g : bl;
-    if (mx > 0 && (r - bl) >= mx * DESK_WARM && (mx - mn) >= mx * DESK_WARM) { desk[i] = 1; nDesk++; }
-  }
+  for (let i = 0, p = 0; i < n; i++, p += 4) if (isWarm(c, p)) { desk[i] = 1; nDesk++; }
+  // A desk strip narrower than the close kernel (paper almost filling the photo) vanishes from the closed
+  // background, and the strip then reads as ink glued to every stroke that reaches the paper edge. Peel it from the
+  // raw copy: walk in from each photo border while the pixels are desk-coloured, at most one kernel deep (ink
+  // touching the photo border is rare; a warm-coloured stroke ending there loses only that short end).
+  const peel = (i0: number, step: number) => {
+    for (let s = 0, i = i0; s < colorBg.k && isWarm(raw, i * 4); s++, i += step) if (!desk[i]) { desk[i] = 1; nDesk++; }
+  };
+  for (let y = 0; y < sh; y++) { peel(y * sw, 1); peel(y * sw + sw - 1, -1); }
+  for (let x = 0; x < sw; x++) { peel(x, sw); peel((sh - 1) * sw + x, -sw); }
   if (nDesk < n * 0.03 || nDesk > n * 0.7) return null;
   // Paper reference brightness: 90th percentile of the non-desk background. Very dark non-desk areas (black
   // objects, deep corners) are not paper either.
@@ -474,7 +526,7 @@ function paperByColor(bgSmall: any, colorBg: any): Uint8Array | null {
   return out;
 }
 
-function findPaper(cv: any, track: Track, bgSmall: any, colorBg: any, W: number, H: number): PaperInfo {
+function findPaper(cv: any, track: Track, bgSmall: any, colorBg: ColorBg, W: number, H: number): PaperInfo {
   const sw = bgSmall.cols;
   const sh = bgSmall.rows;
   const sx = W / sw;
@@ -507,6 +559,10 @@ function findPaper(cv: any, track: Track, bgSmall: any, colorBg: any, W: number,
     hi /= nHi;
     lo /= nLo;
     if (lo > PAPER_CONTRAST * hi || nLo < b.length * 0.03) return whole;
+    // A desk meets the paper at a crisp edge; a shadow or light falloff across the sheet fades over many pixels
+    // (even a hard shadow has a penumbra at this scale). If the bright / dark boundary is soft, the dark class is
+    // shadowed paper: use the whole photo (darkness is relative to the local paper, so ink in the shadow is fine).
+    if (boundarySharpness(b, bm0, sw, sh, hi - lo) < SHADOW_SOFT) return whole;
   }
   const bm = bin.data as Uint8Array;
   const brightSmall = new Uint8Array(bm);
@@ -578,6 +634,24 @@ function findPaper(cv: any, track: Track, bgSmall: any, colorBg: any, W: number,
   return { mask, width: Math.max(1, maxX - minX), distToEdge, bright };
 }
 
+/**
+ * Median brightness step across the bright-class boundary (away from the photo border), measured over 4 px and
+ * relative to the bright / dark class contrast: ~1 for a crisp paper edge, ~0.1 for a shadow or light falloff.
+ */
+function boundarySharpness(b: Uint8Array, bin: Uint8Array, sw: number, sh: number, contrast: number): number {
+  const steps: number[] = [];
+  for (let y = 3; y < sh - 3; y++) {
+    for (let x = 3; x < sw - 3; x++) {
+      const i = y * sw + x;
+      if (!bin[i] || (bin[i - 1] && bin[i + 1] && bin[i - sw] && bin[i + sw])) continue;
+      steps.push(Math.max(Math.abs(b[i + 2] - b[i - 2]), Math.abs(b[i + 2 * sw] - b[i - 2 * sw])));
+    }
+  }
+  if (!steps.length || contrast <= 0) return Infinity;
+  steps.sort((p, q) => p - q);
+  return steps[steps.length >> 1] / contrast;
+}
+
 function segDist(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
   const dx = bx - ax, dy = by - ay;
   const l2 = dx * dx + dy * dy;
@@ -613,10 +687,12 @@ function hysteresis(cv: any, track: Track, maskMat: any, dark: Uint8Array, stron
 
 /**
  * Find families of long straight near-horizontal / near-vertical lines (ruled or grid paper). If there are at least
- * RULE_MIN_COUNT of them, erase every straight run in that direction whose pixels are about as faint as those
- * lines. Darker strokes (the drawing) survive even where they run along or cross a rule.
+ * RULE_MIN_COUNT of them, erase each rule along its whole length - including the stretches where it was too broken
+ * or too faint to be found, and its ends near the margin - wherever the pixels are about as faint as that rule.
+ * Each rule is judged by its own darkness (rules get darker or lighter across a photo with the lighting), and a
+ * long line much darker than the typical rule is the drawing (a ceiling, the ground), not a rule.
  */
-function removeRuledLines(cv: any, track: Track, maskMat: any, dark: Uint8Array, paperWidth: number, maxFaint: number): boolean {
+function removeRuledLines(cv: any, track: Track, maskMat: any, dark: Uint8Array, paperWidth: number): boolean {
   const W = maskMat.cols;
   const H = maskMat.rows;
   // Half size: cheaper, and slightly tilted / curved 1 px lines are easier to catch.
@@ -625,10 +701,19 @@ function removeRuledLines(cv: any, track: Track, maskMat: any, dark: Uint8Array,
   const half = track(new cv.Mat());
   cv.resize(maskMat, half, new cv.Size(hw, hh), 0, 0, cv.INTER_AREA);
   cv.threshold(half, half, 40, 255, cv.THRESH_BINARY);
+  const hm = half.data as Uint8Array;
   const seg = Math.max(8, Math.round(Math.min(hw, hh) * 0.04));
-  const found = track(cv.Mat.zeros(hh, hw, cv.CV_8UC1));
-  let ruleSum = 0;
-  let ruleCnt = 0;
+  // Darkness of a half-size pixel = darkest of its 2x2 full-size pixels (a 1 px rule is in one of them).
+  const darkAt = (x: number, y: number) => {
+    const x0 = Math.min(W - 1, x * 2), y0 = Math.min(H - 1, y * 2);
+    const x1 = Math.min(W - 1, x0 + 1), y1 = Math.min(H - 1, y0 + 1);
+    return Math.max(dark[y0 * W + x0], dark[y0 * W + x1], dark[y1 * W + x0], dark[y1 * W + x1]);
+  };
+  // Per half-size pixel: erase full-size ink below this darkness (0 = not on a rule).
+  const thr = track(cv.Mat.zeros(hh, hw, cv.CV_8UC1));
+  const t8 = thr.data as Uint8Array;
+  const cap = Math.round(RULE_CAP * 255);
+  let any = false;
   for (const horizontal of [true, false]) {
     // Bridge dotted faint rules along the line and thicken across it (a few degrees of tilt still leaves a
     // continuous run), then keep only straight runs.
@@ -644,34 +729,79 @@ function removeRuledLines(cv: any, track: Track, maskMat: any, dark: Uint8Array,
     const cents = track(new cv.Mat());
     const n = cv.connectedComponentsWithStats(lines, labels, stats, cents, 8, cv.CV_32S);
     const st = stats.data32S as Int32Array;
+    const lab = labels.data32S as Int32Array;
     const spanMin = (paperWidth / 2) * RULE_SPAN;
-    const isLong = new Uint8Array(n);
-    let count = 0;
+    interface Rule { l: number; median: number; p90: number; a: number; b: number }
+    const idx = new Int32Array(n).fill(-1);
+    const found: Rule[] = [];
     for (let l = 1; l < n; l++) {
       const span = horizontal ? st[l * 5 + 2] : st[l * 5 + 3];
       const across = horizontal ? st[l * 5 + 3] : st[l * 5 + 2];
-      if (span >= spanMin && across < span * 0.12) { isLong[l] = 1; count++; }
+      if (span >= spanMin && across < span * 0.12) { idx[l] = found.length; found.push({ l, median: 0, p90: 0, a: 0, b: 0 }); }
     }
-    if (count < RULE_MIN_COUNT) continue;
-    const lab = labels.data32S as Int32Array;
-    const hm = half.data as Uint8Array;
+    if (found.length < RULE_MIN_COUNT) continue;
+    // Darkness profile and a straight-line fit (across = a * along + b) of the ink under each long run.
+    const darks: number[][] = found.map(() => []);
+    const sums = found.map(() => [0, 0, 0, 0, 0]); // n, su, sv, suu, suv
     for (let y = 0; y < hh; y++) {
       for (let x = 0; x < hw; x++) {
         const i = y * hw + x;
-        if (hm[i] && isLong[lab[i]]) { ruleSum += dark[Math.min(H - 1, y * 2) * W + Math.min(W - 1, x * 2)]; ruleCnt++; }
+        const k = idx[lab[i]];
+        if (k < 0 || !hm[i]) continue;
+        darks[k].push(darkAt(x, y));
+        const u = horizontal ? x : y, v = horizontal ? y : x;
+        const S = sums[k];
+        S[0]++; S[1] += u; S[2] += v; S[3] += u * u; S[4] += u * v;
       }
     }
-    cv.bitwise_or(found, lines, found);
+    found.forEach((r, k) => {
+      const d = darks[k].sort((p, q) => p - q);
+      r.median = d.length ? d[d.length >> 1] : 0;
+      r.p90 = d.length ? d[Math.floor(d.length * 0.9)] : 0;
+      const [cnt, su, sv, suu, suv] = sums[k];
+      const den = cnt * suu - su * su;
+      r.a = cnt > 1 && den ? (cnt * suv - su * sv) / den : 0;
+      r.b = cnt ? (sv - r.a * su) / cnt : 0;
+    });
+    const medians = found.map((r) => r.median).sort((p, q) => p - q);
+    const typical = medians[medians.length >> 1];
+    // A long run much darker than the typical one is (mostly) drawn: a ceiling or ground line, maybe lying on a rule.
+    const drawn = (r: Rule) => r.median > typical * RULE_DRAWN || r.median <= 0;
+    const clean = found.filter((r) => !drawn(r));
+    // Ruled / grid paper shows many rules; a few long lines (paper edges, a ground line) are not a ruling.
+    if (clean.length < RULE_MIN_COUNT) continue;
+    any = true;
+    const p90s = clean.map((r) => r.p90).sort((p, q) => p - q);
+    const tBase = Math.min(cap, Math.round(p90s[p90s.length >> 1] * RULE_FAINT));
+    // Every straight run in this direction, short ones too (grid segments between strokes): the typical rule level.
+    const lm0 = lines.data as Uint8Array;
+    for (let i = 0; i < lm0.length; i++) if (lm0[i] && t8[i] < tBase) t8[i] = tBase;
+    // Each long run at its own level (lighting varies across the photo; a drawn run keeps the typical level),
+    // plus its straight extension across the sheet (broken / fainter stretches, ends near the margin).
+    const tOf = (r: Rule) => (drawn(r) ? tBase : Math.max(tBase, Math.min(cap, Math.round(r.p90 * RULE_FAINT))));
+    const byLabel = new Uint8Array(n);
+    for (const r of found) byLabel[r.l] = tOf(r);
+    for (let i = 0; i < lab.length; i++) if (byLabel[lab[i]] > t8[i]) t8[i] = byLabel[lab[i]];
+    const lineMat = track(new cv.Mat(hh, hw, cv.CV_8UC1));
+    for (const r of found) {
+      const t = tOf(r);
+      lineMat.setTo(new cv.Scalar(0));
+      const end = horizontal ? hw : hh;
+      const p1 = horizontal ? new cv.Point(0, Math.round(r.b)) : new cv.Point(Math.round(r.b), 0);
+      const p2 = horizontal ? new cv.Point(end, Math.round(r.a * end + r.b)) : new cv.Point(Math.round(r.a * end + r.b), end);
+      cv.line(lineMat, p1, p2, new cv.Scalar(255), RULE_EXTEND, cv.LINE_8);
+      const lm = lineMat.data as Uint8Array;
+      for (let i = 0; i < lm.length; i++) if (lm[i] && t8[i] < t) t8[i] = t;
+    }
   }
-  if (!ruleCnt) return false;
-  const faintT = Math.min(maxFaint, (ruleSum / ruleCnt) * RULE_FAINT);
+  if (!any) return false;
   const full = track(new cv.Mat());
-  cv.resize(found, full, new cv.Size(W, H), 0, 0, cv.INTER_NEAREST);
+  cv.resize(thr, full, new cv.Size(W, H), 0, 0, cv.INTER_NEAREST);
   const gk = track(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3)));
   cv.dilate(full, full, gk);
   const m = maskMat.data as Uint8Array;
   const f = full.data as Uint8Array;
-  for (let i = 0; i < m.length; i++) if (f[i] && m[i] && dark[i] < faintT) m[i] = 0;
+  for (let i = 0; i < m.length; i++) if (m[i] && dark[i] < f[i]) m[i] = 0;
   return true;
 }
 
