@@ -1,7 +1,9 @@
 import './style.css';
 import { analyze, hasApiKey } from './ai';
+import { createControls } from './controls';
 import { buildScene } from './scenes';
 import { Simulation } from './sim';
+import type { BuiltScene, SceneInput } from './types';
 import { annotate, extractContours, loadOpenCV, toWorkingCanvas } from './vision';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -11,6 +13,27 @@ const stage = $<HTMLCanvasElement>('stage');
 const explain = $<HTMLParagraphElement>('explain');
 
 let sim: Simulation | null = null;
+/** Inputs of the scene on screen, kept so build-time params (e.g. launch speed) can rebuild it. */
+let current: SceneInput | null = null;
+
+const controls = createControls($<HTMLElement>('controls'), {
+  apply(set, rebuild) {
+    if (!current) return;
+    Object.assign(current.analysis.params, set);
+    if (rebuild) startScene(current);
+    else sim?.setParams(set);
+  },
+});
+if (import.meta.env.DEV) (window as any).__wa = { controls, get sim() { return sim; } };
+
+function startScene(input: SceneInput): BuiltScene {
+  const scene = buildScene(input);
+  sim?.stop();
+  sim = new Simulation(stage, scene, input.width, input.height);
+  sim.setParams(input.analysis.params);
+  sim.start();
+  return scene;
+}
 
 // Start loading OpenCV right away so it is ready by the time a photo is picked.
 const cvPromise = loadOpenCV();
@@ -61,11 +84,10 @@ async function run(file: Blob) {
 
     setStep('run');
     await nextFrame();
-    const scene = buildScene({ ...vision, analysis });
-    sim?.stop();
-    sim = new Simulation(stage, scene, vision.width, vision.height);
-    sim.setParams(analysis.params);
-    sim.start();
+    current = { ...vision, analysis };
+    const scene = startScene(current);
+    // buildScene drops to the fallback when the chosen builder fails; show that scene's sliders.
+    controls.show(scene.label === 'Falling objects' ? 'fallback' : analysis.diagram, analysis.params);
     setStep('done');
     explain.textContent = analysis.explanation || `${scene.label}${analysis.source === 'heuristic' && !hasApiKey() ? ' (offline mode)' : ''}`;
   } catch (err) {

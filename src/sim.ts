@@ -28,6 +28,12 @@ export class Simulation {
 
   setParams(p: Partial<SimParams>) {
     if (p.gravity !== undefined) this.engine.gravity.scale = (BASE_SCALE * p.gravity) / 9.8;
+    // Incline blocks read their Coulomb μ from plugin.inclineMu every step, so friction changes apply live.
+    if (p.friction !== undefined)
+      for (const b of this.scene.bodies) {
+        const plugin = b.plugin as { inclineMu?: number } | undefined;
+        if (plugin && plugin.inclineMu !== undefined) plugin.inclineMu = p.friction;
+      }
   }
 
   start() {
