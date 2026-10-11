@@ -273,8 +273,12 @@ export interface BuiltScene {
   speedHint?: number;
   /** Values the scene settled itself, in physical units. */
   physics?: {
-    /** Spring: how the engine stiffness was chosen (from an entered k, or the tuned default). */
-    springK?: { from: ValueSource; note?: number };
+    /**
+     * Spring (scenes/spring-motion.ts): the spring constant in N/m (`value`, entered or the tuned default, never
+     * tied to the mass), ω² per step² it swings with, and the block's distance from its rest position right now
+     * (`stretch`, world px along the spring), for the energy graph's ½ k d².
+     */
+    springK?: { from: ValueSource; note?: number; value: number; omega2: number; stretch: () => number };
     /** Projectile: launch speed actually used and the auto-fitted one (lands inside the picture), m/s. */
     launchSpeed?: { value: number; fit: number; from: ValueSource };
     /** Incline: slope angle as drawn, degrees. */

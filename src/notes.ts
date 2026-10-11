@@ -15,7 +15,6 @@ import { DEFAULT_FRICTION } from './scenes/incline';
 import { visibleRect, type Simulation } from './sim';
 import type { Analysis, BuiltScene, PartInfo, PartName, Point, ViewRect } from './types';
 import {
-  DEFAULT_KG,
   OMEGA2_PER_STIFFNESS,
   STEP_MS,
   formatLength,
@@ -24,7 +23,6 @@ import {
   formatSpringK,
   meters,
   scaleOf,
-  springK,
   timeLabel,
 } from './units';
 import { ARROW_HEAD_HALF_CSS, LABEL_SPACE_CSS, LMAX_FRACTION, scaleBarZone } from './vectors';
@@ -435,7 +433,7 @@ function predictPaths(scene: BuiltScene, engine: Matter.Engine, vis: ViewRect, l
       const spring = scene.constraints.find((c) => c.bodyB === b && !c.bodyA);
       if (spring && v > 1e-9) {
         // Stroke ± amplitude along the kick (= along the spring); arrows both ways, longest in the middle.
-        const omega = Math.sqrt(OMEGA2_PER_STIFFNESS * spring.stiffness);
+        const omega = Math.sqrt(scene.physics?.springK?.omega2 ?? OMEGA2_PER_STIFFNESS * spring.stiffness);
         const vTop = Math.max(hint, v);
         const amp = (1.15 * vTop) / Math.max(omega, 1e-6);
         const d = { x: v0.x / v, y: v0.y / v };
@@ -566,12 +564,8 @@ function pillsFor(scene: BuiltScene, analysis: Analysis): Pill[] {
       mass('bob', true);
       break;
     case 'Spring and mass': {
-      const c = scene.constraints[0];
-      const block = parts.block;
-      if (c && block) {
-        const k = springK(c.stiffness, block.kg ?? DEFAULT_KG, s);
-        add('spring', () => `k = ${formatSpringK(k)}`);
-      }
+      const k = scene.physics?.springK?.value;
+      if (k && parts.block) add('spring', () => `k = ${formatSpringK(k)}`);
       if (notedLength() === 'spring') length('spring');
       mass('block', true);
       break;

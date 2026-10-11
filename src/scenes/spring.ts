@@ -1,28 +1,19 @@
-// Spring + mass: the drawn zigzag is a Matter constraint between a fixed end and the drawn block.
+// Spring + mass: the drawn zigzag runs between a fixed end and the drawn block.
 // The block oscillates along the spring's axis (vertical hanging spring, or horizontal spring on a floor);
-// the zigzag cut-out stretches and squashes between its two ends.
+// the zigzag cut-out stretches and squashes between its two ends. The motion is integrated exactly along that
+// axis (spring-motion.ts), so the energy graph's Total stays flat and the period is 2π√(m/k); the Matter
+// constraint is kept only as the spring's two ends for the drawing (stiffness 0: it pulls on nothing).
 
 import Matter from 'matter-js';
-import type { BBox, CleanPart, Contour, Point, SceneBuilder, Sprite, Untidy, ValueSource } from '../types';
+import type { BBox, CleanPart, Contour, Point, SceneBuilder, Sprite, Untidy } from '../types';
 import { bodyOutline, supportAcross } from '../clean';
 import { drawnSupport, fmt, rayExit, snapDir, TIDY, tidyLog, untidyMatters, untidyMove, untidySegment } from './tidy';
 import { contourMask, cutSprite, eraseFromPaper, maskBounds, roleOf } from './common';
 import { axisOf, centroidOf, count, looksLikeSpring, outlineZig, planSpring, spans, splitMerged, type SpringPlan } from './spring-plan';
 import { STEP_ACCEL, STEP_MS } from '../sim';
-import { DEFAULT_KG, noteFor, scaleFor, stiffnessFor } from '../units';
+import { noteFor, scaleFor } from '../units';
+import { SpringOscillator, springSetup } from './spring-motion';
 
-// Fixed per diagram type; never chosen by the AI (an entered k may move it within the stable range below).
-const STIFFNESS = 0.0015;
-const DAMPING = 0;
-const FRICTION_AIR = 0.001;
-/** Measured for Matter 0.20 (2 constraint iterations): omega² per step² ≈ 6.6 × stiffness. Period ≈ 1 s here. */
-const OMEGA2_PER_STIFFNESS = 6.6;
-/**
- * Engine stiffness allowed for an entered k: screen period about 0.4-2.9 s. Matter stays stable well past both
- * ends; softer would make a hanging block sag far below the drawing, stiffer would blur into a buzz.
- */
-const MIN_STIFFNESS = 0.0002;
-const MAX_STIFFNESS = 0.01;
 /** Oscillation amplitude as a fraction of the drawn spring length (clamped below). */
 const KICK_FRACTION = 0.25;
 const KICK_MIN_PX = 12;
@@ -252,7 +243,8 @@ export const buildSpring: SceneBuilder = (input) => {
   }
 
   // Block body: the drawn outline's convex hull when we have it, else the block's bounding box.
-  const bodyOpts = { friction: 0, frictionStatic: 0, frictionAir: FRICTION_AIR, restitution: 0 };
+  // onStep puts the block exactly where the spring motion says every step; there is nothing for it to collide with.
+  const bodyOpts = { friction: 0, frictionStatic: 0, frictionAir: 0, restitution: 0, collisionFilter: { group: -1, category: 0, mask: 0 } };
   let body: Matter.Body | undefined;
   if (!useRect && massC.length === 1 && massC[0].hull.length >= 3) {
     const c = massC[0];
@@ -268,7 +260,7 @@ export const buildSpring: SceneBuilder = (input) => {
   // Tidy-up (tidy.ts): a spring drawn within 15° of vertical / horizontal is straightened and meets the middle of the
   // block's face towards it. A hanging spring keeps its top on the ceiling and the block moves under it; a spring
   // lying on a floor keeps the block on the floor and its end slides along the wall to the block's middle. The
-  // physics below (constraint, rails, rest length) is built from the tidied ends, so the block oscillates straight
+  // physics below (motion axis, rest position) is built from the tidied ends, so the block oscillates straight
   // along the tidied spring. Steeper springs stay as drawn.
   const tidyNotes: string[] = [];
   const drawnAnchor = { ...anchor }, drawnAttach = { ...attach }, drawnCentre = { ...body.position };
@@ -294,85 +286,48 @@ export const buildSpring: SceneBuilder = (input) => {
   const L0 = Math.hypot(attach.x - anchor.x, attach.y - anchor.y);
   const dir = { x: (attach.x - anchor.x) / L0, y: (attach.y - anchor.y) / L0 };
 
-  // An entered k (with the block's entered or assumed mass) sets the stiffness so the screen period is the
-  // physical 2π√(m/k) played at this drawing's slow-motion factor, kept inside the stable range.
-  const kg = noteFor(input.analysis, 'mass', ['block', 'bob', 'ball'])?.value;
+  // k and m are independent (spring-motion.ts): an entered k (else the tuned default) and an entered mass (else 1 kg).
+  // The screen period is the physical 2π√(m/k) played at this drawing's slow-motion factor.
+  const kgNote = noteFor(input.analysis, 'mass', ['block', 'bob', 'ball'])?.value;
   const kNote = noteFor(input.analysis, 'spring_constant')?.value;
   // The drawn spring length is its size on paper (for a hanging spring that is the stretched, at-rest length).
   const measures = haveSpringSprite ? { spring: L0 } : {};
-  let stiffness = STIFFNESS;
-  let kFrom: ValueSource = 'assumed';
-  if (kNote) {
-    const want = stiffnessFor(kNote, kg ?? DEFAULT_KG, scaleFor(input, measures));
-    stiffness = Math.min(MAX_STIFFNESS, Math.max(MIN_STIFFNESS, want));
-    kFrom = stiffness === want ? 'input' : 'adjusted';
-  }
-  const OMEGA2 = OMEGA2_PER_STIFFNESS * stiffness;
+  const setup = springSetup(kNote, kgNote, scaleFor(input, measures));
+  const OMEGA2 = setup.omega2;
+  const omega = Math.sqrt(OMEGA2);
 
-  // Rest length chosen so the drawing is the equilibrium under normal gravity (a hanging spring doesn't just sag).
+  // The block moves along the rail the spring hangs or lies on: straight down/up for a hanging spring, sideways for
+  // one on a floor (a spring drawn slanted pulls the block along that rail, as before). The drawing is the rest
+  // position under normal gravity (a hanging spring doesn't just sag).
+  const axis = vertical ? { x: 0, y: dir.y < 0 ? -1 : 1 } : { x: dir.x < 0 ? -1 : 1, y: 0 };
+  // Only for how far the kick may go (the spring's own rest length, never below 0.3 of what was drawn).
   const restLength = Math.max(0.3 * L0, L0 - (STEP_ACCEL * dir.y) / OMEGA2);
+  // The spring's two ends for the drawing (zigzag, stretched cut-out, labels). Stiffness 0: Matter applies nothing.
   const spring = Matter.Constraint.create({
     pointA: { ...anchor },
     bodyB: body,
     pointB: { x: attach.x - body.position.x, y: attach.y - body.position.y },
-    length: restLength,
-    stiffness,
-    damping: DAMPING,
+    length: L0,
+    damping: 0,
   });
-
-  // Invisible guide rails either side of the block keep the motion one-dimensional along the spring.
-  const bb = body.bounds;
-  const T = 40, gap = 1;
-  const railLen = 4 * (L0 + Math.max(bb.max.x - bb.min.x, bb.max.y - bb.min.y)) + 400;
-  const railOpts = { isStatic: true, friction: 0, frictionStatic: 0, restitution: 0 };
-  const rails = vertical
-    ? [
-        Matter.Bodies.rectangle(bb.min.x - gap - T / 2, body.position.y, T, railLen, railOpts),
-        Matter.Bodies.rectangle(bb.max.x + gap + T / 2, body.position.y, T, railLen, railOpts),
-      ]
-    : [
-        Matter.Bodies.rectangle(body.position.x, bb.min.y - gap - T / 2, railLen, T, railOpts),
-        Matter.Bodies.rectangle(body.position.x, bb.max.y + gap + T / 2, railLen, T, railOpts),
-      ];
+  spring.stiffness = 0; // after create(): create() takes 0 for "unset" and would make it rigid
 
   // Never start still: kick it along the spring.
-  const omega = Math.sqrt(OMEGA2);
   const amp = Math.min(0.6 * restLength, Math.max(KICK_MIN_PX, Math.min(KICK_MAX_PX, KICK_FRACTION * L0)));
-  Matter.Body.setVelocity(body, { x: dir.x * amp * omega, y: dir.y * amp * omega });
-
-  // Matter's soft constraints bleed energy (~90% amplitude lost in 10 s). Top it back up so it never stops.
-  const targetEnergy = 0.5 * OMEGA2 * amp * amp;
-  const step = (engine: Matter.Engine) => {
-    const g = engine.gravity;
-    const ga = (g.x * dir.x + g.y * dir.y) * g.scale * STEP_MS * STEP_MS; // gravity along the spring, px/step²
-    const end = Matter.Constraint.pointBWorld(spring);
-    const len = (end.x - anchor.x) * dir.x + (end.y - anchor.y) * dir.y;
-    const d = len - (restLength + ga / OMEGA2);
-    const vel = Matter.Body.getVelocity(body!);
-    const va = vel.x * dir.x + vel.y * dir.y;
-    const e = 0.5 * va * va + 0.5 * OMEGA2 * d * d;
-    if (e >= targetEnergy) return;
-    if (Math.abs(va) < 0.05) {
-      // Sitting still (e.g. right after a gravity change): give it a fresh kick.
-      if (Math.abs(d) < 0.5 * amp) Matter.Body.setVelocity(body!, { x: vel.x + dir.x * amp * omega, y: vel.y + dir.y * amp * omega });
-      return;
-    }
-    const f = Math.min(1.02, Math.sqrt(1 + (targetEnergy - e) / (0.5 * va * va)));
-    Matter.Body.setVelocity(body!, { x: vel.x + dir.x * va * (f - 1), y: vel.y + dir.y * va * (f - 1) });
+  const motion = new SpringOscillator(OMEGA2, STEP_ACCEL * axis.y, amp * omega);
+  const home = { ...body.position };
+  const place = () => {
+    Matter.Body.setPosition(body!, { x: home.x + axis.x * motion.u, y: home.y + axis.y * motion.u });
+    Matter.Body.setVelocity(body!, { x: axis.x * motion.v, y: axis.y * motion.v });
   };
-
-  // A straightened spring: the block stays exactly on the spring's line (the rails leave it 1 px of play, so a
-  // block on a level spring would otherwise sink onto the lower rail and tilt the spring).
-  const line0 = { ...body.position };
-  const onStep = straight
-    ? () => {
-        const p = body!.position, v = Matter.Body.getVelocity(body!);
-        const off = (p.x - line0.x) * -dir.y + (p.y - line0.y) * dir.x;
-        const voff = v.x * -dir.y + v.y * dir.x;
-        if (Math.abs(off) > 1e-9) Matter.Body.setPosition(body!, { x: p.x + dir.y * off, y: p.y - dir.x * off });
-        if (Math.abs(voff) > 1e-9) Matter.Body.setVelocity(body!, { x: v.x + dir.y * voff, y: v.y - dir.x * voff });
-      }
-    : undefined;
+  place();
+  const bb = body.bounds;
+  // Every step: the exact motion under the engine's gravity right now (slider, voice, Moon mode), then the block there.
+  const onStep = (engine: Matter.Engine) => {
+    const g = engine.gravity;
+    motion.step((g.x * axis.x + g.y * axis.y) * g.scale * STEP_MS * STEP_MS);
+    place();
+  };
 
   const sprites: Sprite[] = [];
   const masks: Uint8Array[] = [massMask];
@@ -448,13 +403,12 @@ export const buildSpring: SceneBuilder = (input) => {
   clean.push(support, springPart, blockPart);
 
   return {
-    bodies: [body, ...rails],
+    bodies: [body],
     constraints: [spring],
     sprites,
     clean,
     background: eraseFromPaper(input, masks),
     label: 'Spring and mass',
-    step,
     onStep,
     measures,
     parts: {
@@ -468,12 +422,14 @@ export const buildSpring: SceneBuilder = (input) => {
         at: () => block.position,
         clear: Math.max(bb.max.x - bb.min.x, bb.max.y - bb.min.y) / 2,
         body: block,
-        kg: kg ?? DEFAULT_KG,
-        kgFrom: kg ? 'input' : 'assumed',
+        kg: setup.kg,
+        kgFrom: kgNote ? 'input' : 'assumed',
       },
     },
-    physics: { springK: { from: kFrom, note: kNote } },
-    // Fastest through the middle of the swing: amplitude × ω (the energy top-up keeps it there).
+    physics: {
+      springK: { from: setup.kFrom, note: kNote, value: setup.k, omega2: OMEGA2, stretch: () => motion.stretch() },
+    },
+    // Fastest through the middle of the swing: amplitude × ω (it never loses energy).
     speedHint: amp * omega,
   };
 };
