@@ -3,10 +3,11 @@
 // the zigzag cut-out stretches and squashes between its two ends.
 
 import Matter from 'matter-js';
-import type { BBox, CleanPart, Contour, Point, SceneBuilder, SceneInput, Sprite, Untidy, ValueSource } from '../types';
+import type { BBox, CleanPart, Contour, Point, SceneBuilder, Sprite, Untidy, ValueSource } from '../types';
 import { bodyOutline, supportAcross } from '../clean';
 import { drawnSupport, fmt, rayExit, snapDir, TIDY, tidyLog, untidyMatters, untidyMove, untidySegment } from './tidy';
-import { contourMask, cutSprite, deepestPoint, eraseFromPaper, maskBounds, roleOf } from './common';
+import { contourMask, cutSprite, eraseFromPaper, maskBounds, roleOf } from './common';
+import { axisOf, centroidOf, count, looksLikeSpring, outlineZig, planSpring, spans, splitMerged, type SpringPlan } from './spring-plan';
 import { STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, noteFor, scaleFor, stiffnessFor } from '../units';
 
@@ -27,38 +28,14 @@ const KICK_FRACTION = 0.25;
 const KICK_MIN_PX = 12;
 const KICK_MAX_PX = 80;
 
+/** ?debug: one "[spring] ..." line with why the fixed end, axis and block were chosen. */
+const DEBUG = typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug');
+
+/** One plan per photo (~0.1 s): rebuilds after a slider or a typed number reuse it. */
+const PLANS = new WeakMap<Uint8Array, SpringPlan>();
+
 const FIXED_ROLES = new Set(['pivot', 'ground', 'incline', 'wheel', 'cannon']);
 const MASS_ROLES = new Set(['mass', 'bob', 'projectile']);
-
-/** Per-row (vertical axis) or per-column (horizontal axis) extent of a mask, in the axis frame (u along, v across). */
-function spans(mask: Uint8Array, W: number, H: number, vertical: boolean) {
-  const n = vertical ? H : W;
-  const lo = new Int32Array(n).fill(-1);
-  const hi = new Int32Array(n).fill(-1);
-  for (let y = 0; y < H; y++)
-    for (let x = 0; x < W; x++) {
-      if (!mask[y * W + x]) continue;
-      const u = vertical ? y : x;
-      const v = vertical ? x : y;
-      if (lo[u] < 0 || v < lo[u]) lo[u] = v;
-      if (v > hi[u]) hi[u] = v;
-    }
-  const width = (u: number) => (lo[u] < 0 ? 0 : hi[u] - lo[u] + 1);
-  return { lo, hi, width, n };
-}
-
-function centroidOf(mask: Uint8Array, W: number): Point | null {
-  let sx = 0, sy = 0, n = 0;
-  for (let i = 0; i < mask.length; i++)
-    if (mask[i]) {
-      sx += i % W;
-      sy += (i / W) | 0;
-      n++;
-    }
-  return n ? { x: sx / n, y: sy / n } : null;
-}
-
-const count = (mask: Uint8Array) => mask.reduce((s, v) => s + v, 0);
 
 function bboxGap(a: BBox, b: BBox) {
   const dx = Math.max(0, a.x - (b.x + b.w), b.x - (a.x + a.w));
@@ -66,12 +43,29 @@ function bboxGap(a: BBox, b: BBox) {
   return Math.hypot(dx, dy);
 }
 
-/** Without AI roles: the biggest, squarest closed shape is the weight. */
-function guessMass(pool: Contour[]): Contour | undefined {
+const holds = (c: Contour, p: Point) => p.x >= c.bbox.x && p.x <= c.bbox.x + c.bbox.w && p.y >= c.bbox.y && p.y <= c.bbox.y + c.bbox.h;
+const boxCentre = (b: BBox): Point => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
+
+/**
+ * Without AI roles: the stroke group holding the block the plan found (the tightest one around it). Without one: the
+ * biggest, squarest closed shape, but never a zigzag (its outline runs 1.8 times round its hull or more): a coil or a
+ * dense zigzag fills a big area and once won over a small box.
+ */
+function guessMass(pool: Contour[], plan: SpringPlan, notes: string[]): Contour | undefined {
+  if (plan.mass) {
+    const at = boxCentre(plan.mass.box);
+    const around = pool.filter((c) => holds(c, at)).sort((a, b) => a.bbox.w * a.bbox.h - b.bbox.w * b.bbox.h)[0];
+    if (around) return around;
+  }
   const score = (c: Contour) => {
     const sq = Math.min(c.bbox.w, c.bbox.h) / Math.max(1, c.bbox.w, c.bbox.h);
-    return c.area * sq * (c.hasHole ? 1.5 : 1);
+    const zig = outlineZig(c.points, c.hull);
+    return c.area * sq * (c.hasHole ? 1.5 : 1) * (zig >= 1.8 && pool.length > 1 ? 0.02 : 1);
   };
+  for (const c of pool) {
+    const zig = outlineZig(c.points, c.hull);
+    if (zig >= 1.8 && pool.length > 1) notes.push(`zigzag blob #${c.id} zig=${zig.toFixed(1)}`);
+  }
   return [...pool].sort((a, b) => score(b) - score(a))[0];
 }
 
@@ -87,58 +81,6 @@ function guessSpring(pool: Contour[], mass: Contour[]): Contour[] {
   const near = pool.filter((c) => !isLine(c) && mass.some((m) => bboxGap(c.bbox, m.bbox) < reach));
   if (near.length) return near;
   return [[...pool].sort((a, b) => b.inkPixels - a.inkPixels)[0]];
-}
-
-/** Spring and block drawn as one stroke: the block is the thick band around the deepest point along the long axis. */
-function splitMerged(input: SceneInput, mask: Uint8Array) {
-  const { width: W, height: H } = input;
-  const b = maskBounds(mask, W, H);
-  if (!b) return null;
-  const vertical = b.h >= b.w;
-  const sp = spans(mask, W, H, vertical);
-  const { point } = deepestPoint(mask, W, H);
-  const du = vertical ? point.y : point.x;
-  const ref = sp.width(du);
-  if (!ref) return null;
-  let u0 = du, u1 = du;
-  while (u0 > 0 && sp.width(u0 - 1) >= 0.7 * ref) u0--;
-  while (u1 < sp.n - 1 && sp.width(u1 + 1) >= 0.7 * ref) u1++;
-  const extent = vertical ? b.h : b.w;
-  if (u1 - u0 + 1 > 0.85 * extent) return null;
-  const mass = new Uint8Array(mask.length);
-  const spring = new Uint8Array(mask.length);
-  for (let i = 0; i < mask.length; i++) {
-    if (!mask[i]) continue;
-    const u = vertical ? (i / W) | 0 : i % W;
-    if (u >= u0 && u <= u1) mass[i] = 1;
-    else spring[i] = 1;
-  }
-  if (count(spring) < 40) return null;
-  return { mass, spring };
-}
-
-/**
- * True if the non-block part of a split looks like a spring hanging off one side of the block
- * (not a floor/wall line running past it): it sits on one side and is centred across the block.
- */
-function looksLikeSpring(input: SceneInput, split: { mass: Uint8Array; spring: Uint8Array }): boolean {
-  const { width: W, height: H } = input;
-  const mb = maskBounds(split.mass, W, H);
-  const cm = centroidOf(split.mass, W);
-  const cs = centroidOf(split.spring, W);
-  if (!mb || !cm || !cs) return false;
-  const vertical = Math.abs(cm.y - cs.y) >= Math.abs(cm.x - cs.x);
-  let before = 0, after = 0;
-  for (let i = 0; i < split.spring.length; i++) {
-    if (!split.spring[i]) continue;
-    const u = vertical ? (i / W) | 0 : i % W;
-    const c = vertical ? mb.y + mb.h / 2 : mb.x + mb.w / 2;
-    if (u < c) before++;
-    else after++;
-  }
-  const oneSided = Math.max(before, after) >= 0.85 * (before + after);
-  const off = vertical ? Math.abs(cs.x - cm.x) / Math.max(1, mb.w) : Math.abs(cs.y - cm.y) / Math.max(1, mb.h);
-  return oneSided && off < 0.35;
 }
 
 /**
@@ -194,6 +136,10 @@ export const buildSpring: SceneBuilder = (input) => {
   const { width: W, height: H, contours } = input;
   if (!contours.length) throw new Error('spring: no contours');
   const role = (c: Contour) => roleOf(input, c.id);
+  // Fixed end, axis and block from the ink first (spring-plan.ts): a big zigzag or coil is never taken for the block.
+  const plan = PLANS.get(input.ink) ?? planSpring(input.ink, W, H);
+  PLANS.set(input.ink, plan);
+  const massNotes: string[] = [];
 
   const fixed = contours.filter((c) => {
     const r = role(c);
@@ -203,15 +149,25 @@ export const buildSpring: SceneBuilder = (input) => {
   const pool = free.length ? free : contours;
 
   let massC = pool.filter((c) => MASS_ROLES.has(role(c)?.role ?? ''));
-  if (!massC.length) massC = [guessMass(pool)!];
+  if (!massC.length) massC = [guessMass(pool, plan, massNotes)!];
+  else if (plan.fixed && plan.mass?.kind === 'closed') {
+    // The AI's block holds no closed box, but another stroke group holds the closed box at the spring's far end
+    // (the AI took the zigzag for the block): that box is the block.
+    const at = boxCentre(plan.mass.box);
+    const box = pool.filter((c) => holds(c, at)).sort((a, b) => a.bbox.w * a.bbox.h - b.bbox.w * b.bbox.h)[0];
+    if (box && !massC.some((c) => holds(c, at))) {
+      massNotes.push(`AI block #${massC.map((c) => c.id).join(',')} holds no box → #${box.id}`);
+      massC = [box];
+    }
+  }
   const rest = pool.filter((c) => !massC.includes(c));
   let springC = rest.filter((c) => role(c)?.role === 'spring');
   // Without an AI spring: ceiling, spring and block are often one stroke. If the block contour splits into
   // block + something spring-like on one side, that is the spring; stray marks elsewhere stay in the background.
   let premerged: { mass: Uint8Array; spring: Uint8Array } | null = null;
   if (!springC.length) {
-    const split = splitMerged(input, contourMask(input, massC));
-    if (split && looksLikeSpring(input, split)) premerged = split;
+    const split = splitMerged(W, H, contourMask(input, massC), plan);
+    if (split && looksLikeSpring(W, H, split, plan)) premerged = split;
     else springC = guessSpring(rest, massC);
   }
 
@@ -237,7 +193,7 @@ export const buildSpring: SceneBuilder = (input) => {
     if (count(springMask) < 40) springMask = null;
   }
   if (!springMask) {
-    const split = splitMerged(input, massMask);
+    const split = splitMerged(W, H, massMask, plan);
     if (split) {
       massMask = split.mass;
       springMask = split.spring;
@@ -256,7 +212,7 @@ export const buildSpring: SceneBuilder = (input) => {
   let haveSpringSprite = false;
   const cs = springMask ? centroidOf(springMask, W) : null;
   if (springMask && cs) {
-    vertical = Math.abs(cm.y - cs.y) >= Math.abs(cm.x - cs.x);
+    vertical = axisOf(plan, cm, cs);
     const massPlus = (vertical ? cm.y - cs.y : cm.x - cs.x) > 0;
     // Stray block pixels past the block's near edge (e.g. a corner left over by a split) belong to the block,
     // otherwise the spring's moving end lands on the far corner of the block.
@@ -481,6 +437,12 @@ export const buildSpring: SceneBuilder = (input) => {
     if (untidyMatters(us, L0)) springPart.untidy = us;
     const ub = untidyMove(drawnCentre, body.position);
     if (untidyMatters(ub, 1)) blockPart.untidy = ub;
+  }
+  if (DEBUG) {
+    const from = massC.some((c) => MASS_ROLES.has(role(c)?.role ?? '')) && !massNotes.length ? 'AI role' : 'drawing';
+    console.log(
+      `[spring] ${plan.why}${massNotes.length ? `; ${massNotes.join(', ')}` : ''} → built: ${haveSpringSprite ? (vertical ? 'vertical' : 'horizontal') : 'invisible vertical'} spring, block (${from}) ${Math.round(mb.w)}×${Math.round(mb.h)} at (${Math.round(mb.x)},${Math.round(mb.y)}), fixed end (${Math.round(drawnAnchor.x)},${Math.round(drawnAnchor.y)})`,
+    );
   }
   tidyLog('Spring', tidyNotes);
   clean.push(support, springPart, blockPart);
