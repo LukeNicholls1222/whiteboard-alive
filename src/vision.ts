@@ -35,7 +35,12 @@
 //      the paper / photo border for their whole length, and small bits pressed into a band along the photo border);
 //      binder holes; long printed lines
 //      (margin) that are much fainter in max(R,G,B) than the drawing; handwriting (rows of small letters, or a
-//      lone small word near the paper border far from the drawing).
+//      lone small word near the paper border far from the drawing); shadows (a contour whose surroundings are about as
+//      dark as its own ink and clearly darker than the paper: the corner or edge of a phone / hand shadow, not a line,
+//      which has paper on both sides).
+//   8. Faint retry: if all that is kept is (next to) no ink - light pencil can be only ~6 % darker than the paper,
+//      below the normal 8 % candidate threshold - steps 2-7 are redone with lower thresholds against a narrower
+//      background (STAGES), and the result with the most ink is used. ?debug logs each stage.
 //
 // Cost: ~50-90 ms in Node (wasm) at WORK_SIZE (black ink mode adds ~4 ms; its fallback redoes steps 4-7 only for
 // coloured drawings that pass the first check); expect ~100-250 ms on a phone.
@@ -166,6 +171,35 @@ const BORDER_BAND = 0.14;
 const BORDER_TOUCH = 0.025;
 /** Handwriting: a lone word is removed only if it is at least this far from every other contour. */
 const WORD_ISOLATION = 0.08;
+/** Faint retry: background close kernel (narrower: follows a shadow's corners closely, still wider than a pencil line). */
+const FAINT_BG_KERNEL = 0.035;
+/** Faint retry runs when the kept contours hold less ink than this share of the photo (none, or a speck or two). */
+const FEW_INK = 0.0015;
+/** Shadow test: ring of this width (ratio) just outside a contour's ink... */
+const SHADOW_RING_W = 0.006;
+/** ...a contour whose ring is this dark (share of ring pixels about as dark as the ink next to them) is the corner or
+ * edge of a big dark area (a phone / hand shadow, an object), not a line: a drawn line has paper on both sides. */
+const SHADOW_RING = 0.3;
+/** ...counting only ring pixels at least this much darker than the paper (0..1): a shadow, not paper grain. */
+const SHADOW_DEPTH = 0.08;
+
+/**
+ * One detection pass. The first one is the normal pipeline; if it keeps (next to) no ink - faint pencil on bright
+ * paper, which can be only ~6 % darker than the paper - the photo is redone with any dark ink and lower thresholds,
+ * on a darkness taken against a narrower background (a wide shadow cancels out better).
+ * weak / strong: [times the paper noise, min, max] (0..1 darkness).
+ */
+interface Stage {
+  name: string;
+  bgKernel: number;
+  weak: readonly [number, number, number];
+  strong: readonly [number, number, number];
+}
+const STAGES: Stage[] = [
+  { name: 'normal', bgKernel: BG_KERNEL, weak: [WEAK_OVER_NOISE, WEAK_MIN, WEAK_MAX], strong: [STRONG_OVER_WEAK, STRONG_MIN, STRONG_MAX] },
+  { name: 'faint', bgKernel: FAINT_BG_KERNEL, weak: [3, 0.04, 0.08], strong: [1.6, 0.07, 0.14] },
+  { name: 'fainter', bgKernel: FAINT_BG_KERNEL, weak: [2.5, 0.025, 0.05], strong: [1.5, 0.04, 0.08] },
+];
 
 let cvReady: Promise<any> | null = null;
 
@@ -239,12 +273,29 @@ function inkModeFromUrl(): InkMode {
   return v === 'any' || v === 'black' ? v : 'auto';
 }
 
-/** Core pipeline on an RGBA Mat. Separate from extractContours so it can be tested without a DOM. */
-export function findInk(
-  cv: any,
-  src: any,
-  mode: InkMode = inkModeFromUrl(),
-): { ink: Uint8Array; contours: Contour[]; inkMode: 'black' | 'any' } {
+type InkResult = { ink: Uint8Array; contours: Contour[]; inkMode: 'black' | 'any' };
+
+/**
+ * Core pipeline on an RGBA Mat. Separate from extractContours so it can be tested without a DOM.
+ * Normal pass first; if it keeps (next to) no ink, faint retries with lower thresholds (see STAGES). The result with
+ * the most ink wins. ?ink=black (testing) never retries.
+ */
+export function findInk(cv: any, src: any, mode: InkMode = inkModeFromUrl()): InkResult {
+  const inkOf = (r: InkResult) => r.contours.reduce((s, c) => s + c.inkPixels, 0);
+  const few = src.cols * src.rows * FEW_INK;
+  let best = findInkAt(cv, src, mode, STAGES[0]);
+  debugLog(`stage ${STAGES[0].name}: ${best.contours.length} contours, ${inkOf(best)} ink px${inkOf(best) < few ? ` (under ${Math.round(few)}: retry fainter)` : ''}`);
+  if (mode === 'black') return best;
+  for (let s = 1; s < STAGES.length && inkOf(best) < few; s++) {
+    const r = findInkAt(cv, src, mode, STAGES[s]);
+    debugLog(`stage ${STAGES[s].name}: ${r.contours.length} contours, ${inkOf(r)} ink px${inkOf(r) > inkOf(best) ? ' -> used' : ''}`);
+    if (inkOf(r) > inkOf(best)) best = r;
+  }
+  if (!best.contours.length) debugLog('no lines at any stage: the safety net drops the most line-like marks (or the middle)');
+  return best;
+}
+
+function findInkAt(cv: any, src: any, mode: InkMode, stage: Stage): InkResult {
   const W = src.cols;
   const H = src.rows;
   const N = W * H;
@@ -269,16 +320,18 @@ export function findInk(
     }
 
     // 2. Darkness relative to the local paper brightness (shadows, vignetting and lamp gradients cancel out).
-    const G = darkness(cv, track, gMat, minSide);
-    const V = darkness(cv, track, vMat, minSide);
+    // (A faint retry measures darkness against a narrower background; the paper is always found on the normal one.)
+    const G0 = darkness(cv, track, gMat, minSide);
+    const G = stage.bgKernel === BG_KERNEL ? G0 : darkness(cv, track, gMat, minSide, stage.bgKernel);
+    const V = darkness(cv, track, vMat, minSide, stage.bgKernel);
     const dark = G.dark;
 
     // 3. Paper region.
     const colorBg = backgroundColor(cv, track, src, minSide);
-    const paper = findPaper(cv, track, G.bgSmall, colorBg, W, H);
+    const paper = findPaper(cv, track, G0.bgSmall, colorBg, W, H);
 
     // 4. Hysteresis threshold inside the paper. Thresholds follow the paper's own grain / JPEG noise.
-    const { weakT, strongT } = thresholds(dark, paper.mask);
+    const { weakT, strongT } = thresholds(dark, paper.mask, stage);
     const speck = Math.max(4, SPECK_AREA * minSide * minSide);
     // Light coloured printing (blue rules, red margin) is dark in luma but nearly white in max(R,G,B); pen ink of
     // any colour keeps a good share of its darkness in both. Mixing with paper scales both, so the ratio holds.
@@ -340,7 +393,7 @@ export function findInk(
       if (coloured > kept * COLOURED_OVER_BLACK || kept < paperN * BLACK_MIN_SHARE) result = null;
     }
     if (mode === 'auto') debugLog(`ink mode: ${result ? 'black' : 'fallback: any dark ink'}`);
-    else debugLog(`ink mode: ${mode} (forced by ?ink=)`);
+    else debugLog(`ink mode: ${mode}${stage === STAGES[0] ? ' (forced by ?ink=)' : ` (${stage.name} retry)`}`);
     if (!result) result = pass(false, false)!;
     return result;
 
@@ -443,7 +496,50 @@ export function findInk(
       // Per-candidate ink stats. Mean max-channel darkness tells coloured printing apart from the drawing.
       const vdMat = track(new cv.Mat(H, W, cv.CV_8UC1));
       vdMat.data.set(V.dark);
-      interface Info { cand: Cand; inkPixels: number; meanV: number; drop: boolean; blackness: number; weight: number }
+      // Shadow test (see SHADOW_RING): the darkest ink luma within the ring width of each pixel.
+      const ringR = Math.max(2, Math.round(minSide * SHADOW_RING_W));
+      const ringKernel = track(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2 * ringR + 1, 2 * ringR + 1)));
+      const inkMinMat = track(new cv.Mat(H, W, cv.CV_8UC1));
+      {
+        const im = inkMinMat.data as Uint8Array, cl = closed.data as Uint8Array;
+        for (let i = 0; i < N; i++) im[i] = cl[i] ? g8[i] : 255;
+        cv.erode(inkMinMat, inkMinMat, ringKernel);
+      }
+      // A ring pixel only counts if it is also clearly darker than the paper as a whole (paper = 90th percentile luma
+      // on the sheet): the grain around a faint pencil rim is not a shadow.
+      let paperL = 255;
+      {
+        const hist = new Uint32Array(256);
+        let n = 0;
+        for (let i = 0; i < N; i += 3) if (paper.mask[i]) { hist[g8[i]]++; n++; }
+        for (let t = 255, acc = 0; t >= 0; t--) if ((acc += hist[t]) >= n * 0.1) { paperL = t; break; }
+      }
+      const shadowL = paperL * (1 - SHADOW_DEPTH);
+      /** Share of the ring just outside this contour's ink that is about as dark as the ink next to it. */
+      const shadowShare = (strokeOnly: any, r: Cand['rect']): number => {
+        const x0 = Math.max(0, r.x - ringR - 1), y0 = Math.max(0, r.y - ringR - 1);
+        const x1 = Math.min(W, r.x + r.width + ringR + 1), y1 = Math.min(H, r.y + r.height + ringR + 1);
+        const rect = new cv.Rect(x0, y0, x1 - x0, y1 - y0);
+        const sub = strokeOnly.roi(rect);
+        const dil = new cv.Mat();
+        cv.dilate(sub, dil, ringKernel);
+        const dd = dil.data as Uint8Array, cl = closed.data as Uint8Array, im = inkMinMat.data as Uint8Array, bg = G.bg;
+        const rw = x1 - x0;
+        let ring = 0, darkRing = 0;
+        for (let y = y0; y < y1; y++) {
+          for (let x = x0; x < x1; x++) {
+            const i = y * W + x;
+            if (!dd[(y - y0) * rw + (x - x0)] || cl[i]) continue;
+            ring++;
+            const ink = im[i];
+            if (g8[i] <= shadowL && g8[i] <= ink + Math.max(3, 0.5 * (bg[i] - ink))) darkRing++;
+          }
+        }
+        sub.delete();
+        dil.delete();
+        return ring ? darkRing / ring : 0;
+      };
+      interface Info { cand: Cand; inkPixels: number; meanV: number; drop: boolean; blackness: number; weight: number; shadow: number }
       const infos: Info[] = [];
       for (const cand of cands) {
         const c = contoursVec.get(cand.idx);
@@ -455,6 +551,7 @@ export function findInk(
         cv.bitwise_and(filled, closed, strokeOnly);
         const inkPixels = cv.countNonZero(strokeOnly);
         const meanV = cv.mean(vdMat, strokeOnly)[0];
+        const shadow = shadowShare(strokeOnly, cand.rect);
         let blackness = 1, weight = 0;
         if (black) {
           // Black mode: least / most darkened channel, summed over the contour's dark core (or all its real ink if the
@@ -482,8 +579,18 @@ export function findInk(
         const solid = inkPixels > 0.85 * Math.max(1, area);
         const compact = Math.max(rect.width, rect.height) < minSide * 0.07 && rect.width < rect.height * 1.6 && rect.height < rect.width * 1.6;
         const hole = solid && compact && paper.distToEdge(rect.x + rect.width / 2, rect.y + rect.height / 2) < minSide * BORDER_BAND * 0.6;
-        infos.push({ cand, inkPixels, meanV, drop: hole, blackness, weight });
+        infos.push({ cand, inkPixels, meanV, drop: hole, blackness, weight, shadow });
       }
+      // Corners / edges of a shadow or other big dark area: never ink, even if nothing else is left (the faint retries
+      // and the safety net come next).
+      for (let k = infos.length - 1; k >= 0; k--) {
+        const f = infos[k];
+        if (f.shadow <= SHADOW_RING) continue;
+        const r = f.cand.rect;
+        debugLog(`contour [${r.x},${r.y} ${r.width}x${r.height}] ring ${(f.shadow * 100).toFixed(0)}% as dark as its ink -> shadow, dropped`);
+        infos.splice(k, 1);
+      }
+      if (strict && !infos.length) return null;
       if (black && infos.length) {
         // Stains, fold shadows, paper-edge lines, desk: grey-ish but less neutral than ink. The bar follows the drawing
         // itself (the contour with the most ink): black marker ~0.97 keeps it at BLACK_CONTOUR, a pencil drawing on
@@ -561,13 +668,16 @@ type Track = <T>(m: T) => T;
 // ---------------------------------------------------------------------------------------------------------------
 // 2. Background / darkness
 
-/** Background = close (max then min) on a 1/BG_DOWNSCALE copy: removes thin ink, keeps shadows and light falloff. */
-function darkness(cv: any, track: Track, ch: any, minSide: number): { dark: Uint8Array; bgSmall: any } {
+/**
+ * Background = close (max then min) on a 1/BG_DOWNSCALE copy: removes thin ink, keeps shadows and light falloff.
+ * Returns the darkness, the small background and the full-size background (valid until the Mats are freed).
+ */
+function darkness(cv: any, track: Track, ch: any, minSide: number, kernel0 = BG_KERNEL): { dark: Uint8Array; bgSmall: any; bg: Uint8Array } {
   const W = ch.cols;
   const H = ch.rows;
   const small = track(new cv.Mat());
   cv.resize(ch, small, new cv.Size(Math.max(16, Math.round(W / BG_DOWNSCALE)), Math.max(16, Math.round(H / BG_DOWNSCALE))), 0, 0, cv.INTER_AREA);
-  const k = odd((minSide * BG_KERNEL) / BG_DOWNSCALE);
+  const k = odd((minSide * kernel0) / BG_DOWNSCALE);
   const kernel = track(cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(k, k)));
   const bgSmall = track(new cv.Mat());
   cv.morphologyEx(small, bgSmall, cv.MORPH_CLOSE, kernel);
@@ -581,7 +691,7 @@ function darkness(cv: any, track: Track, ch: any, minSide: number): { dark: Uint
     const d = 1 - v[i] / b;
     dark[i] = d <= 0 ? 0 : d >= 1 ? 255 : (d * 255) | 0;
   }
-  return { dark, bgSmall };
+  return { dark, bgSmall, bg };
 }
 
 /**
@@ -653,7 +763,7 @@ function debugLog(msg: string) {
 }
 
 /** Weak / strong darkness thresholds from the paper noise (high percentile of darkness on the paper). */
-function thresholds(dark: Uint8Array, paperMask: Uint8Array): { weakT: number; strongT: number } {
+function thresholds(dark: Uint8Array, paperMask: Uint8Array, stage: Stage): { weakT: number; strongT: number } {
   const hist = new Uint32Array(256);
   let n = 0;
   for (let i = 0; i < dark.length; i += 3) if (paperMask[i]) { hist[dark[i]]++; n++; }
@@ -664,8 +774,11 @@ function thresholds(dark: Uint8Array, paperMask: Uint8Array): { weakT: number; s
     if (acc >= n * NOISE_PERCENTILE) { noise = t; break; }
   }
   const clamp = (x: number, lo: number, hi: number) => Math.round(Math.min(hi * 255, Math.max(lo * 255, x)));
-  const weakT = clamp(noise * WEAK_OVER_NOISE, WEAK_MIN, WEAK_MAX);
-  const strongT = clamp(weakT * STRONG_OVER_WEAK, STRONG_MIN, STRONG_MAX);
+  const [wk, wMin, wMax] = stage.weak;
+  const [sk, sMin, sMax] = stage.strong;
+  const weakT = clamp(noise * wk, wMin, wMax);
+  const strongT = clamp(weakT * sk, sMin, sMax);
+  debugLog(`stage ${stage.name}: paper noise ${(noise / 255).toFixed(3)}, weak ${(weakT / 255).toFixed(3)}, strong ${(strongT / 255).toFixed(3)}`);
   return { weakT, strongT };
 }
 
