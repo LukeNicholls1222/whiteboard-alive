@@ -20,6 +20,7 @@ Built at OCCHacks 2026 (Education track).
    - The fixed parts of your drawing stay faintly in the background. The hand-drawn moving parts fade out after a few seconds.
    - Tap **Show what AI saw** to bring the colour overlay back at any time.
 5. Change the physics while it runs:
+   - **Value pills**: right under the moving picture, each value sits in a small pill (for example Length 0.45 m, Mass 1 kg). Tap one to get − / +, a slider and a number box, and change it while you watch it move, with no scrolling. The pills stay in sync with Your numbers.
    - **Your numbers**: type in the real values. String length, mass, spring constant, ramp angle, launch speed, ground length, the left and right pulley masses, each ball's mass and speed in a collision, and each seesaw weight's mass and distance (whichever the diagram uses).
    - **Sliders**: Gravity (every diagram), Friction (incline), Launch speed (projectile), Bounciness e from 0 to 1 (collision).
    - **Gravity presets**: Earth, Moon and Jupiter. Moon mode makes a pendulum swing slowly enough to see the longer period.
@@ -90,7 +91,7 @@ All code in this repository was written during OCCHacks 2026 (Oct 10–11, 2026)
 - Seven diagram scenes (the incline handles both a block and a rolling ball) plus the always-moving fallback
 - The transformation from hand drawing to clean figure (colour overlay, tracing light, snap-in shapes)
 - Black-ink detection and clean-up for messy phone photos
-- Your numbers, gravity presets (Moon mode), bounciness, air resistance, velocity arrows and voice control
+- Value pills under the picture, Your numbers, gravity presets (Moon mode), bounciness, air resistance, velocity arrows and voice control
 - Live graph card with theory next to measurement: period, rolling acceleration, momentum, torque balance
 - The shape-based guess for when the AI is unavailable
 - 42 test drawings in `samples/generated/`, made with an image model

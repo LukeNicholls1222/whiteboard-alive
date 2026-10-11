@@ -33,6 +33,7 @@ Simulation apps exist, but they make you rebuild the problem with their sliders 
 
 While it runs you can change the physics:
 
+- **Value pills**: right under the moving picture, each value is shown as a small pill with its unit (for example Length 0.45 m, Mass 1 kg). Tap one to get − / +, a slider and a number box, so you can change it while you watch it move, with no scrolling. The pills stay in sync with Your numbers.
 - **Your numbers**: type in real values. String length, mass, spring constant, ramp angle, launch speed, ground length, and the left and right masses on a pulley. Sizes come from these numbers, not from the paper.
 - **Sliders and presets**: gravity (every diagram), friction (incline), launch speed (projectile), Bounciness e from 0 to 1 (collision: 1 is elastic, 0 sticks), and Earth / Moon / Jupiter. In Moon mode a pendulum visibly slows down.
 - **Voice**: tap Talk and say "make the string 1 meter" or "make gravity weaker". Voice can change every setting.
