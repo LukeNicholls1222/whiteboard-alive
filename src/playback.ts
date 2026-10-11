@@ -57,6 +57,11 @@ export class StepClock {
     this.acc = Math.max(0, this.acc - n);
     return n;
   }
+
+  /** How far the clock is toward the next step, 0..1 (sim.ts draws the bodies that far between steps). */
+  get frac(): number {
+    return Math.min(1, Math.max(0, this.acc));
+  }
 }
 
 // ---- Waits on screen ------------------------------------------------------------------------------------------

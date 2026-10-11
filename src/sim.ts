@@ -10,6 +10,7 @@ import { playbackSpeed, StepClock, stepRate } from './playback';
 import type { BuiltScene, SimParams, Sprite, ViewRect } from './types';
 import { BASE_SCALE, STEP_MS, scaleOf } from './units';
 import { pictureHold } from './hold';
+import { PoseLerp, type Turner } from './smooth';
 
 // The step constants live in units.ts (a leaf module); re-exported here for the scene builders.
 export { STEP_ACCEL, STEP_MS } from './units';
@@ -78,6 +79,8 @@ export class Simulation {
   frameListeners: Array<() => void> = [];
   /** Spreads the playback speed's steps over the frames (playback.ts). */
   private clock = new StepClock();
+  /** Draws the moving bodies between the last two steps by the clock's fraction (smooth.ts). */
+  private lerp = new PoseLerp();
   /** Called after every setParams, whoever made the change (slider, chip, voice, Moon switch). */
   paramListeners: Array<(p: Partial<SimParams>) => void> = [];
   /** Called every frame after the sprites, in world coordinates. `pxScale` = canvas px per world px. */
@@ -121,6 +124,7 @@ export class Simulation {
         const plugin = b.plugin as { inclineMu?: number } | undefined;
         if (plugin && plugin.inclineMu !== undefined) plugin.inclineMu = p.friction;
       }
+    this.lerp.reset();
     for (const fn of this.paramListeners) fn(p);
   }
 
@@ -161,18 +165,32 @@ export class Simulation {
       }
       // The playback speed decides how many steps this frame runs; each step is the same physical time as ever.
       const steps = this.clock.next(stepRate(playbackSpeed(), scaleOf(this.scene).timeFactor));
+      const bodies = steps > 0 ? Matter.Composite.allBodies(this.engine.world) : [];
       for (let i = 0; i < steps; i++) {
+        if (i === steps - 1) this.lerp.beforeStep(bodies, this.turners());
         this.scene.step?.(this.engine);
         Matter.Engine.update(this.engine, STEP_MS);
         this.scene.onStep?.(this.engine);
         this.motion.update();
         for (const fn of this.stepListeners) fn(this.engine);
       }
+      if (steps > 0) this.lerp.afterStep(bodies, this.turners());
       for (const fn of this.frameListeners) fn();
-      this.draw();
+      // Only the picture is in between: the bodies are back at their step pose before anything else reads them.
+      this.lerp.apply(Matter.Composite.allBodies(this.engine.world), this.turners(), this.clock.frac);
+      try {
+        this.draw();
+      } finally {
+        this.lerp.restore();
+      }
       this.raf = requestAnimationFrame(loop);
     };
     this.raf = requestAnimationFrame(loop);
+  }
+
+  /** Clean parts turned by an angle function rather than a body (a pulley wheel). */
+  private turners(): Turner[] {
+    return (this.scene.clean ?? []).filter((p) => p.kind === 'wheel') as unknown as Turner[];
   }
 
   stop() {
