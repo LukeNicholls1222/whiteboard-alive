@@ -67,7 +67,7 @@ A single progress line shows each step so the screen never looks frozen. If it c
 
 **Works offline too**
 
-- "Or try one of ours": six example drawings with saved AI results. Tapping one runs the full pipeline with zero network calls to the AI.
+- "Or try one of ours": eight example drawings, one for each kind (pendulum, spring, ramp, launch, pulley, rolling ball, collision and seesaw), with saved AI results. Tapping one runs the full pipeline with zero network calls to the AI.
 
 ## How we built it
 
