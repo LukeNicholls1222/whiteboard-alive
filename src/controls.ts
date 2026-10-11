@@ -3,8 +3,8 @@
 
 import { hasApiKey, voiceToParams, type VoiceParamSpec } from './ai';
 import { airSubtitle } from './air';
-import type { Entries, EntryField, EntryKey } from './entries';
-import { QuickNumbers } from './quick';
+import { enterPair, partnerOf, type Entries, type EntryField, type EntryKey } from './entries';
+import { QuickNumbers, type QuickField, type QuickKey } from './quick';
 import type { DiagramType, SimParams } from './types';
 import {
   PLANETS,
@@ -111,6 +111,9 @@ const SAY_EXAMPLE: Record<EntryKey, string> = {
   leftDistance: 'move the left weight further',
   rightDistance: 'right distance 30 centimeters',
 };
+
+/** Sliders that also show as a pill under the picture (quick.ts), next to the "Your numbers" boxes. */
+const PILL_SLIDERS = new Set<string>(['friction']);
 
 /** Pause after the last keystroke before an entered number is applied. */
 const ENTRY_MS = 900;
@@ -231,6 +234,7 @@ export function createControls(root: HTMLElement, host: ControlsHost, quickCard?
     if (!Object.keys(changed).length) return changed;
     syncUI();
     mirrorSpeed(changed);
+    if (Object.keys(changed).some((k) => PILL_SLIDERS.has(k))) syncQuick();
     const live = Object.fromEntries(Object.entries(changed).filter(([k]) => !specs.find((s) => s.key === k)?.rebuild));
     if (Object.keys(live).length) host.apply(live as Partial<SimParams>, false);
     if (rebuild) {
@@ -254,7 +258,10 @@ export function createControls(root: HTMLElement, host: ControlsHost, quickCard?
       values[s.key] = v;
       any = true;
     }
-    if (any) syncUI();
+    if (any) {
+      syncUI();
+      syncQuick();
+    }
   }
 
   /** The launch speed box follows its slider (and the slider follows the box, through the rebuilt scene). */
@@ -365,22 +372,49 @@ export function createControls(root: HTMLElement, host: ControlsHost, quickCard?
     // A ramp stretched that steep would leave the picture: take the steepest that fits, and say so.
     if (c.lowered) input.value = num(c.v);
     shown[key] = input.value;
-    if (c.lowered) setError(key, `${num(c.v)}° is the most that fits this drawing`);
+    if (c.lowered) setError(key, c.note);
     else clearError(key);
     if (entries[key] === c.v) return;
-    entries[key] = c.v;
+    put(key, c.v);
     haptic();
     host.enter({ ...entries }, false);
   }
 
-  const rangeText = (f: EntryField) => `${num(f.min)} to ${num(f.fitMax ?? f.max)}${f.unit === '°' ? '°' : ` ${f.unit}`}`;
+  /** What a box stands for now: its entered value, else the mirrored one, else the scene's own (its placeholder). */
+  function current(key: EntryKey): number | undefined {
+    const f = fields.find((x) => x.key === key);
+    return f ? entries[key] ?? f.mirror ?? parseFloat(f.placeholder) : undefined;
+  }
+
+  /**
+   * Enter one value. A pulley / seesaw side whose other side is still empty enters that one too, at the value it shows
+   * now (entries.ts enterPair): the scene would otherwise rework it from the drawn ratio and it would change by itself.
+   */
+  function put(key: EntryKey, v: number) {
+    const partner = partnerOf(key);
+    const had = partner !== undefined && entries[partner] !== undefined;
+    entries = enterPair(entries, key, v, current);
+    const pv = partner !== undefined ? entries[partner] : undefined;
+    if (!partner || had || pv === undefined) return;
+    const input = box(partner);
+    if (!input || document.activeElement === input) return;
+    clearTimeout(entryTimers[partner]);
+    input.value = num(pv);
+    shown[partner] = input.value;
+    clearError(partner);
+  }
+
+  const withUnit = (f: EntryField, v: number) => `${num(v)}${f.unit === '°' ? '°' : ` ${f.unit}`}`;
+  const rangeText = (f: EntryField) => `${num(f.fitMin ?? f.min)} to ${withUnit(f, f.fitMax ?? f.max)}`;
 
   /** The range rule for a number box, shared by typing and voice: refused (with the box's message) or accepted. */
-  function checkEntry(f: EntryField, v: number): { ok: false; msg: string } | { ok: true; v: number; lowered: boolean } {
+  function checkEntry(f: EntryField, v: number): { ok: false; msg: string } | { ok: true; v: number; lowered: boolean; note: string } {
     if (!Number.isFinite(v)) return { ok: false, msg: `Type a number, ${rangeText(f)}` };
     if (v < f.min || v > f.max) return { ok: false, msg: `Use ${rangeText(f)}` };
-    if (f.fitMax !== undefined && v > f.fitMax) return { ok: true, v: f.fitMax, lowered: true };
-    return { ok: true, v, lowered: false };
+    // Out of what this drawing can show (a ramp that steep, a seesaw weight off the plank): the nearest that fits.
+    if (f.fitMax !== undefined && v > f.fitMax) return { ok: true, v: f.fitMax, lowered: true, note: `${withUnit(f, f.fitMax)} is the most that fits this drawing` };
+    if (f.fitMin !== undefined && v < f.fitMin) return { ok: true, v: f.fitMin, lowered: true, note: `${withUnit(f, f.fitMin)} is the least that fits this drawing` };
+    return { ok: true, v, lowered: false, note: '' };
   }
 
   /** Empty every box (without rebuilding: the caller sends host.enter). */
@@ -399,7 +433,17 @@ export function createControls(root: HTMLElement, host: ControlsHost, quickCard?
    * A value from the pills under the picture: into its box as if typed (same range rule, same lowering to what
    * fits, same rebuild). Returns the box's message when refused.
    */
-  function enterValue(key: EntryKey, v: number): string | null {
+  function enterValue(pill: QuickKey, v: number): string | null {
+    // A slider shown as a pill (the ramp's Friction): exactly as if its slider moved (live, then the slide replays).
+    if (PILL_SLIDERS.has(pill)) {
+      const s = specs.find((x) => x.key === pill);
+      if (!s) return null;
+      if (!(v >= s.min && v <= s.max)) return `Use ${num(s.min)} to ${num(s.max)}`;
+      set({ [pill]: v }, 'slider');
+      syncQuick();
+      return null;
+    }
+    const key = pill as EntryKey;
     const f = fields.find((x) => x.key === key);
     if (!f) return null;
     const c = checkEntry(f, v);
@@ -413,24 +457,38 @@ export function createControls(root: HTMLElement, host: ControlsHost, quickCard?
       input.value = num(c.v);
       shown[key] = input.value;
     }
-    if (c.lowered) setError(key, `${num(c.v)}° is the most that fits this drawing`);
+    if (c.lowered) setError(key, c.note);
     else clearError(key);
     if (entries[key] === c.v) {
       syncQuick();
       return null;
     }
-    entries[key] = c.v;
+    put(key, c.v);
     host.enter({ ...entries }, false);
     return null;
   }
 
   const quick = quickCard ? new QuickNumbers(quickCard, { enter: enterValue }) : null;
-  /** The pills show what the boxes hold: the entered value, else the mirrored one, else the scene's own. */
+  /**
+   * The pills show what the boxes hold: the entered value, else the mirrored one, else the scene's own. Then the
+   * sliders that also get a pill (the ramp's Friction, after the boxes), with the slider's value.
+   */
   function syncQuick(fresh = false) {
     if (!quick) return;
-    const values: Partial<Record<EntryKey, number>> = {};
-    for (const f of fields) values[f.key] = entries[f.key] ?? f.mirror ?? parseFloat(f.placeholder);
-    quick.render(fields, values, new Set(Object.keys(entries) as EntryKey[]), fresh);
+    const pillValues: Partial<Record<QuickKey, number>> = {};
+    const pills: QuickField[] = fields.filter((f) => !f.noPill);
+    for (const f of pills) pillValues[f.key] = current(f.key as EntryKey);
+    const changedPills = new Set<QuickKey>(Object.keys(entries) as EntryKey[]);
+    if (diagramShown === 'incline')
+      for (const s of specs) {
+        if (!PILL_SLIDERS.has(s.key)) continue;
+        const key = s.key as QuickKey;
+        pills.push({ key, label: s.label, unit: s.unit ?? '', quantity: 'friction', min: s.min, max: s.max, step: s.step, digits: s.digits });
+        pillValues[key] = values[s.key];
+        // Blue like an entered box once it is not the default any more.
+        if (values[s.key] !== s.value) changedPills.add(key);
+      }
+    quick.render(pills, pillValues, changedPills, fresh);
   }
 
   numReset.addEventListener('click', () => {
@@ -476,7 +534,7 @@ export function createControls(root: HTMLElement, host: ControlsHost, quickCard?
           key: f.key,
           // An empty box: the value the scene assumed / measured, from its placeholder ("0.43 assumed", "31° drawn").
           value: entries[f.key] ?? f.mirror ?? parseFloat(f.placeholder),
-          min: f.min,
+          min: f.fitMin ?? f.min,
           max: f.fitMax ?? f.max,
         })),
       ],
@@ -490,7 +548,7 @@ export function createControls(root: HTMLElement, host: ControlsHost, quickCard?
     const hasBox = fields.some((f) => f.key === 'launchSpeed');
     const out: VoiceParamSpec[] = [
       ...specs.filter((s) => !(s.key === 'speed' && hasBox)).map(({ key, label, min, max, unit }) => ({ key, label, min, max, unit })),
-      ...fields.map((f) => ({ key: f.key, label: f.label, min: f.min, max: f.fitMax ?? f.max, unit: f.unit })),
+      ...fields.map((f) => ({ key: f.key, label: f.label, min: f.fitMin ?? f.min, max: f.fitMax ?? f.max, unit: f.unit })),
       { key: 'arrows', label: 'Velocity arrows switch', min: 0, max: 1 },
     ];
     if (ctx.air) out.push({ key: 'air', label: 'Air resistance switch', min: 0, max: 1 });
@@ -539,12 +597,12 @@ export function createControls(root: HTMLElement, host: ControlsHost, quickCard?
       input.value = num(c.v);
       shown[f.key] = input.value;
       if (c.lowered) {
-        setError(f.key, `${num(c.v)}° is the most that fits this drawing`);
-        problems.push(`${num(c.v)}° is the most that fits this drawing.`);
+        setError(f.key, c.note);
+        problems.push(`${c.note}.`);
       } else clearError(f.key);
       changes.push(`${f.label} ${fmtEntry(f, c.v)}`);
       if (entries[f.key] !== c.v) {
-        entries[f.key] = c.v;
+        put(f.key, c.v);
         rebuild = true;
       }
     }

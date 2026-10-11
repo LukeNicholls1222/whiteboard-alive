@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ENTRY_SPECS, type EntryKey } from '../src/entries.ts';
+import { ENTRY_SPECS, enterPair, fieldsFor, type EntryKey } from '../src/entries.ts';
 import { niceSliderValue, nudge, shortLabel, showValue, sliderScale, stepAt } from '../src/quick.ts';
 
 const spec = (key: EntryKey, extra = {}) => ({ ...ENTRY_SPECS[key], placeholder: '', ...extra });
@@ -63,4 +63,57 @@ test('slider values are rounded like the buttons', () => {
   assert.equal(niceSliderValue(spec('leftSpeed'), 0.03), 0);
   assert.equal(showValue(spec('rampAngle'), 31), '31°');
   assert.equal(showValue(spec('bobMass'), 1.234), '1.23 kg');
+});
+
+test('a slider shown as a pill (the ramp\'s Friction) steps, slides and reads like its slider', () => {
+  const mu = { key: 'friction' as const, label: 'Friction', unit: '', quantity: 'friction' as const, min: 0, max: 1.5, step: 0.05, digits: 2 };
+  assert.equal(shortLabel(mu), 'Friction');
+  assert.equal(showValue(mu, 0.3), '0.30');
+  assert.equal(nudge(mu, 0.3, 1), 0.35);
+  assert.equal(nudge(mu, 0.1, -1), 0.05);
+  assert.equal(nudge(mu, 0.05, -1), 0);
+  assert.equal(nudge(mu, 0, -1), 0);
+  assert.equal(nudge(mu, 1.5, 1), 1.5);
+  // Linear, like the slider under the controls: 0.75 is half way.
+  const s = sliderScale(mu);
+  assert.equal(s.toPos(0.75), 0.5);
+  assert.equal(s.toPos(0), 0);
+  assert.equal(niceSliderValue(mu, s.fromPos(0.2137)), 0.3);
+});
+
+test('a seesaw distance steps and slides only as far as the weight fits on the plank', () => {
+  const d = spec('leftDistance', { fitMin: 0.04, fitMax: 0.318 });
+  assert.equal(nudge(d, 0.3, 1), 0.318);
+  assert.equal(nudge(d, 0.318, 1), 0.318);
+  assert.equal(nudge(d, 0.05, -1), 0.045);
+  assert.equal(nudge(d, 0.045, -1), 0.04);
+  assert.equal(sliderScale(d).fromPos(0), 0.04);
+  assert.equal(sliderScale(d).fromPos(1), 0.318);
+});
+
+test('changing one side of a pulley / seesaw enters the other at the value it shows (it never changes by itself)', () => {
+  const shown = (k: EntryKey) => ({ leftMass: 1, rightMass: 1.37, leftDistance: 0.3, rightDistance: 0.2 } as Partial<Record<EntryKey, number>>)[k];
+  assert.deepEqual(enterPair({}, 'leftMass', 2, shown), { rightMass: 1.37, leftMass: 2 });
+  assert.deepEqual(enterPair({ rightMass: 1.37, leftMass: 2 }, 'leftMass', 5, shown), { rightMass: 1.37, leftMass: 5 });
+  assert.deepEqual(enterPair({ rightMass: 1.37, leftMass: 5 }, 'rightMass', 3, shown), { leftMass: 5, rightMass: 3 });
+  // The distance left alone goes first: it sets the scale (stays where drawn), the changed weight slides.
+  assert.deepEqual(Object.keys(enterPair({ leftMass: 2 }, 'leftDistance', 0.6, shown)), ['rightDistance', 'leftMass', 'leftDistance']);
+  const both = enterPair({ rightDistance: 0.2, leftDistance: 0.6 }, 'rightDistance', 0.1, shown);
+  assert.deepEqual(both, { leftDistance: 0.6, rightDistance: 0.1 });
+  assert.deepEqual(Object.keys(both), ['leftDistance', 'rightDistance']);
+  // No other side on screen (one weight): nothing added. Collision balls are read on their own.
+  assert.deepEqual(enterPair({}, 'leftMass', 2, () => undefined), { leftMass: 2 });
+  assert.deepEqual(enterPair({}, 'leftBallMass', 2, shown), { leftBallMass: 2 });
+});
+
+test('the launch\'s Ground is a box under the controls, not a pill under the picture', () => {
+  const scene = {
+    label: 'Projectile',
+    parts: { ball: { kg: 1 } },
+    measures: { ground: 500 },
+    physics: { launchSpeed: { fit: 3, value: 3 }, launch: { drawnAngleDeg: 40, heightDrawnM: 0 } },
+  } as any;
+  const fields = fieldsFor(scene, { params: {} } as any);
+  assert.deepEqual(fields.map((f) => f.key), ['launchSpeed', 'launchAngle', 'launchHeight', 'projectileMass', 'groundLength']);
+  assert.deepEqual(fields.filter((f) => !f.noPill).map(shortLabel), ['Speed', 'Angle', 'Height', 'Mass']);
 });

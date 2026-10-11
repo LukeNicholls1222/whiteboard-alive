@@ -479,25 +479,23 @@ export const buildPulley: SceneBuilder = (input) => {
   if (mR > mL * MAX_MASS_RATIO) mR = mL * MAX_MASS_RATIO;
 
   // Entered kg replace the drawn ratio: both entered = as entered; one entered = the other keeps the drawn
-  // ratio to it; none = the lighter weight is 1 kg. (The motion only depends on the ratio.)
+  // ratio to it; none = the lighter weight is 1 kg. (The motion only depends on the ratio.) The pills and boxes enter
+  // both as soon as one is changed (entries.ts enterPair), so the side left alone keeps the value it shows.
   const noteL = noteFor(input.analysis, 'mass', ['left weight'])?.value;
   const noteR = noteFor(input.analysis, 'mass', ['right weight'])?.value;
   let fromL: ValueSource = 'assumed';
   let fromR: ValueSource = 'assumed';
+  /**
+   * Both entered and equal: no acceleration (a = 0), and the values stay as entered (never tipped: a tipped value
+   * would change a number the user did not touch). So that it still moves, the weights start with a push and drift
+   * at a steady speed, the bigger drawing going down: equal masses keep the speed they have.
+   */
+  let even = false;
   if (noteL !== undefined && noteR !== undefined) {
     mL = noteL;
     mR = noteR;
     fromL = fromR = 'input';
-    // Exactly equal weights would hang still forever: tip the bigger drawing a little and say so.
-    if (Math.abs(mL - mR) / Math.max(mL, mR) < 1e-3) {
-      if (left.pixels > right.pixels) {
-        mL = mR * TIE_BREAK_RATIO;
-        fromL = 'adjusted';
-      } else {
-        mR = mL * TIE_BREAK_RATIO;
-        fromR = 'adjusted';
-      }
-    }
+    even = Math.abs(mL - mR) / Math.max(mL, mR) < 1e-3;
   } else if (noteL !== undefined) {
     mR = noteL * (mR / mL);
     mL = noteL;
@@ -571,17 +569,22 @@ export const buildPulley: SceneBuilder = (input) => {
     if (t >= MIN_TRAVEL) return t;
     return Math.max(Math.min(roomUp, roomDown + fall.weightBox.h * 0.5), MIN_TRAVEL);
   };
-  const maxDown = mL > mR ? travel(left, right) : travel(right, left);
+  const leftFalls = even && mL === mR ? left.pixels > right.pixels : mL > mR;
+  const maxDown = leftFalls ? travel(left, right) : travel(right, left);
 
   // Slowdown of this scene's gravity (see TARGET_FALL_S): s = a t² / 2  =>  px/m = 2 * travel / (a * T²), at 9.8 m/s².
-  // Only the on-screen speed; the readouts use units.ts (paper = 1 m) with gravityScale = `scale`.
+  // Only the on-screen speed; the readouts use units.ts (paper = 1 m) with gravityScale = `scale`. Equal weights use
+  // the slowdown of a just-tipped pair, so the readouts keep their usual scale.
   const aRel = Math.abs(mL - mR) / (mL + mR);
-  const pxPerM = Math.min(DEFAULT_PX_PER_M, (2 * maxDown) / (aRel * 9.8 * TARGET_FALL_S ** 2));
+  const aScale = even ? (TIE_BREAK_RATIO - 1) / (TIE_BREAK_RATIO + 1) : aRel;
+  const pxPerM = Math.min(DEFAULT_PX_PER_M, (2 * maxDown) / (aScale * 9.8 * TARGET_FALL_S ** 2));
   const scale = pxPerM / DEFAULT_PX_PER_M;
+  // Equal weights: the steady speed (px per step of the left weight, down = +) that covers the travel in TARGET_FALL_S.
+  const drift = even ? ((leftFalls ? 1 : -1) * maxDown * STEP_MS) / 1000 / TARGET_FALL_S : 0;
 
   // s = downward displacement of the left weight (right moves up by s). One degree of freedom.
   let s = 0;
-  let v = 0;
+  let v = drift;
   let hold = false;
   const wait = new ScreenWait(HOLD_S, () => scaleOf(scene).timeFactor);
   const onStep = (engine: Matter.Engine) => {
@@ -589,7 +592,7 @@ export const buildPulley: SceneBuilder = (input) => {
       if (wait.tick()) {
         hold = false;
         s = 0;
-        v = 0;
+        v = drift;
       }
     } else {
       // Engine gravity (follows slider / voice / moon mode) in px/step², converted to this drawing's scale.
@@ -739,7 +742,7 @@ export const buildPulley: SceneBuilder = (input) => {
     clean,
     gravityScale: scale,
     // Fastest at the end of the fall: v² = 2·a·travel with a = g·scale·(m₁ − m₂)/(m₁ + m₂).
-    speedHint: Math.sqrt(2 * STEP_ACCEL * ((input.analysis.params.gravity || 9.8) / 9.8) * scale * aRel * maxDown),
+    speedHint: even ? Math.abs(drift) : Math.sqrt(2 * STEP_ACCEL * ((input.analysis.params.gravity || 9.8) / 9.8) * scale * aRel * maxDown),
     measures: { wheel: 2 * R },
     parts: {
       'left weight': { at: () => bodyL.position, clear: half(left), side: 'left', body: bodyL, kg: kgL, kgFrom: fromL },

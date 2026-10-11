@@ -96,24 +96,57 @@ export const buildLever: SceneBuilder = (input) => {
   if (f.right) drawnMeasures['right weight'] = drawnD.right;
   // The scale (px per metre) follows the same rule as every scene: an entered distance sets it (that weight stays).
   const scale0 = scaleFor(input, drawnMeasures);
-  const pxPerM = scale0.pxPerMeter;
+  let pxPerM = scale0.pxPerMeter;
   const dPx = { ...drawnD };
   const dFrom: Record<'left' | 'right', ValueSource> = { left: scale0.note ? 'scaled' : 'assumed', right: scale0.note ? 'scaled' : 'assumed' };
+  /** Where a weight can sit on the plank, px from the pivot (its whole width on the plank). */
+  const onPlank: Record<'left' | 'right', { lo: number; hi: number }> = { left: { lo: 0, hi: 0 }, right: { lo: 0, hi: 0 } };
+  const noteD: Record<'left' | 'right', number | undefined> = { left: undefined, right: undefined };
   for (const s of ['left', 'right'] as const) {
     const w = sides[s];
     if (!w) continue;
-    const part = s === 'left' ? 'left weight' : 'right weight';
-    const note = noteFor(input.analysis, 'length', [part]);
-    if (!note) continue;
-    dFrom[s] = 'input';
-    if (scale0.note?.part === part) continue; // set the scale: already exactly there
     const halfW = (w.u1 - w.u0) / 2;
     const end = s === 'left' ? -f.uMin : f.uMax;
-    const want = note.value * pxPerM;
-    const lo = Math.min(halfW, end), hi = Math.max(lo, end - halfW);
-    dPx[s] = Math.min(hi, Math.max(lo, want));
-    if (Math.abs(dPx[s] - want) > 0.5) dFrom[s] = 'adjusted';
+    const lo = Math.min(halfW, end);
+    onPlank[s] = { lo, hi: Math.max(lo, end - halfW) };
+    noteD[s] = noteFor(input.analysis, 'length', [s === 'left' ? 'left weight' : 'right weight'])?.value;
+    if (noteD[s] !== undefined) dFrom[s] = 'input';
   }
+  const setter = scale0.note?.part === 'left weight' ? 'left' : scale0.note?.part === 'right weight' ? 'right' : null;
+  const other = setter === 'left' ? 'right' : 'left';
+  const dS = setter ? noteD[setter] : undefined, dO = noteD[other];
+  if (setter && sides[other] && dS !== undefined && dO !== undefined) {
+    // Both distances entered (changing one enters the other, entries.ts enterPair): the one left alone sets the scale
+    // and stays where it was drawn while the changed one slides; when the changed one would leave the plank, the
+    // whole seesaw zooms out just enough that it fits (the other moves in, its value stays). Only a ratio the plank
+    // cannot show at all (dMin / dMax below) is clamped.
+    const kLo = Math.max(onPlank[setter].lo / dS, onPlank[other].lo / dO);
+    const kHi = Math.min(onPlank[setter].hi / dS, onPlank[other].hi / dO);
+    if (kLo <= kHi) pxPerM = Math.min(kHi, Math.max(kLo, pxPerM));
+    else pxPerM = Math.min(onPlank[setter].hi / dS, Math.max(onPlank[setter].lo / dS, pxPerM));
+    dPx[setter] = dS * pxPerM;
+    const want = dO * pxPerM;
+    dPx[other] = Math.min(onPlank[other].hi, Math.max(onPlank[other].lo, want));
+    if (Math.abs(dPx[other] - want) > 0.5) dFrom[other] = 'adjusted';
+  } else
+    for (const s of ['left', 'right'] as const) {
+      const d = noteD[s];
+      if (!sides[s] || d === undefined || s === setter) continue; // the setter is already exactly there
+      const { lo, hi } = onPlank[s];
+      const want = d * pxPerM;
+      dPx[s] = Math.min(hi, Math.max(lo, want));
+      if (Math.abs(dPx[s] - want) > 0.5) dFrom[s] = 'adjusted';
+    }
+  /**
+   * The distances (m) one side can be given while the other keeps its value: any ratio both weights can show on the
+   * plank at one scale. With a single weight its distance sets the scale and any value fits.
+   */
+  const fit = (s: 'left' | 'right') => {
+    const o = s === 'left' ? 'right' : 'left';
+    if (!sides[s] || !sides[o] || !(dPx[o] > 0) || !(onPlank[o].lo > 0)) return {};
+    const dOther = dPx[o] / pxPerM;
+    return { dMin: (dOther * onPlank[s].lo) / onPlank[o].hi, dMax: (dOther * onPlank[s].hi) / onPlank[o].lo };
+  };
 
   // ---- The rigid body in the plank frame (u along it from the pivot, v across, < 0 above) ----
   interface Piece {
@@ -250,7 +283,7 @@ export const buildLever: SceneBuilder = (input) => {
   // ---- Readouts ----
   const sideInfo = (s: 'left' | 'right'): LeverSide | null => {
     if (!sides[s]) return null;
-    return { kg: s === 'left' ? kgL : kgR, kgFrom: s === 'left' ? kgFromL : kgFromR, d: dPx[s] / pxPerM, dFrom: dFrom[s] };
+    return { kg: s === 'left' ? kgL : kgR, kgFrom: s === 'left' ? kgFromL : kgFromR, d: dPx[s] / pxPerM, dFrom: dFrom[s], ...fit(s) };
   };
   const lever: LeverInfo = {
     left: sideInfo('left'),
