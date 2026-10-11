@@ -4,17 +4,33 @@
 //
 // Generic over fieldsFor() (entries.ts): whatever boxes a scene has show up here too. Values go through the same
 // path as typing into a box (controls.ts enterValue -> host.enter -> rebuilt scene); nothing is applied here.
+// A slider of the controls can show here too (the ramp's Friction): controls.ts passes it as a field with its own
+// fixed `step` and routes its value to the slider instead of a box.
 
 import type { EntryField, EntryKey } from './entries';
 import { holdPictureHeight } from './hold';
+import type { Quantity } from './types';
+
+/** A box of "Your numbers", or a slider of the controls shown as a pill ('friction'). */
+export type QuickKey = EntryKey | 'friction';
+
+/** What a pill needs to know about its value. Every EntryField is one. */
+export interface QuickField extends Pick<EntryField, 'label' | 'unit' | 'min' | 'max' | 'fitMax' | 'fitMin'> {
+  key: QuickKey;
+  quantity: Quantity;
+  /** A slider's own fixed step (linear scale, − / + by this much). */
+  step?: number;
+  /** Digits after the point, as the slider shows them ("0.30"). */
+  digits?: number;
+}
 
 // ---- Pure helpers (tested in tests/quick.test.ts) -----------------------------------------------------------
 
 /** Shorter names for the pills where the last word of the label would be unclear. */
-const SHORT: Partial<Record<EntryKey, string>> = { springK: 'Spring', groundLength: 'Ground' };
+const SHORT: Partial<Record<QuickKey, string>> = { springK: 'Spring', groundLength: 'Ground' };
 
 /** Pill name: "Left" / "Right" for a side, else the last word of the label ("String length" -> "Length"). */
-export function shortLabel(f: Pick<EntryField, 'key' | 'label'>): string {
+export function shortLabel(f: Pick<QuickField, 'key' | 'label'>): string {
   const own = SHORT[f.key];
   if (own) return own;
   const words = f.label.trim().split(/\s+/);
@@ -24,17 +40,19 @@ export function shortLabel(f: Pick<EntryField, 'key' | 'label'>): string {
 const cap = (w: string) => (w ? w[0].toUpperCase() + w.slice(1) : w);
 
 /** Largest value the field takes on this drawing. */
-export const highOf = (f: Pick<EntryField, 'max' | 'fitMax'>) => f.fitMax ?? f.max;
+export const highOf = (f: Pick<QuickField, 'max' | 'fitMax'>) => f.fitMax ?? f.max;
+/** Smallest value the field takes on this drawing. */
+export const lowOf = (f: Pick<QuickField, 'min' | 'fitMin'>) => f.fitMin ?? f.min;
 
 /**
  * Slider position (0..1) <-> value. Angles and narrow ranges are linear; wide positive ranges (0.001 to 1000 kg)
  * are logarithmic so everyday values get room; signed ranges (−100 to 100 m/s) use asinh, linear near 0.
  */
-export function sliderScale(f: Pick<EntryField, 'min' | 'max' | 'fitMax' | 'quantity'>) {
-  const lo = f.min, hi = highOf(f);
+export function sliderScale(f: Pick<QuickField, 'min' | 'max' | 'fitMax' | 'fitMin' | 'quantity' | 'step'>) {
+  const lo = lowOf(f), hi = highOf(f);
   type Map = (x: number) => number;
   let to: Map, from: Map;
-  if (f.quantity === 'angle' || (lo > 0 && hi / lo < 20) || hi <= lo) {
+  if (f.step || f.quantity === 'angle' || (lo > 0 && hi / lo < 20) || hi <= lo) {
     to = (v) => v;
     from = (u) => u;
   } else if (lo > 0) {
@@ -57,7 +75,8 @@ export function sliderScale(f: Pick<EntryField, 'min' | 'max' | 'fitMax' | 'quan
  * 2 kg -> 0.5 kg, 3 m/s -> 0.5 m/s, 20 N/m -> 5 N/m; speeds at least 0.1 m/s). Going toward zero uses the smaller
  * decade below (1 -> 0.95).
  */
-export function stepAt(f: Pick<EntryField, 'quantity'>, v: number, dir: 1 | -1): number {
+export function stepAt(f: Pick<QuickField, 'quantity' | 'step'>, v: number, dir: 1 | -1): number {
+  if (f.step) return f.step;
   if (f.quantity === 'angle') return 1;
   const toward0 = v !== 0 && Math.sign(dir) !== Math.sign(v);
   const a = Math.abs(v) * (toward0 ? 1 - 1e-9 : 1);
@@ -71,29 +90,32 @@ export function stepAt(f: Pick<EntryField, 'quantity'>, v: number, dir: 1 | -1):
 export const snap = (v: number, step: number) => Number((Math.round(v / step) * step).toPrecision(12));
 
 /** One − / + press: the next value on the step grid in that direction (0.429 -> 0.45), kept in the field's range. */
-export function nudge(f: Pick<EntryField, 'quantity' | 'min' | 'max' | 'fitMax'>, v: number, dir: 1 | -1): number {
+export function nudge(f: Pick<QuickField, 'quantity' | 'min' | 'max' | 'fitMax' | 'fitMin' | 'step'>, v: number, dir: 1 | -1): number {
   const step = stepAt(f, v, dir);
   const q = v / step;
   const n = dir > 0 ? Math.floor(q + 1e-6) + 1 : Math.ceil(q - 1e-6) - 1;
-  return Math.min(highOf(f), Math.max(f.min, snap(n * step, step)));
+  return Math.min(highOf(f), Math.max(lowOf(f), snap(n * step, step)));
 }
 
 /** A slider value rounded to what the buttons would step to there (two meaningful digits; whole degrees). */
-export function niceSliderValue(f: Pick<EntryField, 'quantity' | 'min' | 'max' | 'fitMax'>, v: number): number {
-  const step = f.quantity === 'angle' ? 1 : Math.abs(v) < 0.05 && f.quantity === 'speed' ? 0.5 : stepAt(f, v, 1) / 5;
-  return Math.min(highOf(f), Math.max(f.min, snap(v, step)));
+export function niceSliderValue(f: Pick<QuickField, 'quantity' | 'min' | 'max' | 'fitMax' | 'fitMin' | 'step'>, v: number): number {
+  const step = f.step ? f.step : f.quantity === 'angle' ? 1 : Math.abs(v) < 0.05 && f.quantity === 'speed' ? 0.5 : stepAt(f, v, 1) / 5;
+  return Math.min(highOf(f), Math.max(lowOf(f), snap(v, step)));
 }
 
-/** Number as shown on a pill: up to 3 significant digits. */
-export const showNum = (v: number) => String(Number(v.toPrecision(3)));
-/** "0.42 m", "31°", "1 kg". */
-export const showValue = (f: Pick<EntryField, 'unit'>, v: number) => (f.unit === '°' ? `${showNum(v)}°` : `${showNum(v)} ${f.unit}`);
+/** Number as shown on a pill: up to 3 significant digits, or a slider's own digits ("0.30"). */
+export const showNum = (v: number, digits?: number) => (digits !== undefined ? v.toFixed(digits) : String(Number(v.toPrecision(3))));
+/** "0.42 m", "31°", "1 kg", "0.30" (no unit). */
+export const showValue = (f: Pick<QuickField, 'unit' | 'digits'>, v: number) => {
+  const n = showNum(v, f.digits);
+  return f.unit === '°' ? `${n}°` : f.unit ? `${n} ${f.unit}` : n;
+};
 
 // ---- The strip ----------------------------------------------------------------------------------------------
 
 export interface QuickHost {
   /** Apply a value exactly like a typed box would. Returns a message when refused (out of range). */
-  enter(key: EntryKey, value: number): string | null;
+  enter(key: QuickKey, value: number): string | null;
 }
 
 /** While dragging, at most one rebuild per this many ms (and one more when the finger lets go). */
@@ -109,10 +131,10 @@ export class QuickNumbers {
   private input: HTMLInputElement;
   private unit: HTMLSpanElement;
   private range: HTMLInputElement;
-  private fields: EntryField[] = [];
-  private values: Partial<Record<EntryKey, number>> = {};
-  private entered = new Set<EntryKey>();
-  private open: EntryKey | null = null;
+  private fields: QuickField[] = [];
+  private values: Partial<Record<QuickKey, number>> = {};
+  private entered = new Set<QuickKey>();
+  private open: QuickKey | null = null;
   private dragging = false;
   private lastSent = 0;
   private trail = 0;
@@ -186,7 +208,7 @@ export class QuickNumbers {
       const pill = (e.target as HTMLElement).closest<HTMLButtonElement>('.quick-pill');
       if (!pill) return;
       haptic();
-      const key = pill.dataset.key as EntryKey;
+      const key = pill.dataset.key as QuickKey;
       this.setOpen(this.open === key ? null : key);
     });
 
@@ -234,7 +256,7 @@ export class QuickNumbers {
   }
 
   /** The boxes of the scene on screen and their current values (entered, mirrored or the scene's own). */
-  render(fields: EntryField[], values: Partial<Record<EntryKey, number>>, entered: Set<EntryKey>, fresh: boolean) {
+  render(fields: QuickField[], values: Partial<Record<QuickKey, number>>, entered: Set<QuickKey>, fresh: boolean) {
     const same = !fresh && fields.length === this.fields.length && fields.every((f, i) => f.key === this.fields[i].key);
     this.fields = fields;
     this.entered = entered;
@@ -288,11 +310,11 @@ export class QuickNumbers {
 
   private field = () => this.fields.find((f) => f.key === this.open);
 
-  private setOpen(key: EntryKey | null, scroll = true) {
+  private setOpen(key: QuickKey | null, scroll = true) {
     if (key !== this.open) this.cancel();
     this.open = key;
     for (const pill of this.pills.querySelectorAll<HTMLButtonElement>('.quick-pill')) {
-      const k = pill.dataset.key as EntryKey;
+      const k = pill.dataset.key as QuickKey;
       const f = this.fields.find((x) => x.key === k)!;
       pill.classList.toggle('on', k === key);
       pill.classList.toggle('set', this.entered.has(k));
@@ -316,9 +338,9 @@ export class QuickNumbers {
   }
 
   /** Show `v` for the open field (pill, number box, slider); `quiet` = only display, else also send it (thinned). */
-  private show(f: EntryField, v: number, quiet: boolean) {
+  private show(f: QuickField, v: number, quiet: boolean) {
     if (document.activeElement !== this.input) {
-      this.input.value = showNum(v);
+      this.input.value = showNum(v, f.digits);
       this.input.classList.remove('bad');
     }
     if (!this.dragging || !quiet) {
@@ -333,13 +355,13 @@ export class QuickNumbers {
     this.send(f.key, v);
   }
 
-  private pendingValue: { key: EntryKey; v: number } | null = null;
+  private pendingValue: { key: QuickKey; v: number } | null = null;
   private get pending() {
     return !!this.pendingValue || this.dragging;
   }
 
   /** Leading + trailing throttle: the first change goes at once, then at most one rebuild per DRAG_MS. */
-  private send(key: EntryKey, v: number) {
+  private send(key: QuickKey, v: number) {
     this.pendingValue = { key, v };
     const wait = DRAG_MS - (performance.now() - this.lastSent);
     if (wait <= 0 && !this.trail) this.flush();
@@ -375,8 +397,8 @@ export class QuickNumbers {
     if (!f) return;
     const text = this.input.value.trim().replace(',', '.');
     const now = this.values[f.key];
-    if (text === '' || (now !== undefined && text === showNum(now))) {
-      if (now !== undefined) this.input.value = showNum(now);
+    if (text === '' || (now !== undefined && text === showNum(now, f.digits))) {
+      if (now !== undefined) this.input.value = showNum(now, f.digits);
       return;
     }
     const v = Number(text);

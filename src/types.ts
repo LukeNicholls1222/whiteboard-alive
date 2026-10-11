@@ -385,6 +385,9 @@ export interface LeverSide {
   kgFrom: ValueSource;
   d: number;
   dFrom: ValueSource;
+  /** Distances (m) this weight can be moved to while the other one keeps its value (none with a single weight). */
+  dMin?: number;
+  dMax?: number;
 }
 
 export interface LeverInfo {

@@ -83,8 +83,12 @@ export interface EntryField extends EntrySpec {
   placeholder: string;
   /** Set when this drawing cannot take the whole range (a ramp stretched taller than the picture): the real maximum. */
   fitMax?: number;
+  /** The same for the low end (a seesaw weight cannot slide past the pivot): the real minimum. */
+  fitMin?: number;
   /** Value to show in the box while nothing is entered (the launch speed mirrors its slider). */
   mirror?: number;
+  /** Only in "Your numbers" (and voice), not as a pill under the picture (the launch's Ground: the drawing's scale). */
+  noPill?: boolean;
 }
 
 const sig = (v: number) => String(Number(v.toPrecision(3)));
@@ -140,7 +144,8 @@ export function fieldsFor(scene: BuiltScene, analysis: Pick<Analysis, 'params'>)
         add('launchHeight', said(launch.heightDrawnM));
       }
       if (parts.ball) add('projectileMass', said(kg('ball')));
-      if (measures.ground) add('groundLength', length('ground'));
+      // The scale of the whole drawing, not a setting of the shot: kept out of the pills under the picture.
+      if (measures.ground) add('groundLength', length('ground'), { noPill: true });
       break;
     }
     case 'Pulley':
@@ -160,13 +165,53 @@ export function fieldsFor(scene: BuiltScene, analysis: Pick<Analysis, 'params'>)
       // Masses and distances from the pivot (the weight slides along the plank to an entered distance).
       if (parts['left weight']) add('leftMass', said(kg('left weight')));
       if (parts['right weight']) add('rightMass', said(kg('right weight')));
-      if (parts['left weight']) add('leftDistance', length('left weight'));
-      if (parts['right weight']) add('rightDistance', length('right weight'));
+      // As far as the weight can slide on the plank while the other one stays (scenes/lever.ts).
+      const lever = scene.physics?.lever;
+      const fit = (key: EntryKey, side: { dMin?: number; dMax?: number } | null | undefined): Partial<EntryField> => {
+        const out: Partial<EntryField> = {};
+        if (side?.dMax !== undefined && side.dMax < ENTRY_SPECS[key].max) out.fitMax = side.dMax;
+        if (side?.dMin !== undefined && side.dMin > ENTRY_SPECS[key].min) out.fitMin = Math.min(side.dMin, side.dMax ?? Infinity);
+        return out;
+      };
+      if (parts['left weight']) add('leftDistance', length('left weight'), fit('leftDistance', lever?.left));
+      if (parts['right weight']) add('rightDistance', length('right weight'), fit('rightDistance', lever?.right));
       break;
     }
   }
   return out;
 }
+
+/**
+ * Left / right values a scene reads as a pair: with only one of them entered, the scene works the other out from the
+ * drawing *relative to the entered one* (the pulley and seesaw keep the drawn mass ratio; a seesaw distance sets the
+ * scale), so changing one side would change the other too. The collision's balls are each read on their own.
+ */
+const PARTNER: Partial<Record<EntryKey, EntryKey>> = {
+  leftMass: 'rightMass',
+  rightMass: 'leftMass',
+  leftDistance: 'rightDistance',
+  rightDistance: 'leftDistance',
+};
+
+/**
+ * `entries` with `key` set to `v`. When `key` has a partner that is still empty, the partner is entered too, at the
+ * value it shows now (`shown`), so it stays exactly as it is. The partner always goes first and `key` last: the
+ * seesaw distance left alone is the one that sets the scale (it stays where it was drawn) and the changed weight is
+ * the one that slides (scenes/lever.ts, which also gives the range it can slide in).
+ */
+export function enterPair(entries: Entries, key: EntryKey, v: number, shown: (k: EntryKey) => number | undefined): Entries {
+  const partner = PARTNER[key];
+  const keep = partner === undefined ? undefined : entries[partner] ?? shown(partner);
+  if (partner === undefined || keep === undefined || !(keep >= ENTRY_SPECS[partner].min && keep <= ENTRY_SPECS[partner].max))
+    return { ...entries, [key]: v };
+  const rest: Entries = { ...entries };
+  delete rest[partner];
+  delete rest[key];
+  return { [partner]: keep, ...rest, [key]: v };
+}
+
+/** The partner `enterPair` would fill in for `key` (for the boxes on screen). */
+export const partnerOf = (key: EntryKey): EntryKey | undefined => PARTNER[key];
 
 /** Entered values as the annotations the scenes read (noteFor). */
 export function annotationsFrom(entries: Entries): Annotation[] {
