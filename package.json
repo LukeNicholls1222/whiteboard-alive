@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --import ./tests/ts-resolve.mjs --test 'tests/**/*.test.ts'"
   },
   "dependencies": {
     "matter-js": "^0.20.0",
