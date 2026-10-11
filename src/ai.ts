@@ -1,25 +1,44 @@
 // Gemini: annotated photo + contour list -> roles and constraints. The AI never invents coordinates.
 
 import { guessDiagram } from './guess';
+import { firstSuccess } from './hedge';
 import type { Analysis, Contour, DiagramType } from './types';
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY ?? '';
-// Newest Flash first; older ones only if the newer model is unavailable for this key (see docs/research/gemini-json.md).
+// Measured 2026-10-11 00:10-00:25 PDT with judge-pendulum-01 / judge-lever-02 / judge-pulley-02 (same image and
+// prompt as below). When a model answers it takes the times noted, and every answer named the right diagram. But any
+// model sometimes hangs for 15-40 s whatever is sent (3.8 Flash and 3.5 Flash-Lite both did on the same minute, a
+// 640 px / 8-point request as much as the full one), so askGemini hedges across models instead of waiting.
+// The aliases are served by another model (response modelVersion): 3.7 Flash and flash-latest by 3.8 Flash, 3.5 Flash
+// by 3.6 Flash. They hang together, so the first models below are different backends; aliases only add free-tier
+// quota (~20 requests/day per model id) at the end. gemini-2.5-flash is 404 for this key.
 const MODELS = import.meta.env.VITE_GEMINI_MODEL ? [import.meta.env.VITE_GEMINI_MODEL] : [
-      // The free tier allows ~20 requests/day per model, so keep a long chain of independent quotas.
-      'gemini-3.8-flash',
-      'gemini-3.7-flash',
-      'gemini-3.6-flash',
-      'gemini-3.5-flash',
-      'gemini-3-flash-preview',
-      'gemini-flash-latest',
-      'gemini-3.5-flash-lite',
-      'gemini-3.1-flash-lite',
+      'gemini-3.5-flash-lite', // 1.3 s (MINIMAL thinking), 1.3-1.6 s with LOW
+      'gemini-3.8-flash', // 2.6-4.0 s
+      'gemini-3.1-flash-lite', // 1.5-4.0 s
+      'gemini-3.6-flash', // 2.7-14.5 s, one 503 "high demand"
+      'gemini-3-flash-preview', // 7.2 s
+      'gemini-3.7-flash', // = 3.8 Flash
+      'gemini-flash-latest', // = 3.8 Flash
+      'gemini-3.5-flash', // = 3.6 Flash
     ];
+/** Whole wait for one photo; then the shape-based guess. */
 const TIMEOUT_MS = 20000;
-/** Wait per model: the first one tried gets 9 s, later ones 6 s (all within TIMEOUT_MS). */
-const FIRST_MODEL_MS = 9000;
-const NEXT_MODEL_MS = 6000;
+/**
+ * Hedged requests: a model with no answer after HEDGE_MS (the fast ones answer in 1.3-4 s) gets the next model
+ * started alongside it, and the first answer wins. A normal photo still costs one request; only a slow one spends
+ * more free-tier quota (at most MAX_IN_FLIGHT at once). Each request is given up after REQUEST_MS.
+ */
+const HEDGE_MS = 3000;
+const MAX_IN_FLIGHT = 3;
+const REQUEST_MS = 9000;
+
+/** Least thinking each model accepts: 3.5 Flash-Lite takes MINIMAL (measured), 3.8 Flash LOW and up, 2.5 a budget. */
+function thinkingConfig(model: string): Record<string, unknown> {
+  if (model.includes('2.5')) return { thinkingBudget: 0 };
+  if (model === 'gemini-3.5-flash-lite') return { thinkingLevel: 'MINIMAL' };
+  return { thinkingLevel: 'LOW' };
+}
 
 export const hasApiKey = () => API_KEY.length > 0;
 
@@ -126,29 +145,35 @@ export async function askGemini(annotated: HTMLCanvasElement, contours: Contour[
   });
   // Every model is out of quota (or missing): don't spend the 20 s, keep the quick guess right away.
   if (!models.length) return null;
+  // Image size and outline length are kept: a 640 px / JPEG 0.7 / 8-point request was no faster (1761 vs 1893 prompt
+  // tokens, and it hung like the rest), and the 960 px id labels are the easiest to read.
   const jpeg = annotated.toDataURL('image/jpeg', 0.85).split(',')[1];
   const text = prompt(contours, annotated.width, annotated.height);
   const deadline = Date.now() + TIMEOUT_MS;
-  for (const [i, model] of models.entries()) {
-    // The first model gets the longest wait; later ones less, so a hung model can't eat the whole budget.
-    const perModel = i === 0 ? FIRST_MODEL_MS : NEXT_MODEL_MS;
-    // Structured output first; if the API rejects the schema field, retry with plain JSON mode.
+  const t0 = Date.now();
+  const attempt = async (i: number, signal: AbortSignal): Promise<Analysis> => {
+    const model = models[i];
+    debugLog(`ask ${model} at ${Date.now() - t0} ms`);
+    // Structured output first; if the API rejects the schema field (400), retry this model with plain JSON mode.
     for (const withSchema of [true, false]) {
-      if (Date.now() > deadline) return null;
       try {
-        const raw = await callGemini(model, jpeg, text, withSchema, Math.min(perModel, deadline - Date.now()));
+        const left = Math.min(REQUEST_MS, deadline - Date.now());
+        const raw = await callGemini(model, jpeg, text, withSchema, left, signal);
+        debugLog(`${model} answered in ${Date.now() - t0} ms`);
         return sanitize(raw, contours);
       } catch (err: any) {
+        // Cancelled because another model answered first (or the time ran out): nothing went wrong.
+        if (signal.aborted) throw err;
         console.warn(`[ai] ${model} schema=${withSchema} failed`, err);
         // 429 (quota) / 404 (no such model): remember it so the next photos skip this model.
         if (err?.status === 429 || err?.status === 404) markSkip(model, err.status, String(err.body ?? ''));
-        // 400 = schema field rejected: retry this model without it. Anything else (busy 503/429,
-        // missing model 404/403, timeout, network): move on to the next model while time remains.
-        if (err?.status !== 400) break;
+        // Anything but 400 (busy 503/429, missing 404/403, timeout, network, bad JSON): the next model starts now.
+        if (err?.status !== 400) throw err;
       }
     }
-  }
-  return null;
+    throw new Error(`${model}: rejected with and without the schema`);
+  };
+  return firstSuccess(models.length, attempt, { hedgeMs: HEDGE_MS, totalMs: TIMEOUT_MS, maxInFlight: MAX_IN_FLIGHT });
 }
 
 // ---- Models to skip: out of free-tier quota (429) or missing (404), remembered across reloads --------------
@@ -222,16 +247,25 @@ export function nextPacificMidnight(now = Date.now()): number {
   return now - msIntoDay + 86400_000;
 }
 
-async function callGemini(model: string, jpeg: string, text: string, withSchema: boolean, timeoutMs: number): Promise<any> {
+async function callGemini(
+  model: string,
+  jpeg: string,
+  text: string,
+  withSchema: boolean,
+  timeoutMs: number,
+  cancel?: AbortSignal,
+): Promise<any> {
   const generationConfig: Record<string, unknown> = { responseMimeType: 'application/json', temperature: 0.2 };
   if (withSchema) generationConfig.responseSchema = RESPONSE_SCHEMA;
-  if (model.includes('2.5')) generationConfig.thinkingConfig = { thinkingBudget: 0 };
-  else generationConfig.thinkingConfig = { thinkingLevel: 'LOW' };
+  generationConfig.thinkingConfig = thinkingConfig(model);
   const body = {
     contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: jpeg } }, { text }] }],
     generationConfig,
   };
   const ctrl = new AbortController();
+  if (cancel?.aborted || timeoutMs <= 0) throw new DOMException('cancelled', 'AbortError');
+  const onCancel = () => ctrl.abort();
+  cancel?.addEventListener('abort', onCancel, { once: true });
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
@@ -249,6 +283,7 @@ async function callGemini(model: string, jpeg: string, text: string, withSchema:
     return JSON.parse(out.replace(/^```(?:json)?|```$/g, '').trim());
   } finally {
     clearTimeout(timer);
+    cancel?.removeEventListener('abort', onCancel);
   }
 }
 
@@ -422,7 +457,7 @@ Relative requests ("double", "half", "a bit more") are relative to the current v
       const generationConfig: Record<string, unknown> = {
         responseMimeType: 'application/json',
         temperature: 0,
-        thinkingConfig: model.includes('2.5') ? { thinkingBudget: 0 } : { thinkingLevel: 'LOW' },
+        thinkingConfig: thinkingConfig(model),
       };
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: 'POST',
