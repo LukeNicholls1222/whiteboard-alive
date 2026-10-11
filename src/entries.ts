@@ -3,8 +3,8 @@
 // Entered values travel as analysis.annotations (from = 'input') and the scenes read them with noteFor (units.ts),
 // exactly where they used to read handwritten notes. The launch speed is also params.speed, shared with its slider.
 
-import type { Analysis, Annotation, BuiltScene, PartName, Quantity, ValueSource } from './types';
-import { DEFAULT_KG, SOURCE_TEXT, meters, scaleOf, springK } from './units';
+import type { Analysis, Annotation, BuiltScene, PartName, Quantity } from './types';
+import { DEFAULT_KG, meters, scaleOf, springK } from './units';
 
 export type EntryKey =
   | 'stringLength'
@@ -70,7 +70,7 @@ export const ENTRY_SPECS: Record<EntryKey, EntrySpec> = {
 
 /** One input box as shown for a built scene. */
 export interface EntryField extends EntrySpec {
-  /** Shown while empty, e.g. "0.43 assumed" or "31° drawn". */
+  /** Shown while empty: the value the scene uses, number only ("0.43", "31"); the unit sits next to the box. */
   placeholder: string;
   /** Set when this drawing cannot take the whole range (a ramp stretched taller than the picture): the real maximum. */
   fitMax?: number;
@@ -79,7 +79,8 @@ export interface EntryField extends EntrySpec {
 }
 
 const sig = (v: number) => String(Number(v.toPrecision(3)));
-const said = (v: number, from: ValueSource = 'assumed', unit = '') => `${sig(v)}${unit} ${SOURCE_TEXT[from]}`;
+/** A placeholder: the number only. Where the value came from (assumed, drawn...) is never shown. */
+const said = (v: number) => sig(v);
 
 /** The boxes for the scene on screen (none for the falling-objects fallback), placeholders from the scene itself. */
 export function fieldsFor(scene: BuiltScene, analysis: Pick<Analysis, 'params'>): EntryField[] {
@@ -90,25 +91,20 @@ export function fieldsFor(scene: BuiltScene, analysis: Pick<Analysis, 'params'>)
   const add = (key: EntryKey, placeholder: string, extra: Partial<EntryField> = {}) =>
     out.push({ ...ENTRY_SPECS[key], placeholder, ...extra });
   const kg = (part: PartName) => parts[part]?.kg ?? DEFAULT_KG;
-  const kgFrom = (part: PartName) => (parts[part]?.kgFrom === 'input' ? 'assumed' : parts[part]?.kgFrom ?? 'assumed');
   const length = (part: PartName) => {
     const px = measures[part];
-    // "to scale" when another entered length set the scale.
-    return px ? said(meters(px, s), s.note && s.note.part !== part ? 'scaled' : 'assumed') : '';
+    return px ? said(meters(px, s)) : '';
   };
 
   switch (scene.label) {
     case 'Pendulum':
       if (measures.string) add('stringLength', length('string'));
-      if (parts.bob) add('bobMass', said(kg('bob'), kgFrom('bob')));
+      if (parts.bob) add('bobMass', said(kg('bob')));
       break;
     case 'Spring and mass': {
-      if (parts.block) add('springMass', said(kg('block'), kgFrom('block')));
+      if (parts.block) add('springMass', said(kg('block')));
       const c = scene.constraints[0];
-      if (c && parts.block) {
-        const from = scene.physics?.springK?.from;
-        add('springK', said(springK(c.stiffness, kg('block'), s), from === 'adjusted' ? 'adjusted' : 'assumed'));
-      }
+      if (c && parts.block) add('springK', said(springK(c.stiffness, kg('block'), s)));
       break;
     }
     case 'Incline': {
@@ -118,7 +114,7 @@ export function fieldsFor(scene: BuiltScene, analysis: Pick<Analysis, 'params'>)
       const drawn = scene.physics?.rampAngle;
       if (drawn !== undefined) {
         const max = used?.max ?? ENTRY_SPECS.rampAngle.max;
-        add('rampAngle', said(Math.round(drawn), 'drawn', '°'), max < ENTRY_SPECS.rampAngle.max ? { fitMax: max } : {});
+        add('rampAngle', said(Math.round(drawn)), max < ENTRY_SPECS.rampAngle.max ? { fitMax: max } : {});
       }
       break;
     }
@@ -126,28 +122,28 @@ export function fieldsFor(scene: BuiltScene, analysis: Pick<Analysis, 'params'>)
       const ls = scene.physics?.launchSpeed;
       if (ls) {
         const speed = analysis.params.speed;
-        add('launchSpeed', said(ls.fit, 'auto'), typeof speed === 'number' && speed > 0 ? { mirror: speed } : {});
+        add('launchSpeed', said(ls.fit), typeof speed === 'number' && speed > 0 ? { mirror: speed } : {});
       }
       if (measures.ground) add('groundLength', length('ground'));
       break;
     }
     case 'Pulley':
-      if (parts['left weight']) add('leftMass', said(kg('left weight'), kgFrom('left weight')));
-      if (parts['right weight']) add('rightMass', said(kg('right weight'), kgFrom('right weight')));
+      if (parts['left weight']) add('leftMass', said(kg('left weight')));
+      if (parts['right weight']) add('rightMass', said(kg('right weight')));
       break;
     case 'Collision': {
-      if (parts['left ball']) add('leftBallMass', said(kg('left ball'), kgFrom('left ball')));
-      if (parts['right ball']) add('rightBallMass', said(kg('right ball'), kgFrom('right ball')));
+      if (parts['left ball']) add('leftBallMass', said(kg('left ball')));
+      if (parts['right ball']) add('rightBallMass', said(kg('right ball')));
       const v = scene.physics?.ballSpeeds;
       // The speed the drawing gives (its arrow, or the push when nothing was drawn); a typed one shows in the box itself.
-      if (v && parts['left ball']) add('leftSpeed', said(v.left.drawn, v.left.drawnFrom));
-      if (v && parts['right ball']) add('rightSpeed', said(v.right.drawn, v.right.drawnFrom));
+      if (v && parts['left ball']) add('leftSpeed', said(v.left.drawn));
+      if (v && parts['right ball']) add('rightSpeed', said(v.right.drawn));
       break;
     }
     case 'Seesaw': {
       // Masses and distances from the pivot (the weight slides along the plank to an entered distance).
-      if (parts['left weight']) add('leftMass', said(kg('left weight'), kgFrom('left weight')));
-      if (parts['right weight']) add('rightMass', said(kg('right weight'), kgFrom('right weight')));
+      if (parts['left weight']) add('leftMass', said(kg('left weight')));
+      if (parts['right weight']) add('rightMass', said(kg('right weight')));
       if (parts['left weight']) add('leftDistance', length('left weight'));
       if (parts['right weight']) add('rightDistance', length('right weight'));
       break;

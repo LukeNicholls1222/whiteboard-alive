@@ -56,10 +56,10 @@ const controls = createControls($<HTMLElement>('controls'), {
   showArrows(on) {
     arrows.setEnabled(on);
   },
-});
+}, stage.parentElement!);
 const arrows = new VelocityArrows();
 arrows.mountToggle($<HTMLElement>('controls'));
-/** Physical values next to the parts ("L = 0.42 m assumed") and the slow-motion badge. */
+/** Physical values next to the parts ("L = 0.42 m") and the slow-motion badge. */
 const notes = new QuantityLabels(stage.parentElement!);
 arrows.avoid = () => notes.boxes;
 if (import.meta.env.DEV) (window as any).__wa = { controls, arrows, notes, events: [], get sim() { return sim; }, get current() { return current; }, get entered() { return entered; } };
@@ -349,6 +349,10 @@ async function run(file: Blob, example?: string) {
     const scene = await startScene(current, { intro: true, forGen: my });
     if (!scene) return;
     showControls(scene, analysis, true);
+    // The numbers sit right under the picture: when the picture is on screen but its bottom (with them) is not,
+    // bring it up so the motion and the numbers are seen together. Left alone when the page is scrolled elsewhere.
+    const card = stage.parentElement!.getBoundingClientRect();
+    if (card.top < innerHeight && card.bottom > innerHeight) stage.parentElement!.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     setStep('done');
     explain.textContent = analysis.explanation || `${scene.label}${analysis.source === 'heuristic' && !hasApiKey() ? ' (offline mode)' : ''}`;
   } catch (err) {

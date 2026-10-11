@@ -4,6 +4,7 @@
 import { hasApiKey, voiceToParams, type VoiceParamSpec } from './ai';
 import { airSubtitle } from './air';
 import type { Entries, EntryField, EntryKey } from './entries';
+import { QuickNumbers } from './quick';
 import type { DiagramType, SimParams } from './types';
 import {
   PLANETS,
@@ -116,7 +117,8 @@ export const specsFor = (diagram: DiagramType): ParamSpec[] => [GRAVITY, ...(SCE
 const fmt = (s: ParamSpec, v: number) => `${v.toFixed(s.digits)}${s.unit ? ` ${s.unit}` : ''}`;
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-export function createControls(root: HTMLElement, host: ControlsHost) {
+/** `quickCard`: the picture's card, where the numbers also show as pills right under the motion (quick.ts). */
+export function createControls(root: HTMLElement, host: ControlsHost, quickCard?: HTMLElement) {
   let specs: ParamSpec[] = [];
   const values: Record<string, number> = {};
   let rebuildTimer = 0;
@@ -262,6 +264,7 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
     input.value = num(changed.speed);
     shown.launchSpeed = input.value;
     clearError('launchSpeed');
+    syncQuick();
   }
 
   // ---- Your numbers ----------------------------------------------------------------------------------
@@ -387,6 +390,44 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
       shown[f.key] = '';
     }
     entries = {};
+  }
+
+  /**
+   * A value from the pills under the picture: into its box as if typed (same range rule, same lowering to what
+   * fits, same rebuild). Returns the box's message when refused.
+   */
+  function enterValue(key: EntryKey, v: number): string | null {
+    const f = fields.find((x) => x.key === key);
+    if (!f) return null;
+    const c = checkEntry(f, v);
+    if (!c.ok) {
+      setError(key, c.msg);
+      return c.msg;
+    }
+    clearTimeout(entryTimers[key]);
+    const input = box(key);
+    if (input && document.activeElement !== input) {
+      input.value = num(c.v);
+      shown[key] = input.value;
+    }
+    if (c.lowered) setError(key, `${num(c.v)}° is the most that fits this drawing`);
+    else clearError(key);
+    if (entries[key] === c.v) {
+      syncQuick();
+      return null;
+    }
+    entries[key] = c.v;
+    host.enter({ ...entries }, false);
+    return null;
+  }
+
+  const quick = quickCard ? new QuickNumbers(quickCard, { enter: enterValue }) : null;
+  /** The pills show what the boxes hold: the entered value, else the mirrored one, else the scene's own. */
+  function syncQuick(fresh = false) {
+    if (!quick) return;
+    const values: Partial<Record<EntryKey, number>> = {};
+    for (const f of fields) values[f.key] = entries[f.key] ?? f.mirror ?? parseFloat(f.placeholder);
+    quick.render(fields, values, new Set(Object.keys(entries) as EntryKey[]), fresh);
   }
 
   numReset.addEventListener('click', () => {
@@ -619,6 +660,7 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
     },
     hide() {
       root.hidden = true;
+      quick?.hide();
     },
     /**
      * "Your numbers" for the scene on screen. `fresh` = a new photo: every box starts empty. Otherwise boxes that are
@@ -633,6 +675,7 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
         for (const k of Object.keys(shown) as EntryKey[]) delete shown[k];
         renderNumbers();
       }
+      syncQuick(fresh);
       updateHint();
     },
     /** Current values (for tests / debugging). */
