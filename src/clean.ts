@@ -7,8 +7,9 @@
 // ?style=drawn brings back the old look (the hand-drawn ink itself moves): the escape hatch for a live demo.
 
 import Matter from 'matter-js';
-import type { BuiltScene, CleanPart, CleanTone, Point, SceneInput } from './types';
+import type { BuiltScene, CleanPart, CleanShape, CleanTone, Point, SceneInput } from './types';
 import { drawSprite } from './sim';
+import { barrelOutline, barrelProfile } from './scenes/cannon';
 
 /** True when the page asked for the old look (?style=drawn): hand-drawn cut-outs move, no clean figure. */
 export const DRAWN_STYLE = typeof location !== 'undefined' && new URLSearchParams(location.search).get('style') === 'drawn';
@@ -115,8 +116,11 @@ export function partOutline(ctx: CanvasRenderingContext2D, p: CleanPart, px: num
     case 'spring':
       return { points: springPoints(p.from(), p.to(), p.coils, p.width), closed: false };
     case 'support':
-    case 'arrow':
       return { points: [p.from, p.to], closed: false };
+    case 'arrow':
+      return { points: [p.from, arrowTip(p)], closed: false };
+    case 'cannon':
+      return { points: barrelOutline(p.pivot, p.angle(), p), closed: true };
     case 'ground': {
       const v = visible(ctx);
       return { points: [{ x: p.x0 ?? v.x - 10 * px, y: p.y }, { x: p.x1 ?? v.x + v.w + 10 * px, y: p.y }], closed: false };
@@ -170,12 +174,15 @@ export function partCenter(ctx: CanvasRenderingContext2D, p: CleanPart): Point {
     case 'wheel':
     case 'arc':
       return p.center;
+    case 'cannon':
+      return p.pivot;
     case 'rope':
     case 'spring':
       return mid(p.from(), p.to());
     case 'support':
-    case 'arrow':
       return mid(p.from, p.to);
+    case 'arrow':
+      return mid(p.from, arrowTip(p));
     case 'ground': {
       const v = visible(ctx);
       return { x: ((p.x0 ?? v.x) + (p.x1 ?? v.x + v.w)) / 2, y: p.y };
@@ -257,7 +264,9 @@ function drawPart(ctx: CanvasRenderingContext2D, p: CleanPart, px: number) {
       ctx.stroke();
       return;
     case 'arrow':
-      return drawArrow(ctx, p.from, p.to, px);
+      return drawArrow(ctx, p.from, arrowTip(p), px);
+    case 'cannon':
+      return drawCannon(ctx, p, px);
     case 'pin': {
       const c = p.at();
       ctx.fillStyle = COLORS.line;
@@ -522,6 +531,90 @@ function drawArrow(ctx: CanvasRenderingContext2D, a: Point, b: Point, px: number
   ctx.lineWidth = 1.5 * px;
   ctx.fill();
   ctx.stroke();
+}
+
+/** The arrow's head, turned by `turn()` about its tail. */
+function arrowTip(p: Extract<CleanShape, { kind: 'arrow' }>): Point {
+  const t = p.turn?.() ?? 0;
+  if (!t) return p.to;
+  const dx = p.to.x - p.from.x, dy = p.to.y - p.from.y;
+  const cos = Math.cos(t), sin = Math.sin(t);
+  return { x: p.from.x + dx * cos - dy * sin, y: p.from.y + dx * sin + dy * cos };
+}
+
+/**
+ * The cannon: a light carriage (the fixed-scenery look, like a ramp) from the pivot down to the ground, a purple wheel
+ * on it (the device colour, like a pulley's), the dark grey barrel (the beam colour) turned about the pivot, a dark
+ * pin at the pivot. Textbook proportions from the barrel's thickness T. The ball (drawn after it) sits in the mouth.
+ */
+function drawCannon(ctx: CanvasRenderingContext2D, p: Extract<CleanShape, { kind: 'cannon' }>, px: number) {
+  const T = p.thickness;
+  const P = p.pivot;
+  const angle = p.angle();
+  /** Pivot height above what the cannon stands on. */
+  const hp = p.base - P.y;
+  // Carriage: a block a little wider at the bottom, its top just under the barrel's axis.
+  if (hp > 0.3 * T) {
+    const top = P.y + 0.08 * T;
+    const pts = [
+      { x: P.x - 0.55 * T, y: top },
+      { x: P.x + 0.55 * T, y: top },
+      { x: P.x + 0.85 * T, y: p.base },
+      { x: P.x - 0.85 * T, y: p.base },
+    ];
+    roundedPath(ctx, pts, Math.min(0.15 * T, 8 * px));
+    ctx.fillStyle = COLORS.solidFill;
+    ctx.fill();
+    ctx.strokeStyle = COLORS.line;
+    ctx.lineWidth = Math.min(CSS.support * px, 0.12 * T);
+    ctx.stroke();
+  }
+  // Wheel: on the ground under the pivot, its size from the pivot's height (a tall cannon gets a big wheel).
+  const wr = Math.max(0.45 * T, Math.min(0.9 * T, 0.45 * hp));
+  drawWheel(ctx, { x: P.x, y: p.base - wr }, wr, 0, px);
+  // Barrel: knob, tube and mouth band; one shadow pass straight down on screen, then the fill with its edge.
+  const prof = barrelProfile(p);
+  const c = COLORS.beam;
+  const paths: Array<() => void> = [
+    () => {
+      ctx.beginPath();
+      ctx.arc(prof.knob.x, 0, prof.knob.r, 0, Math.PI * 2);
+    },
+    () => roundedPath(ctx, prof.tube, Math.min(prof.round, 8 * px)),
+    () => roundedPath(ctx, [
+      { x: prof.band.x, y: prof.band.y },
+      { x: prof.band.x + prof.band.w, y: prof.band.y },
+      { x: prof.band.x + prof.band.w, y: prof.band.y + prof.band.h },
+      { x: prof.band.x, y: prof.band.y + prof.band.h },
+    ], Math.min(prof.bandRound, 5 * px)),
+  ];
+  const drop = Math.min(CSS.shadow * px, 0.18 * T);
+  ctx.save();
+  ctx.translate(P.x, P.y + drop);
+  ctx.rotate(angle);
+  ctx.fillStyle = c.shadow;
+  for (const path of paths) {
+    path();
+    ctx.fill();
+  }
+  ctx.restore();
+  ctx.save();
+  ctx.translate(P.x, P.y);
+  ctx.rotate(angle);
+  ctx.lineWidth = Math.min(CSS.edge * px, 0.2 * T);
+  for (const path of paths) {
+    path();
+    ctx.fillStyle = c.fill;
+    ctx.fill();
+    ctx.strokeStyle = c.edge;
+    ctx.stroke();
+  }
+  ctx.restore();
+  // The pin it turns about.
+  ctx.fillStyle = COLORS.line;
+  ctx.beginPath();
+  ctx.arc(P.x, P.y, Math.min(CSS.pin * px, 0.16 * T), 0, Math.PI * 2);
+  ctx.fill();
 }
 
 // ---- Helpers for scene builders ---------------------------------------------------------------------------

@@ -155,6 +155,7 @@ function groupOf(p: CleanPart): Group {
     case 'image':
     case 'pin':
     case 'wheel':
+    case 'cannon':
       return 'fixed';
     case 'rope':
     case 'arc':
@@ -178,6 +179,7 @@ function colorOf(p: CleanPart): string {
       return TRACE_COLOR.purple;
     case 'arrow':
     case 'image':
+    case 'cannon':
       return TRACE_COLOR.red;
     case 'body':
     case 'ball':
@@ -222,7 +224,7 @@ function planFor(ctx: CanvasRenderingContext2D, scene: BuiltScene, px: number): 
       minSize = Math.min(x1 - x0, y1 - y0);
     }
     const idx = Math.min(counts[group]++, STAGGER_MAX / STAGGER);
-    const filled = part.kind === 'body' || part.kind === 'ball' || part.kind === 'wheel' || part.kind === 'sprite' || part.kind === 'pin';
+    const filled = part.kind === 'body' || part.kind === 'ball' || part.kind === 'wheel' || part.kind === 'sprite' || part.kind === 'pin' || part.kind === 'cannon';
     const p: PartPlan = { part, group, color: colorOf(part), path, filled, center: partCenter(ctx, part), size, minSize, start: GROUP_START[group] + idx * STAGGER };
     if (part.kind === 'image') p.box = { x: part.offset.x, y: part.offset.y, w: part.image.width, h: part.image.height };
     if (part.kind === 'sprite') {
