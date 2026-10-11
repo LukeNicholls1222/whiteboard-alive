@@ -94,7 +94,7 @@ Where a textbook formula exists, we compute the motion ourselves so the numbers 
 - **Rolling ball**: a circle on the slope rolls at a = 5/7 g sinθ (a solid ball) and turns by distance / radius. If friction can't hold it, it slides while turning.
 - **Collision**: exact one-dimensional motion from event to event. Momentum is kept through every hit, Bounciness e = 1 keeps the kinetic energy, and e = 0 makes the balls stick.
 - **Pulley and seesaw**: each side's mass (and, on a seesaw, distance) is its own value. Changing one side never changes the other. On a pulley with exactly equal masses the acceleration is zero, so it keeps moving at a slow, steady speed, as Newton's first law says.
-- **Seesaw**: the plank tips toward the side with the larger moment m·g·d, and the weights ride on it. It only shows "Balanced!" when the typed values make m₁d₁ = m₂d₂. If the drawn sizes are within 12%, it shows "Nearly balanced" and tilts only slightly.
+- **Seesaw**: the plank tips toward the side with the larger moment m·g·d, and the weights ride on it. With only the drawing (no values typed in), drawn sizes within 12% of each other show "Nearly balanced" and the plank tilts only slightly. Once any value is typed in, every value counts as typed, and it shows "Balanced!" only when m₁d₁ = m₂d₂ to within 0.1%.
 
 **4. From hand drawing to clean figure**
 Each scene describes its own clean figure. After the colour overlay, a light traces the matching strokes part by part, the clean shape snaps in over them with a ring, and from then on the clean figure is what moves. The fixed parts of the original drawing stay faintly behind it, so you can still see where it came from.
