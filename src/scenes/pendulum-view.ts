@@ -171,6 +171,12 @@ export class SmoothView {
     this.tau = tau;
   }
 
+  /** Show `target` from now on without easing (a glide that would lose something from the picture). */
+  jump(target: ViewRect | null, t: number) {
+    this.shown = target ? { ...target } : { x: 0, y: 0, w: this.photoW, h: this.photoH };
+    this.lastT = t;
+  }
+
   /** `t` in seconds (any clock that only moves forward). */
   read(target: ViewRect | null, t: number): ViewRect | null {
     const photo = { x: 0, y: 0, w: this.photoW, h: this.photoH };
