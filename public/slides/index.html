@@ -74,6 +74,25 @@
   .end-text { display: flex; flex-direction: column; gap: 3vh; text-align: left; }
   .end-text .tagline { line-height: 1.15; }
   .sub { font-size: min(2.8vw, 5.2vh); color: var(--muted); }
+  /* Real app screenshots (phone width, from docs/screenshots) */
+  .shots { display: flex; gap: 2.4vw; align-items: flex-end; justify-content: center; }
+  .shots .arrow { align-self: center; }
+  .shot { display: flex; flex-direction: column; align-items: center; gap: 1.2vh; }
+  .shot img {
+    display: block; height: min(52vh, 34vw); width: auto; aspect-ratio: 780 / 1100; object-fit: cover; object-position: top;
+    border: 3px solid var(--line); border-radius: 22px; background: #fff;
+  }
+  .shot.paper img { object-position: center; }
+  .shot.stage img { height: min(30vh, 13vw); aspect-ratio: 780 / 560; object-position: 0 19%; }
+  .shot.tall img { height: 64vh; aspect-ratio: 780 / 1330; }
+  .shot .cap { font-size: min(2vw, 3.8vh); font-weight: 900; }
+  .shot .cap.ai { color: var(--blue); }
+  .rows { display: grid; grid-template-columns: auto auto; gap: 2vh 2.4vw; align-items: center; }
+  .rows .step { padding: 1.6vh 1.8vw; }
+  .readout {
+    display: block; height: 18vh; aspect-ratio: 780 / 220; object-fit: cover;
+    border: 3px solid var(--line); border-radius: 18px; background: #fff;
+  }
   .count {
     position: fixed; right: 2vw; bottom: 2vh; font-size: clamp(12px, 1.6vw, 20px);
     color: var(--muted); font-weight: 800;
@@ -104,6 +123,13 @@
     .end-text { text-align: center; }
     .qr { width: 62vw; height: 62vw; }
     .url { font-size: 4.2vw; }
+    .shots { flex-wrap: wrap; gap: 2vh 3vw; }
+    .shot img { height: 24vh; }
+    .shot.stage img { height: 16vh; }
+    .shot.tall img { height: 34vh; }
+    .shot .cap { font-size: 4vw; }
+    .rows { grid-template-columns: 1fr; gap: 1vh; }
+    .readout { height: auto; width: 84vw; }
   }
 </style>
 </head>
@@ -142,12 +168,12 @@
 
 <section class="slide">
   <h1>Demo</h1>
-  <div class="flow">
-    <div class="step"><div class="name">Draw</div><div class="what">on paper</div></div>
+  <div class="shots">
+    <div class="shot paper"><img src="../examples/pendulum-gen-01.jpg" alt="Pendulum drawn on paper"><div class="cap">Draw on paper</div></div>
     <div class="arrow">&rarr;</div>
-    <div class="step"><div class="name">Snap</div><div class="what">one photo</div></div>
+    <div class="shot"><img src="ui/02-ai-overlay.png" alt="App colours each stroke: pivot, string, bob"><div class="cap">Snap: it reads your lines</div></div>
     <div class="arrow">&rarr;</div>
-    <div class="step ai"><div class="name">Transform</div><div class="what">your drawing moves</div></div>
+    <div class="shot"><img src="ui/05-graph-moon.png" alt="The pendulum swinging with values"><div class="cap ai">Transform: it moves</div></div>
   </div>
 </section>
 
@@ -162,10 +188,13 @@
 
 <section class="slide">
   <h1>Theory next to measurement</h1>
-  <div class="flow">
+  <div class="rows">
     <div class="step"><div class="name">Pendulum</div><div class="eq">T = 2&pi;&radic;(L/g)</div></div>
+    <img class="readout" style="object-position: 0 78%" src="ui/05-graph-moon.png" alt="Period 3.41 s measured, theory 3.23 s, on the Moon">
     <div class="step"><div class="name">Rolling ball</div><div class="eq">a = 5/7 g sin&theta;</div></div>
+    <img class="readout" style="object-position: 0 53%" src="ui/08-rolling.png" alt="Rolling ball: theory 4.32 m/s², measured 4.32 m/s²">
     <div class="step"><div class="name">Collision</div><div class="eq">total momentum conserved</div></div>
+    <img class="readout" style="object-position: 0 53%" src="ui/09-collision.png" alt="Total momentum 0.13 kg·m/s">
   </div>
 </section>
 
@@ -179,6 +208,12 @@
     <div class="chip">Pulley</div>
     <div class="chip">Collision</div>
     <div class="chip">Seesaw</div>
+  </div>
+  <div class="shots">
+    <div class="shot stage"><img src="ui/07-launch.png" alt="Launch"></div>
+    <div class="shot stage"><img src="ui/08-rolling.png" alt="Ramp"></div>
+    <div class="shot stage"><img src="ui/09-collision.png" alt="Collision"></div>
+    <div class="shot stage"><img src="ui/10-seesaw.png" alt="Seesaw"></div>
   </div>
 </section>
 
