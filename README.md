@@ -76,7 +76,7 @@ npm run dev
 
 `npm run smoke` (after `npm run build`, needs Google Chrome) serves `dist/` and feeds every photo in `samples/generated/` to the offline app in headless Chrome, checking the guessed diagram type against the file name, that it reaches Alive, that the bodies move, and that nothing logs an error. It prints a table and exits 1 on any failure (`npm run smoke -- pendulum` runs only matching photos).
 
-The Gemini key is used in the browser. Never commit `.env`. The deployed key is restricted by HTTP referrer to the GitHub Pages URL.
+The Gemini key is used in the browser. Never commit `.env`. The deployed key is restricted to the Gemini API only and will be deleted after the event.
 
 ## Built With
 

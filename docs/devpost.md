@@ -97,7 +97,7 @@ Each scene describes its own clean figure. After the colour overlay, a light tra
 The Web Speech API turns speech into text. A keyword parser handles it first, instantly ("make the string 1 meter", "moon", "air on"). Only if nothing matches does Gemini turn the text into a small diff such as `{"set": {"gravity": 1.6}}`.
 
 **6. Hosting**
-Vite + TypeScript with a plain Canvas (no framework). GitHub Actions builds on every push to `main` and deploys to GitHub Pages. The Gemini key is injected at build time and locked to our Pages URL with an HTTP referrer restriction. It will be deleted after the event.
+Vite + TypeScript with a plain Canvas (no framework). GitHub Actions builds on every push to `main` and deploys to GitHub Pages. The Gemini key is injected at build time, is restricted to the Gemini API only, and will be deleted after the event.
 
 ## Challenges we ran into
 
