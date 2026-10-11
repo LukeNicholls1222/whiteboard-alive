@@ -20,7 +20,7 @@ Built at OCCHacks 2026 (Education track).
    - The fixed parts of your drawing stay faintly in the background. The hand-drawn moving parts fade out after a few seconds.
    - Tap **Show what AI saw** to bring the colour overlay back at any time.
 5. Change the physics while it runs:
-   - **Value pills**: right under the moving picture, each value sits in a small pill (for example Length 0.45 m, Mass 1 kg). Tap one to get − / +, a slider and a number box, and change it while you watch it move, with no scrolling. The pills stay in sync with Your numbers.
+   - **Value pills**: right under the moving picture, each value sits in a small pill (for example Length 0.45 m, Mass 1 kg). Tap one to get − / +, a slider and a number box, and change it while you watch it move, with no scrolling. A ramp (block or rolling ball) has a Friction pill, and a launch has Speed, Angle, Height and Mass pills. A pill, its slider, Your numbers and voice ("rough", for example) all change the same value.
    - **Your numbers**: type in the real values. String length, mass, spring constant, ramp angle, launch speed, launch angle (0–89°), launch height (0–50 m), ball mass (0.1–20 kg), ground length, the left and right pulley masses, each ball's mass and speed in a collision, and each seesaw weight's mass and distance (whichever the diagram uses).
    - **Sliders**: Gravity (every diagram), Friction (incline), Launch speed (projectile), Bounciness e from 0 to 1 (collision).
    - **Slow motion**: tap the badge at the top left of the picture to step through 1× → 0.5× → 0.33× → 0.11× and back to 1× (it reads REAL TIME 1× or SLOW MOTION 0.11×, for example). It starts at 1× and goes back to 1× on reload. Only the playback slows down: each physics step stays the same length, so the period, speed and energy readouts are the same at every setting.
@@ -44,9 +44,9 @@ Built at OCCHacks 2026 (Education track).
 | Incline (block) | Triangle with a box on the slope | Slides down; friction can stop it |
 | Incline (ball) | Triangle with a circle on the slope | Rolls down, turning as it goes (a = 5/7 g sinθ), or slides while turning if friction can't hold it |
 | Projectile | Cannon or arrow, ball, ground | A drawn cannon turns into a clean cannon and fires the ball from its muzzle in a parabola. Change the angle and the barrel turns; raise the launch height and the cannon rises on a stand. A drawn arrow stays an arrow and turns with the angle |
-| Pulley | Wheel, rope over it, two weights | The heavier side drops |
+| Pulley | Wheel, rope over it, two weights | The heavier side drops. Each side's mass is set on its own; with exactly equal masses there is no acceleration, so it keeps drifting at a slow, steady speed |
 | Collision | Floor line, two circles, an arrow showing which way each one moves | The balls hit and bounce; total momentum is kept |
-| Seesaw / lever | Triangle pivot, a plank on top, boxes on the plank | Tips toward the side with the larger moment m·g·d |
+| Seesaw / lever | Triangle pivot, a plank on top, boxes on the plank | Tips toward the side with the larger moment m·g·d. Changing one side's mass or distance leaves the other side as it is |
 
 If a drawing matches none of these, every drawn object becomes a rigid body and falls onto the ground. Something always moves.
 

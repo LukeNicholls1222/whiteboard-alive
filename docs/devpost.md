@@ -33,7 +33,7 @@ Simulation apps exist, but they make you rebuild the problem with their sliders 
 
 While it runs you can change the physics:
 
-- **Value pills**: right under the moving picture, each value is shown as a small pill with its unit (for example Length 0.45 m, Mass 1 kg). Tap one to get − / +, a slider and a number box, so you can change it while you watch it move, with no scrolling. The pills stay in sync with Your numbers.
+- **Value pills**: right under the moving picture, each value is shown as a small pill with its unit (for example Length 0.45 m, Mass 1 kg). Tap one to get − / +, a slider and a number box, so you can change it while you watch it move, with no scrolling. A ramp has a Friction pill, and a launch has Speed, Angle, Height and Mass pills. A pill, its slider, Your numbers and voice ("rough") all change the same value.
 - **Your numbers**: type in real values. String length, mass, spring constant, ramp angle, launch speed, launch angle (0–89°), launch height (0–50 m), ball mass (0.1–20 kg), ground length, and the left and right masses on a pulley. Sizes come from these numbers, not from the paper.
 - **Sliders and presets**: gravity (every diagram), friction (incline), launch speed (projectile), Bounciness e from 0 to 1 (collision: 1 is elastic, 0 sticks), and Earth / Moon / Jupiter. In Moon mode a pendulum visibly slows down.
 - **Voice**: tap Talk and say "make the string 1 meter", "make gravity weaker", "angle 45 degrees", "aim higher" or "launch height 5 meters". Voice can change every setting.
@@ -59,7 +59,7 @@ A single progress line shows each step so the screen never looks frozen. If it c
 | Incline with a block (triangle + box → slides, friction stops it) | Working |
 | Incline with a ball (triangle + circle → rolls, a = 5/7 g sinθ) | Working |
 | Projectile (cannon or arrow → clean cannon fires a parabola; launch angle, height and ball mass can be set) | Working |
-| Pulley (wheel + rope + two weights → heavier one drops) | Working |
+| Pulley (wheel + rope + two weights → heavier one drops; equal masses drift at a steady speed) | Working |
 | Collision (floor + two circles + arrows → they hit and bounce, momentum kept) | Working |
 | Seesaw / lever (triangle pivot + plank + boxes → tips toward the larger moment) | Working |
 | "Anything else" fallback (object + ground → it falls) | Working |
@@ -93,6 +93,7 @@ Where a textbook formula exists, we compute the motion ourselves so the numbers 
 - **Projectile**: a drawn cannon becomes a clean cannon: a grey barrel with a muzzle band and a rear knob, purple wheels, a light carriage and an axle pin. Launch angle, launch height and ball mass are inputs. Changing the angle turns the barrel smoothly around the axle (0.26 s), and the ball leaves exactly from the muzzle along the barrel (0.00 px off, within 0.01°). A small arc at the axle shows the angle. A drawing with only an arrow keeps the arrow, which turns with the angle. Raising the height lifts the cannon on a capped stand; a cannon standing on the ground can't go below it, and then shows "h = 0.17 m (lowest)". The default speed is chosen from the drawing so the ball lands about 70% of the way along the drawn ground. Range, max height and flight time match the theory within 0.083% across Earth and Moon, several heights and speeds, and 15°, 45° and 75°.
 - **Rolling ball**: a circle on the slope rolls at a = 5/7 g sinθ (a solid ball) and turns by distance / radius. If friction can't hold it, it slides while turning.
 - **Collision**: exact one-dimensional motion from event to event. Momentum is kept through every hit, Bounciness e = 1 keeps the kinetic energy, and e = 0 makes the balls stick.
+- **Pulley and seesaw**: each side's mass (and, on a seesaw, distance) is its own value. Changing one side never changes the other. On a pulley with exactly equal masses the acceleration is zero, so it keeps moving at a slow, steady speed, as Newton's first law says.
 - **Seesaw**: the plank tips toward the side with the larger moment m·g·d, and the weights ride on it. It only shows "Balanced!" when the typed values make m₁d₁ = m₂d₂. If the drawn sizes are within 12%, it shows "Nearly balanced" and tilts only slightly.
 
 **4. From hand drawing to clean figure**
