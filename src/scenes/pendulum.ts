@@ -22,7 +22,7 @@ import { MAX_VIEW_ASPECT, MIN_VIEW_ASPECT, STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, noteFor, scaleFor } from '../units';
 import { dragConstant, roundFactor } from '../air';
 import { drawnSupport, fmt, TIDY, tidyLog, untidyMatters, untidySegment, untidyTurn } from './tidy';
-import { pendulumTarget, SmoothView, swingAmplitude, swingBox, unionRect } from './pendulum-view';
+import { EDGE_CSS, type Insets, pendulumTarget, SmoothView, swingAmplitude, swingBox, TOP_ROW_FALLBACK_CSS, unionRect } from './pendulum-view';
 
 const KICK_DEG = 20;
 /** Drag k the air switch aims for: about 10 % off a 20° swing per period, the swing visibly dies down in ~30 s. */
@@ -151,7 +151,8 @@ export const buildPendulum: SceneBuilder = (input) => {
   const clean: CleanPart[] = [support, rope, { kind: 'pin', at: () => pivot }, { kind: 'ball', body, radius: bobRadius, tone: 'mass' }];
 
   // View (pendulum-view.ts): the whole swing, from its range (energy now, gravity now), never from the bob's place;
-  // the photo while that fits, else zoomed out in the photo's shape, eased so a gravity change glides.
+  // the photo while that fits with room (CSS px) from the edges and the buttons over its top, else zoomed out in
+  // the photo's shape with the swing in the middle, eased so a gravity change glides.
   const geo = { pivot, length, bobRadius };
   const hatch = 12;
   const supportBox = unionRect(
@@ -159,9 +160,11 @@ export const buildPendulum: SceneBuilder = (input) => {
     { x: support.to.x - hatch, y: support.to.y - hatch, w: 2 * hatch, h: 2 * hatch },
   );
   const smooth = new SmoothView(W, H);
+  const bounds = { min: MIN_VIEW_ASPECT, max: MAX_VIEW_ASPECT };
   const view = () => {
     const box = unionRect(swingBox(geo, swingAmplitude(length, theta, omega, gNow)), supportBox);
-    const target = pendulumTarget(W, H, box, { min: MIN_VIEW_ASPECT, max: MAX_VIEW_ASPECT });
+    const { cssW, insets } = pictureRoom();
+    const target = pendulumTarget({ photoW: W, photoH: H, cssW, insets, bounds }, box);
     return smooth.read(target, performance.now() / 1000);
   };
 
@@ -190,6 +193,38 @@ export const buildPendulum: SceneBuilder = (input) => {
     speedHint: Math.hypot(length * omega, Math.sqrt(2 * STEP_ACCEL * ((params.gravity || 9.8) / 9.8) * length * (1 - Math.cos(theta)))),
   };
 };
+
+/** Floating buttons whose top is within this of the picture's top edge make up the top row (CSS px, as vectors.ts). */
+const TOP_ROW_CSS = 60;
+/** Frames between two readings of the page (the buttons show and hide on their own; the card may be resized). */
+const ROOM_EVERY = 20;
+let room: { cssW: number; insets: Insets; age: number } | null = null;
+
+/**
+ * The picture on screen: its CSS width and the room (CSS px) the swing keeps from its edges: EDGE_CSS all round, and
+ * at the top the row of buttons floating over the picture (the speed badge, "Show what AI saw") plus EDGE_CSS. Read
+ * from the page every few frames; without a page (tests) a phone-width picture with the usual row of buttons.
+ */
+function pictureRoom(): { cssW: number; insets: Insets } {
+  if (room && ++room.age < ROOM_EVERY) return room;
+  let cssW = 390, topRow = TOP_ROW_FALLBACK_CSS;
+  const canvas = typeof document !== 'undefined' ? document.getElementById('stage') : null;
+  if (canvas) {
+    cssW = canvas.clientWidth || cssW;
+    const cr = canvas.getBoundingClientRect();
+    let seen = false, y = 0;
+    for (const el of canvas.parentElement?.querySelectorAll<HTMLElement>('.time-badge, .btn-float') ?? []) {
+      if (el.hidden || !el.offsetParent) continue;
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height || r.top - cr.top > TOP_ROW_CSS) continue;
+      seen = true;
+      y = Math.max(y, r.bottom - cr.top);
+    }
+    if (seen) topRow = y;
+  }
+  room = { cssW, insets: { left: EDGE_CSS, right: EDGE_CSS, top: topRow + EDGE_CSS, bottom: EDGE_CSS }, age: 0 };
+  return room;
+}
 
 /**
  * Walk from the bob up along the string. Stops where the ink ends (free pivot point)
