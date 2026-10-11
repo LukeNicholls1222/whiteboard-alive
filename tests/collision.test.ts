@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { advance, atRest, collide, kinetic, momentum, type Ball1D, type Walls } from '../src/scenes/collision-physics.ts';
 import { guessDiagram } from '../src/guess.ts';
 import type { Contour } from '../src/types.ts';
+import { parseVoice, type VoiceContext } from '../src/voice.ts';
 
 const pair = (m1: number, v1: number, m2: number, v2: number, x1 = 300, x2 = 700, r = 40): [Ball1D, Ball1D] => [
   { x: x1, v: v1, r, m: m1 },
@@ -207,4 +208,45 @@ test('guess: two balls with level arrows but no floor under them are not a colli
   p.circle([250, 300], 42).circle([600, 300], 42);
   p.arrow([310, 300], [420, 300]);
   assert.notEqual(p.guess().diagram, 'collision');
+});
+
+// ---- Voice ------------------------------------------------------------------------------------------------
+
+test('voice: bounciness words, each ball by name, signed speeds', () => {
+  const ctx: VoiceContext = {
+    targets: [
+      { key: 'gravity', value: 9.8, min: 0, max: 25 },
+      { key: 'bounciness', value: 0.5, min: 0, max: 1 },
+      { key: 'leftBallMass', value: 1, min: 0.001, max: 1000 },
+      { key: 'rightBallMass', value: 1.1, min: 0.001, max: 1000 },
+      { key: 'leftSpeed', value: 0.9, min: -100, max: 100 },
+      { key: 'rightSpeed', value: -0.95, min: -100, max: 100 },
+    ],
+    air: false,
+    numbers: true,
+  };
+  const said = (u: string) => parseVoice(u, ctx);
+  assert.deepEqual(said('make it stick').set, { bounciness: 0 });
+  assert.deepEqual(said('bouncier').set, { bounciness: 0.75 });
+  assert.deepEqual(said('less bouncy').set, { bounciness: 0.25 });
+  assert.deepEqual(said('perfectly elastic').set, { bounciness: 1 });
+  assert.deepEqual(said('bounciness 0.3').set, { bounciness: 0.3 });
+  assert.deepEqual(said('left ball 2 kilograms').set, { leftBallMass: 2 });
+  assert.deepEqual(said('right ball minus 1 meter per second').set, { rightSpeed: -1 });
+  assert.deepEqual(said('left ball 2 meters per second to the left').set, { leftSpeed: -2 });
+  assert.deepEqual(said('both balls 3 kilograms').set, { leftBallMass: 3, rightBallMass: 3 });
+  assert.match(said('make it heavier').problems.join(' '), /which ball/);
+});
+
+test('voice: "ball mass 2 kilograms" sets the ball rolling down an incline (its block mass box)', () => {
+  const ctx: VoiceContext = {
+    targets: [
+      { key: 'gravity', value: 9.8, min: 0, max: 25 },
+      { key: 'friction', value: 0.3, min: 0, max: 1.5 },
+      { key: 'blockMass', value: 1, min: 0.001, max: 1000 },
+    ],
+    air: false,
+    numbers: true,
+  };
+  assert.deepEqual(parseVoice('ball mass 2 kilograms', ctx).set, { blockMass: 2 });
 });

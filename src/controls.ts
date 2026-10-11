@@ -406,7 +406,15 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
 
   /** The sentence to suggest for the scene on screen. */
   const example = () =>
-    diagramShown === 'collision' ? 'make it stick' : fields.length ? SAY_EXAMPLE[fields[0].key] : diagramShown === 'incline' ? 'no friction' : 'make it the moon';
+    diagramShown === 'collision'
+      ? 'make it stick'
+      : fields.length
+        ? fields[0].label === 'Ball mass'
+          ? 'ball mass 2 kilograms'
+          : SAY_EXAMPLE[fields[0].key]
+        : diagramShown === 'incline'
+          ? 'no friction'
+          : 'make it the moon';
   const updateHint = () => (hint.textContent = `Tap Talk and say “${example()}” or “${diagramShown === 'collision' ? 'bouncier' : 'moon'}”.`);
 
   /** Value as shown for a number box: "1.00 m", "45°", "2.00 kg". */

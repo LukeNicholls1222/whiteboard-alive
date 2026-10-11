@@ -322,7 +322,8 @@ const DEFS: TargetDef[] = [
     down: words('softer|looser|weaker spring|bouncier|stretchier'),
     step: mul(2),
   },
-  { key: 'blockMass', kw: words('block|box|mass|weight|object|heavy|heavier|lighter'), cats: ['mass'], up: MASS_UP, down: MASS_DOWN, step: mul(2) },
+  // The incline's block, or the ball rolling down it ("ball mass 2 kilograms").
+  { key: 'blockMass', kw: words('block|box|ball|mass|weight|object|heavy|heavier|lighter'), cats: ['mass'], up: MASS_UP, down: MASS_DOWN, step: mul(2) },
   {
     key: 'rampAngle',
     kw: words('angle|slope|ramp|incline|hill|steep|steeper|flatter|tilt'),

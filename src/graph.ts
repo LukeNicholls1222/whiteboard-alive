@@ -181,6 +181,7 @@ export class LiveGraph {
     this.mSamples = [];
     this.pMax = this.keMax = 0;
     this.legend.innerHTML = this.balls ? MOMENTUM_LEGEND : ENERGY_LEGEND;
+    this.root.classList.toggle('lg-momentum', !!this.balls);
     this.metricLabel.textContent = this.balls ? 'Momentum' : this.measuresPeriod() ? 'Period' : 'Speed';
     this.metricValue.textContent = '--';
     // If Moon mode was on for the previous drawing, keep it on for the new one.
@@ -752,6 +753,7 @@ function injectStyle() {
   .lg-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .lg-metric { display: flex; flex-direction: column; min-width: 0; }
   .lg-metric-label { font-size: 12px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: #afafaf; }
+  .lg-momentum .lg-metric-value { font-size: 24px; }
   .lg-metric-value { font-size: 30px; font-weight: 900; color: #3c3c3c; line-height: 1.1; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .lg-moon { display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; flex-shrink: 0; }
   .lg-moon input { position: absolute; opacity: 0; pointer-events: none; }
