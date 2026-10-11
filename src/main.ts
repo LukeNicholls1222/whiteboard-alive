@@ -285,6 +285,9 @@ async function run(file: Blob, example?: string) {
     if (blank) vision.paper = photo;
 
     setStep('ai');
+    // Line finding and the guess are each a few hundred ms on a slow phone: let "Understanding" show in between.
+    await nextFrame();
+    if (stale()) return;
     const t1 = performance.now();
     const annotated = annotate(vision.paper, vision.contours);
 
