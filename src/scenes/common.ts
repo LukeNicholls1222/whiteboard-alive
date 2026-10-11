@@ -66,11 +66,16 @@ export function eraseFromPaper(input: SceneInput, masks: Uint8Array[]): HTMLCanv
   ctx.drawImage(paper, 0, 0);
   if (!masks.length) return c;
   const img = ctx.getImageData(0, 0, W, H);
-  for (let i = 0; i < W * H; i++) {
-    if (masks.some((m) => m[i])) {
-      img.data[i * 4] = 251;
-      img.data[i * 4 + 1] = 250;
-      img.data[i * 4 + 2] = 246;
+  const d = img.data;
+  const N = W * H, M = masks.length;
+  // Plain loops (no closure per pixel): this runs over every pixel of the photo while the scene is built.
+  for (let i = 0; i < N; i++) {
+    let hit = false;
+    for (let k = 0; k < M && !hit; k++) hit = !!masks[k][i];
+    if (hit) {
+      d[i * 4] = 251;
+      d[i * 4 + 1] = 250;
+      d[i * 4 + 2] = 246;
     }
   }
   ctx.putImageData(img, 0, 0);
