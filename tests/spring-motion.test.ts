@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ARROW_PAD, BLOCK_PAD, defaultSpringK, SpringOscillator, springSetup, springView } from '../src/scenes/spring-motion.ts';
+import { arrowReach, defaultSpringK, SpringOscillator, springSetup, springTarget } from '../src/scenes/spring-motion.ts';
 import { meters, mps, scaleFor, STEP_ACCEL, STEP_S } from '../src/units.ts';
 import { MOTION_MAX_S, MOTION_MIN_S, SPRING_SAG_SHARE, springPxPerMeter } from '../src/defaults.ts';
 
@@ -115,63 +115,101 @@ test('the default spring swings once in 2.5-3.5 s of real time (1x), lying or ha
   assert.equal(springSetup(3, undefined, short, 0.25).k, 3);
 });
 
-// ---- The picture shows the whole swing (springView) -----------------------------------------------------------
+// ---- The picture shows the whole swing (springTarget) ---------------------------------------------------------
 
-const LIMITS = { arrowFraction: 0.22, minAspect: 0.45, maxAspect: 1.6 };
+const ARROW = 0.22;
+const BOUNDS = { min: 0.45, max: 1.6 };
+const INSETS = { left: 20, right: 20, top: 66, bottom: 20 };
 type Box = { x: number; y: number; w: number; h: number };
-const holds = (v: Box, x0: number, y0: number, x1: number, y1: number) => x0 >= v.x && y0 >= v.y && x1 <= v.x + v.w && y1 <= v.y + v.h;
+const spec = (photoW: number, photoH: number) => ({ photoW, photoH, cssW: 390, insets: INSETS, bounds: BOUNDS });
 
-/** Every frame of the swing (block and longest arrow) inside the view, with the pads to spare. */
-function swingFits(v: Box, block: Box, axis: { x: number; y: number }, eq: number, amp: number) {
-  const lmax = LIMITS.arrowFraction * Math.min(v.w, v.h);
+/**
+ * Every frame of the swing inside the view's room (CSS px from each edge, the top row of buttons): the block, the
+ * longest arrow's tip, the fixed end. Returns the smallest room left (CSS px), or a message when something is out.
+ */
+function swingRoom(v: Box, photo: { w: number; h: number }, block: Box, axis: { x: number; y: number }, eq: number, amp: number, anchor?: { x: number; y: number }) {
+  const view = v ?? { x: 0, y: 0, w: photo.w, h: photo.h };
+  const k = view.w / 390; // world px per CSS px
+  const lmax = ARROW * Math.min(view.w, view.h);
+  let least = Infinity;
+  const room = (x: number, y: number) => {
+    const l = (x - view.x) / k - INSETS.left + 20, r = (view.x + view.w - x) / k - INSETS.right + 20;
+    const t = (y - view.y) / k - INSETS.top + 20, b = (view.y + view.h - y) / k - INSETS.bottom + 20;
+    least = Math.min(least, l, r, t, b);
+  };
   for (let i = 0; i < 360; i++) {
     const th = (i * Math.PI) / 180;
     const u = eq + amp * Math.cos(th);
-    const pad = BLOCK_PAD * v.w * 0.99;
     const bx = block.x + axis.x * u, by = block.y + axis.y * u;
-    if (!holds(v, bx - pad, by - pad, bx + block.w + pad, by + block.h + pad)) return `block out at ${i}°`;
-    // Arrow from the centre, as long as it gets: lmax at the middle of the swing.
+    room(bx, by);
+    room(bx + block.w, by + block.h);
     const len = lmax * Math.abs(Math.sin(th)), s = -Math.sign(Math.sin(th));
-    const tx = block.x + block.w / 2 + axis.x * (u + s * len), ty = block.y + block.h / 2 + axis.y * (u + s * len);
-    const ap = ARROW_PAD * v.w * 0.99;
-    if (!holds(v, tx - ap * Math.abs(axis.x), ty - ap * Math.abs(axis.y), tx + ap * Math.abs(axis.x), ty + ap * Math.abs(axis.y))) return `arrow out at ${i}°`;
+    room(block.x + block.w / 2 + axis.x * (u + s * len), block.y + block.h / 2 + axis.y * (u + s * len));
   }
-  return null;
+  if (anchor) room(anchor.x, anchor.y);
+  return least;
 }
 
-test('springView: a block swinging past the photo is shown whole at both turning points, with its arrow', () => {
+test('springTarget: a block swinging past the photo zooms out in the photo shape, everything 20 CSS px inside', () => {
   // Horizontal spring, the block drawn near the right edge of a 960 × 720 photo.
   const block = { x: 820, y: 300, w: 120, h: 110 };
   const axis = { x: 1, y: 0 };
-  const v = springView({ photoW: 960, photoH: 720, block, axis, eq: 0, amp: 80 }, LIMITS);
+  const v = springTarget(spec(960, 720), { block, axis, eq: 0, amp: 80 }, ARROW);
   assert.ok(v, 'a view is needed');
-  assert.equal(swingFits(v, block, axis, 0, 80), null);
-  assert.ok(holds(v, 0, 0, 960, 720), 'the whole photo stays in the picture');
-  // Wider, never lower than the photo: the picture's CSS height does not shrink.
-  assert.ok(v.h / v.w >= 720 / 960 - 1e-9, `aspect ${v.h / v.w}`);
-  // A few px past the block, not a big zoom-out.
-  assert.ok(v.x + v.w - (block.x + block.w + 80) < 0.06 * v.w + LIMITS.arrowFraction * v.h, `right room ${v.x + v.w - (block.x + block.w + 80)}`);
+  assert.ok(Math.abs(v.h / v.w - 720 / 960) < 1e-9, `aspect ${v.h / v.w}`);
+  assert.ok(v.w >= 960 - 1e-9, 'never zooms in');
+  assert.ok(swingRoom(v, { w: 960, h: 720 }, block, axis, 0, 80) >= 20 - 1e-6);
 });
 
-test('springView: hanging spring under stronger gravity (rest moves down) and a block well inside the photo', () => {
-  const block = { x: 420, y: 560, w: 100, h: 90 };
+test('springTarget: a hanging block sagging far (heavy, soft spring, strong gravity) keeps the picture height and the room', () => {
+  const block = { x: 420, y: 500, w: 100, h: 90 };
   const axis = { x: 0, y: 1 };
-  const v = springView({ photoW: 960, photoH: 720, block, axis, eq: 60, amp: 70 }, LIMITS);
-  assert.ok(v);
-  assert.equal(swingFits(v, block, axis, 60, 70), null);
-  assert.ok(v.h / v.w <= LIMITS.maxAspect + 1e-9);
-  // Small swing in the middle of the photo: the photo as it is.
-  assert.equal(springView({ photoW: 960, photoH: 720, block: { x: 430, y: 300, w: 100, h: 90 }, axis, eq: 0, amp: 30 }, LIMITS), null);
+  const anchor = { x: 470, y: 200 };
+  for (const [eq, amp] of [[0, 30], [60, 70], [600, 650], [3000, 3020], [-900, 920]]) {
+    const v = springTarget(spec(960, 1280), { block, axis, eq, amp, anchor }, ARROW);
+    if (v) assert.ok(Math.abs(v.h / v.w - 1280 / 960) < 1e-9, `aspect ${v.h / v.w} at eq ${eq}`);
+    const least = swingRoom(v!, { w: 960, h: 1280 }, block, axis, eq, amp, anchor);
+    assert.ok(least >= 20 - 1e-6, `room ${least.toFixed(2)} CSS px at eq ${eq}`);
+    if (v && v.w > 1.2 * 960) {
+      // Zoomed out: the swing is in the middle of the room.
+      const mid = block.y + block.h / 2 + eq;
+      const roomMid = v.y + ((INSETS.top + (v.h * 390) / v.w - INSETS.bottom) / 2) * (v.w / 390);
+      assert.ok(Math.abs(mid - roomMid) < 0.1 * v.h + 300, `centre ${mid} vs ${roomMid}`);
+    }
+  }
+  // A small swing in the middle of the photo: the photo as it is.
+  assert.equal(springTarget(spec(960, 1280), { block: { x: 430, y: 500, w: 100, h: 90 }, axis, eq: 0, amp: 30 }, ARROW), null);
 });
 
-test('springView never shows less than before for the same photo, so a rebuild never shrinks the picture', () => {
-  const block = { x: 820, y: 300, w: 120, h: 110 };
-  const big = springView({ photoW: 960, photoH: 720, block, axis: { x: 1, y: 0 }, eq: 0, amp: 80 }, LIMITS)!;
-  const small = springView({ photoW: 960, photoH: 720, block, axis: { x: 1, y: 0 }, eq: 0, amp: 20 }, LIMITS, big)!;
-  assert.ok(holds(small, big.x, big.y, big.x + big.w, big.y + big.h));
-  // The same swing again gives the same view (it holds still).
-  const again = springView({ photoW: 960, photoH: 720, block, axis: { x: 1, y: 0 }, eq: 0, amp: 80 }, LIMITS, big)!;
-  assert.ok(Math.abs(again.w - big.w) < 0.5 && Math.abs(again.h - big.h) < 0.5 && Math.abs(again.x - big.x) < 0.5 && Math.abs(again.y - big.y) < 0.5);
+test('springTarget: the same swing gives the same view (the camera holds still)', () => {
+  const r = { block: { x: 820, y: 300, w: 120, h: 110 }, axis: { x: 0, y: 1 }, eq: 400, amp: 420 };
+  const a = springTarget(spec(960, 720), r, ARROW)!;
+  const b = springTarget(spec(960, 720), { ...r, amp: r.amp + 1e-9 }, ARROW)!;
+  assert.ok(Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6 && Math.abs(a.w - b.w) < 1e-6);
+});
+
+test('arrowReach: the arrow tip (as vectors.ts scales it) stays within the reach, also right after a gravity change', () => {
+  const omega = 0.05, lmax = 120;
+  // Gravity changed with the block at d0 from the new middle, moving at v0; the arrows were scaled to vSeen so far.
+  for (const [d0, v0, vSeen] of [[300, 2, 0.5], [300, 2, 30], [-300, -2, 1], [300, -2, 1], [0, 4, 4], [10, 0.1, 0.05], [200, 0, 1]]) {
+    const amp = Math.hypot(d0, v0 / omega);
+    const reach = arrowReach(amp, lmax, 0, { u: d0, v: v0, vSeen, omega });
+    // Run the swing (two periods) and the arrow scale: k ≤ lmax / max(seen, now), seen only grows.
+    let seen = Math.max(0.9 * vSeen, Math.abs(v0)), u = d0, v = v0, worst = 0;
+    for (let i = 0; i < Math.round((4 * Math.PI) / omega); i++) {
+      const c = Math.cos(omega), sn = Math.sin(omega);
+      [u, v] = [u * c + (v / omega) * sn, -u * omega * sn + v * c];
+      seen = Math.max(seen, Math.abs(v));
+      const len = (lmax * Math.abs(v)) / seen;
+      worst = Math.max(worst, Math.abs(u + Math.sign(v) * len));
+    }
+    // Half a px: the speeds are seen one step at a time, so the fastest seen can sit a hair under Aω.
+    assert.ok(worst <= reach + 0.5, `d0 ${d0} v0 ${v0}: tip ${worst.toFixed(1)} > reach ${reach.toFixed(1)}`);
+    assert.ok(reach <= amp + lmax + 1e-9);
+  }
+  // Without a start (or once the swing has been seen at full speed) it is the steady bound.
+  assert.equal(arrowReach(300, lmax, 0), Math.hypot(300, lmax));
+  assert.equal(arrowReach(300, lmax, 0, { u: 200, v: 3, vSeen: 340 * omega, omega }), Math.hypot(300, lmax));
 });
 
 test('amplitude and middle of the swing stay put between gravity changes', () => {

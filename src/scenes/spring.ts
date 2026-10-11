@@ -14,7 +14,9 @@ import { MAX_VIEW_ASPECT, MIN_VIEW_ASPECT, STEP_ACCEL, STEP_MS } from '../sim';
 import { noteFor, scaleFor } from '../units';
 import { springPxPerMeter } from '../defaults';
 import { LMAX_FRACTION } from '../vectors';
-import { SpringOscillator, springSetup, springView } from './spring-motion';
+import { holdsNow, SpringOscillator, springSetup, springTarget } from './spring-motion';
+import { SmoothView } from './pendulum-view';
+import { pictureRoom } from './picture-room';
 
 /** Oscillation amplitude as a fraction of the drawn spring length (clamped below). */
 const KICK_FRACTION = 0.25;
@@ -26,8 +28,6 @@ const DEBUG = typeof location !== 'undefined' && new URLSearchParams(location.se
 
 /** One plan per photo (~0.1 s): rebuilds after a slider or a typed number reuse it. */
 const PLANS = new WeakMap<Uint8Array, SpringPlan>();
-/** The largest view shown for a photo: a rebuild (Mass / Spring pill, typed number) never shows less of the world. */
-const VIEWS = new WeakMap<Uint8Array, ViewRect>();
 
 const FIXED_ROLES = new Set(['pivot', 'ground', 'incline', 'wheel', 'cannon']);
 const MASS_ROLES = new Set(['mass', 'bob', 'projectile']);
@@ -330,30 +330,48 @@ export const buildSpring: SceneBuilder = (input) => {
   };
   place();
   const bb = body.bounds;
-  // The picture shows the whole swing (spring-motion.ts springView): both turning points and the longest velocity
-  // arrow, from the middle of the swing and its amplitude, never from where the block is now. Those only change when
-  // gravity does (slider, voice, Moon), so the view holds still between changes, and it only ever grows for a photo.
-  const swingBox = { x: bb.min.x, y: bb.min.y, w: bb.max.x - bb.min.x, h: bb.max.y - bb.min.y };
-  const limits = { arrowFraction: LMAX_FRACTION, minAspect: MIN_VIEW_ASPECT, maxAspect: MAX_VIEW_ASPECT };
-  let shown = VIEWS.get(input.ink) ?? null;
-  let seen = { eq: NaN, amp: NaN };
+  // The picture shows the whole swing (spring-motion.ts springTarget): both turning points, the longest velocity
+  // arrow and the fixed end, from the middle of the swing and its amplitude under the gravity now, never from where
+  // the block is now. Those only change when gravity does (slider, voice, Moon) or on a rebuild (Mass, Spring), so the
+  // view holds still in between; it keeps the photo's shape, so the picture's height never changes, and zooms out
+  // (eased, as the pendulum's) when the swing needs more room.
+  // From the outline itself: Matter's body.bounds also reach ahead by the velocity.
+  const vx = body.vertices.map((p) => p.x), vy = body.vertices.map((p) => p.y);
+  const swingBox = { x: Math.min(...vx), y: Math.min(...vy), w: Math.max(...vx) - Math.min(...vx), h: Math.max(...vy) - Math.min(...vy) };
+  const bounds = { min: MIN_VIEW_ASPECT, max: MAX_VIEW_ASPECT };
+  // Gravity along the spring right now (px per step²): from the scene's gravity until the first step, then the engine's.
+  let gAlong = STEP_ACCEL * ((Number(input.analysis.params?.gravity) || 9.8) / 9.8) * axis.y;
+  const smooth = new SmoothView(W, H);
+  let seen = { eq: NaN, amp: NaN, cssW: NaN, top: NaN, target: null as ViewRect | null };
+  let start = { u: 0, v: 0, vSeen: 0, omega };
+  // Fastest the block has gone (px per step), from the speed the arrows are scaled to at first (speedHint).
+  let vSeen = amp * omega;
   const view = (): ViewRect | null => {
-    const eq = motion.eq, a = motion.amplitude();
-    if (Math.abs(eq - seen.eq) < 0.01 && Math.abs(a - seen.amp) < 0.01) return shown;
-    seen = { eq, amp: a };
-    const need = springView({ photoW: W, photoH: H, block: swingBox, axis, eq, amp: a }, limits, shown);
-    const inside = (o: ViewRect, n: ViewRect) => n.x >= o.x - 0.5 && n.y >= o.y - 0.5 && n.x + n.w <= o.x + o.w + 0.5 && n.y + n.h <= o.y + o.h + 0.5;
-    if (need && !(shown && inside(shown, need))) {
-      shown = need;
-      VIEWS.set(input.ink, need);
+    const eq = motion.restAt(gAlong);
+    const a = Math.hypot(motion.u - eq, motion.v / omega);
+    const { cssW, insets } = pictureRoom();
+    const spec = { photoW: W, photoH: H, cssW, insets, bounds };
+    // A new swing (gravity changed, or just built): where it starts decides how long the arrow may get (arrowReach).
+    if (!(Math.abs(eq - seen.eq) < 0.01 && Math.abs(a - seen.amp) < 0.01)) start = { u: motion.u, v: motion.v, vSeen, omega };
+    const range = { block: swingBox, axis, eq, amp: a, anchor, start };
+    if (!(Math.abs(eq - seen.eq) < 0.01 && Math.abs(a - seen.amp) < 0.01 && cssW === seen.cssW && insets.top === seen.top)) {
+      seen = { eq, amp: a, cssW, top: insets.top, target: springTarget(spec, range, LMAX_FRACTION) };
+    }
+    const t = performance.now() / 1000;
+    const shown = smooth.read(seen.target, t);
+    // Gliding after a sudden gravity change, the block may already run past the view in between: then no glide.
+    if (shown !== seen.target && !holdsNow(spec, range, motion.u, motion.v, LMAX_FRACTION, shown)) {
+      smooth.jump(seen.target, t);
+      return smooth.read(seen.target, t);
     }
     return shown;
   };
-  view();
   // Every step:the exact motion under the engine's gravity right now (slider, voice, Moon mode), then the block there.
   const onStep = (engine: Matter.Engine) => {
     const g = engine.gravity;
-    motion.step((g.x * axis.x + g.y * axis.y) * g.scale * STEP_MS * STEP_MS);
+    gAlong = (g.x * axis.x + g.y * axis.y) * g.scale * STEP_MS * STEP_MS;
+    motion.step(gAlong);
+    vSeen = Math.max(vSeen, Math.abs(motion.v));
     place();
   };
 
