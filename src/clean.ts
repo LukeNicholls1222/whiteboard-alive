@@ -201,10 +201,12 @@ function drawPart(ctx: CanvasRenderingContext2D, p: CleanPart, px: number) {
       const world = ctx.getTransform();
       ctx.translate(p.body.position.x, p.body.position.y);
       logPose(ctx, world, p.body, null);
-      return filled(ctx, p.tone, px, r, () => {
+      filled(ctx, p.tone, px, r, () => {
         ctx.beginPath();
         ctx.arc(0, 0, r, 0, Math.PI * 2);
       });
+      if (p.spokes) drawSpokes(ctx, r, p.body.angle, COLORS[p.tone].edge, Math.min(CSS.spoke * px, 0.12 * r));
+      return;
     }
     case 'wheel':
       return drawWheel(ctx, p.center, p.radius, p.angle(), px);
@@ -406,20 +408,27 @@ function drawWheel(ctx: CanvasRenderingContext2D, c: Point, r: number, angle: nu
     ctx.beginPath();
     ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
   });
-  // Two spokes (one through the other) show it turning.
-  ctx.strokeStyle = COLORS.device.edge;
-  ctx.lineWidth = CSS.spoke * px;
-  for (const a of [angle, angle + Math.PI / 2]) {
-    const dx = Math.cos(a) * r * 0.78, dy = Math.sin(a) * r * 0.78;
-    ctx.beginPath();
-    ctx.moveTo(c.x - dx, c.y - dy);
-    ctx.lineTo(c.x + dx, c.y + dy);
-    ctx.stroke();
-  }
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  drawSpokes(ctx, r, angle, COLORS.device.edge, CSS.spoke * px);
+  ctx.restore();
   ctx.fillStyle = COLORS.line;
   ctx.beginPath();
   ctx.arc(c.x, c.y, Math.min(CSS.pin * px, r * 0.25), 0, Math.PI * 2);
   ctx.fill();
+}
+
+/** Two spokes (one through the other) about the origin, turned by `angle`: they show a wheel or ball turning. */
+function drawSpokes(ctx: CanvasRenderingContext2D, r: number, angle: number, color: string, width: number) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  for (const a of [angle, angle + Math.PI / 2]) {
+    const dx = Math.cos(a) * r * 0.78, dy = Math.sin(a) * r * 0.78;
+    ctx.beginPath();
+    ctx.moveTo(-dx, -dy);
+    ctx.lineTo(dx, dy);
+    ctx.stroke();
+  }
 }
 
 /** Evenly spaced zigzag with short straight leads at both ends; follows the ends as they move. */

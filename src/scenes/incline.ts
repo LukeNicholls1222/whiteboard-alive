@@ -1,14 +1,16 @@
 // Incline: a drawn triangle becomes a static ramp, the drawn block on it slides down (and may stop by friction).
 // Once it has stopped, it waits a moment and slides again from the start.
+// A round thing drawn on the slope is a ball: it rolls instead (5/7 g sinθ, turning as it goes; see roll.ts).
 // An entered angle (Your numbers) stretches the drawn triangle up or down to that slope, base kept as drawn.
 
 import Matter from 'matter-js';
 import type { CleanPart, Contour, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
 import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
 import { replayWhenStopped } from './replay';
-import { PAPER_FILL, STEP_ACCEL } from '../sim';
+import { PAPER_FILL, STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, noteFor } from '../units';
 import { fmt, lineDeg, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters, untidyTurn } from './tidy';
+import { ROUND_MAX_RESIDUAL, rollAccel, type RollPath, rollPath, rollPosition, rollStart, rollStep, rollTangent, roundness, SlopeAccelMeter, SOLID_BALL_K } from './roll';
 
 /** Coulomb friction coefficient μ used when the AI gives no `params.friction`. */
 export const DEFAULT_FRICTION = 0.3;
@@ -21,6 +23,8 @@ const SNAP_PX = 30;
 const SNAP_BLOCK_FRACTION = 0.6;
 /** Extra rotational inertia so wobbly hand-drawn boxes slide instead of tumbling. */
 const INERTIA_SCALE = 4;
+
+const DEBUG = typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug');
 
 type Tri = [Point, Point, Point];
 
@@ -417,6 +421,8 @@ function findRamp(input: SceneInput, c: Contour, ink: Uint8Array): Ramp | null {
 interface Block {
   /** Physics outline. */
   hull: Point[];
+  /** Outline of the drawn shape itself (no points added on the slope): what the ball test looks at. */
+  outline: Point[];
   centroid: Point;
   /** Pixels that move with the block (sprite) and pixels erased from the background. */
   sprite: Uint8Array;
@@ -425,7 +431,7 @@ interface Block {
 
 function blockFromContour(input: SceneInput, c: Contour): Block {
   const mask = contourMask(input, [c]);
-  return { hull: c.hull, centroid: c.centroid, sprite: mask, erase: mask };
+  return { hull: c.hull, outline: c.hull, centroid: c.centroid, sprite: mask, erase: mask };
 }
 
 /** Is this outline big and solid enough to be a block (not a paper-edge sliver or a stray stroke)? */
@@ -466,7 +472,7 @@ function splitBlocks(input: SceneInput, c: Contour, ink: Uint8Array, ramp: Ramp,
     const erase = new Uint8Array(W * H);
     for (let i = 0; i < erase.length; i++) if (sprite[i] && !inTri(keep, i % W, Math.floor(i / W))) erase[i] = 1;
     const m = hull.reduce((s, p) => ({ x: s.x + p.x / hull.length, y: s.y + p.y / hull.length }), { x: 0, y: 0 });
-    out.push({ hull, centroid: m, sprite, erase });
+    out.push({ hull, outline: b.hull, centroid: m, sprite, erase });
   }
   return out;
 }
@@ -492,7 +498,7 @@ function pickBlocks(input: SceneInput, usable: Contour[], incline: Contour, ink:
   const others = usable.filter((c) => c !== incline);
   const byRole = others.filter((c) => {
     const r = roleOf(input, c.id)?.role;
-    return r === 'mass' || r === 'projectile';
+    return r === 'mass' || r === 'projectile' || r === 'bob';
   });
   const solidByRole = byRole.filter((c) => blockLike(c.hull, ramp));
   if (solidByRole.length) return solidByRole.map((c) => blockFromContour(input, c));
@@ -653,6 +659,77 @@ function tidyRamp(tri: Tri, slope: Slope): { tri: Tri; slope: Slope; notes: stri
   return { tri: out, slope: slopeFrom(top, foot, corner), notes, floorTurn: (floorDeg * Math.PI) / 180 };
 }
 
+// ---- Ball: rolls instead of sliding --------------------------------------------------------------------
+
+interface Ball {
+  body: Matter.Body;
+  r: number;
+  path: RollPath;
+  meter: SlopeAccelMeter;
+  slipping: () => boolean;
+  /** After Engine.update: move one step along the path and put the body there. */
+  step: (engine: Matter.Engine) => void;
+  /** After the replay hook: if it put the body back to the start, start the roll again too. */
+  check: () => void;
+}
+
+/**
+ * A ball of radius `r` drawn at `center`. Its Matter body touches nothing (collision mask 0): roll.ts moves it along
+ * the slope and floor every step, and the body only carries the pose and velocity for the picture, the arrows and the
+ * graph (spin in angularVelocity, rad per step). μ is read live from plugin.inclineMu, like a sliding block's.
+ */
+function makeBall(o: { center: Point; r: number; slope: Slope; floorY: number; width: number; mu: number }): Ball {
+  const { r, slope } = o;
+  const path = rollPath({ top: slope.top, dir: slope.dir, normal: slope.normal, floorY: o.floorY, start: o.center, r, width: o.width });
+  // Drawn past the foot of the ramp: a small push along the floor, so it still rolls (never a still scene).
+  const v0 = path.slopeLen > 0 ? 0 : MIN_START_SPEED;
+  let st = rollStart(path, v0);
+  const p0 = rollPosition(path, st);
+  const body = Matter.Bodies.circle(p0.x, p0.y, r, {
+    friction: 0,
+    frictionStatic: 0,
+    frictionAir: 0,
+    restitution: 0,
+    collisionFilter: { group: 0, category: 0x0001, mask: 0 },
+    plugin: { inclineMu: o.mu },
+  });
+  const meter = new SlopeAccelMeter();
+  const sign = path.floorDir;
+  let last = { x: p0.x, y: p0.y };
+  const place = () => {
+    const p = rollPosition(path, st);
+    const t = rollTangent(path, st);
+    Matter.Body.setPosition(body, p);
+    Matter.Body.setAngle(body, sign * st.turn);
+    Matter.Body.setVelocity(body, { x: t.x * st.v, y: t.y * st.v });
+    Matter.Body.setAngularVelocity(body, (sign * st.w) / r);
+    last = { x: p.x, y: p.y };
+  };
+  place();
+  return {
+    body,
+    r,
+    path,
+    meter,
+    slipping: () => st.slipping,
+    step(engine) {
+      const k = engine.gravity.scale * STEP_MS * STEP_MS;
+      const g = { x: engine.gravity.x * k, y: engine.gravity.y * k };
+      const mu = Math.max(0, Number((body.plugin as { inclineMu?: number }).inclineMu ?? DEFAULT_FRICTION));
+      rollStep(path, st, g, mu);
+      place();
+      // Measured on the body itself, as the picture shows it.
+      if (!st.onFloor) meter.push(dot(sub(body.position, path.top), path.dir), g.x * 1e6 + g.y);
+    },
+    check() {
+      if (Math.hypot(body.position.x - last.x, body.position.y - last.y) <= 0.5) return;
+      st = rollStart(path, v0);
+      meter.reset();
+      place();
+    },
+  };
+}
+
 export const buildIncline: SceneBuilder = (input) => {
   const { width: W, height: H } = input;
   const usable = input.contours.filter((c) => c.hull.length >= 3);
@@ -710,14 +787,57 @@ export const buildIncline: SceneBuilder = (input) => {
     y: Math.min(a.y, b.y, c.y) - rb.min.y,
   });
 
+  // Floor at the ramp's base (world = photo + blank strip on top when the ramp was stretched taller than the photo).
+  const pad = stretched ? fit.st.pad : 0;
+  const worldH = H + pad;
+  const floorY = Math.min(worldH, Math.max(a.y, b.y, c.y));
+  // The ramp's own stroke: left out of a ball's cut-out (a ball drawn touching the slope shares ink with it).
+  const keepRamp = growTri(found.inner, found.stroke + 2);
+
   const bodies: Matter.Body[] = [ramp];
   const moving: Matter.Body[] = [];
+  /** Balls (round things on the slope): they roll, see roll.ts. */
+  const balls: Ball[] = [];
+  const clean: CleanPart[] = [];
   const sprites: Sprite[] = [];
   const masks: Uint8Array[] = [];
   /** Each block's cut-out mask (photo px) and its pose when the scene starts, for drawnAt. */
   const starts: { mask: Uint8Array; origin: Point; originAngle: number; at: Point; angle: number }[] = [];
 
   for (const blk of blocks) {
+    const shape = roundness(blk.outline);
+    if (DEBUG)
+      console.log(
+        `[roll] ${shape?.round ? 'ball' : 'block'}: circle fit residual ${shape ? shape.residual.toFixed(3) : '--'} (round at most ${ROUND_MAX_RESIDUAL})${shape?.round ? `, r ${shape.circle.r.toFixed(1)} px` : ''}`,
+      );
+    if (shape?.round) {
+      const circ = shape.circle;
+      const ball = makeBall({
+        center: stretched ? onNewSlope(circ.c) : circ.c,
+        r: circ.r,
+        slope,
+        floorY,
+        width: W,
+        mu,
+      });
+      // Cut-out of the drawn ball: a disc around it, without the ramp's stroke under it.
+      const sprite = new Uint8Array(W * H);
+      const rr = (circ.r + 3) ** 2;
+      const x0 = Math.max(0, Math.floor(circ.c.x - circ.r - 3)), x1 = Math.min(W - 1, Math.ceil(circ.c.x + circ.r + 3));
+      const y0 = Math.max(0, Math.floor(circ.c.y - circ.r - 3)), y1 = Math.min(H - 1, Math.ceil(circ.c.y + circ.r + 3));
+      for (let y = y0; y <= y1; y++)
+        for (let x = x0; x <= x1; x++) if ((x - circ.c.x) ** 2 + (y - circ.c.y) ** 2 <= rr && !inTri(keepRamp, x, y)) sprite[y * W + x] = 1;
+      const body = ball.body;
+      bodies.push(body);
+      moving.push(body);
+      balls.push(ball);
+      masks.push(sprite);
+      starts.push({ mask: sprite, origin: circ.c, originAngle: 0, at: { ...body.position }, angle: body.angle });
+      const cut = cutSprite(input, sprite);
+      sprites.push({ image: cut.image, offset: cut.offset, follow: { kind: 'body', body, origin: circ.c, originAngle: 0 } });
+      clean.push({ kind: 'ball', body, radius: circ.r, tone: 'mass', spokes: true });
+      continue;
+    }
     const body = Matter.Bodies.fromVertices(blk.centroid.x, blk.centroid.y, [blk.hull], {
       ...surface,
       frictionAir: 0.001,
@@ -772,14 +892,12 @@ export const buildIncline: SceneBuilder = (input) => {
     starts.push({ mask: blk.sprite, origin, originAngle, at: { ...body.position }, angle: body.angle });
     const cut = cutSprite(input, blk.sprite);
     sprites.push({ image: cut.image, offset: cut.offset, follow: { kind: 'body', body, origin, originAngle } });
+    clean.push({ kind: 'body', body, tone: 'mass' });
   }
   if (bodies.length < 2) throw new Error('incline: block bodies could not be built');
   const block = bodies[1];
 
-  // Floor at the ramp's base and walls at the image edges keep the block on screen (world = photo + blank strip on top).
-  const pad = stretched ? fit.st.pad : 0;
-  const worldH = H + pad;
-  const floorY = Math.min(worldH, Math.max(a.y, b.y, c.y));
+  // Floor at the ramp's base and walls at the image edges keep the block on screen.
   const wallOpts = { isStatic: true, ...surface };
   bodies.push(
     Matter.Bodies.rectangle(W / 2, floorY + 50, W * 3, 100, wallOpts),
@@ -823,7 +941,10 @@ export const buildIncline: SceneBuilder = (input) => {
     const turn = untidyTurn({ x: slope.bottom.x, y: floorY }, tidied.floorTurn);
     if (untidyMatters(turn, W / 2)) groundPart.untidy = turn;
   }
-  const clean: CleanPart[] = [groundPart, rampPart, ...moving.map((body): CleanPart => ({ kind: 'body', body, tone: 'mass' }))];
+  clean.unshift(groundPart, rampPart);
+  const replay = replayWhenStopped(moving);
+  const rolling = balls.find((bl) => bl.body === block);
+  const gFactor = (input.analysis.params.gravity || 9.8) / 9.8;
   return {
     bodies,
     constraints: [],
@@ -833,7 +954,14 @@ export const buildIncline: SceneBuilder = (input) => {
     label: 'Incline',
     // The picture shows the blank strip too (the photo plus `pad` above it, in this scene's lowered world).
     ...(stretched ? { view: pad > 0 ? { x: 0, y: 0, w: W, h: worldH } : undefined, drawnAt } : {}),
-    onStep: replayWhenStopped(moving),
+    // Balls are moved by roll.ts after every Engine.update; a replay puts them back to the start (see Ball.check).
+    onStep: balls.length
+      ? (engine) => {
+          for (const bl of balls) bl.step(engine);
+          replay(engine);
+          for (const bl of balls) bl.check();
+        }
+      : replay,
     measures: { ramp: slope.length, ground: x1 - x0 },
     parts: {
       // Inside the triangle: blank paper, and never where the block slides.
@@ -851,8 +979,13 @@ export const buildIncline: SceneBuilder = (input) => {
     physics: {
       rampAngle: deg(drawnSlope.angle),
       rampAngleUsed: { value: deg(slope.angle), from: angleFrom, max: fit.maxDeg },
+      ...(rolling
+        ? { rolling: { body: rolling.body, radius: rolling.r, inertia: SOLID_BALL_K, measured: () => rolling.meter.value(), slipping: () => rolling.slipping() } }
+        : {}),
     },
     // Fastest at the foot of the ramp: v² = v₀² + 2·g(sin θ − μ cos θ)·(slope left below the block) (v₀ = the starting push above).
-    speedHint: Math.hypot(Math.max(MIN_START_SPEED, Math.sqrt(2 * Math.max(0, STEP_ACCEL * (mu * Math.cos(slope.angle) - Math.sin(slope.angle))) * slope.length * MIN_SLIDE_FRACTION)), Math.sqrt(2 * Math.max(0, STEP_ACCEL * ((input.analysis.params.gravity || 9.8) / 9.8) * (Math.sin(slope.angle) - mu * Math.cos(slope.angle))) * slope.length * Math.min(1, Math.max(0, 1 - along(block.position, slope))))),
+    speedHint: rolling
+      ? Math.max(MIN_START_SPEED, Math.sqrt(2 * Math.max(0, rollAccel(STEP_ACCEL * gFactor, slope.angle, mu).a) * rolling.path.slopeLen))
+      : Math.hypot(Math.max(MIN_START_SPEED, Math.sqrt(2 * Math.max(0, STEP_ACCEL * (mu * Math.cos(slope.angle) - Math.sin(slope.angle))) * slope.length * MIN_SLIDE_FRACTION)), Math.sqrt(2 * Math.max(0, STEP_ACCEL * ((input.analysis.params.gravity || 9.8) / 9.8) * (Math.sin(slope.angle) - mu * Math.cos(slope.angle))) * slope.length * Math.min(1, Math.max(0, 1 - along(block.position, slope))))),
   };
 };

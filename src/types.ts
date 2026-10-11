@@ -183,8 +183,11 @@ export interface Untidy {
 export type CleanShape =
   /** A rigid body drawn as its own convex outline, corners slightly rounded (blocks, weights, falling objects). */
   | { kind: 'body'; body: Matter.Body; tone: CleanTone }
-  /** A round body (bob, ball) of radius `radius` world px; never smaller than `minCss` CSS px on screen. */
-  | { kind: 'ball'; body: Matter.Body; radius: number; tone: CleanTone; minCss?: number }
+  /**
+   * A round body (bob, ball) of radius `radius` world px; never smaller than `minCss` CSS px on screen. `spokes`: two
+   * lines across it turn with the body (a rolling ball), like a pulley wheel's.
+   */
+  | { kind: 'ball'; body: Matter.Body; radius: number; tone: CleanTone; minCss?: number; spokes?: boolean }
   /** A pulley wheel at a fixed centre, turned by `angle()` (radians), with spokes. */
   | { kind: 'wheel'; center: Point; radius: number; angle: () => number }
   /** String / rope: a straight line between two points (read every frame). */
@@ -273,6 +276,12 @@ export interface BuiltScene {
      * entered angle would not fit on the picture), and the steepest angle this drawing can be stretched to.
      */
     rampAngleUsed?: { value: number; from: ValueSource; max: number };
+    /**
+     * Incline with a ball on the slope: it rolls (scenes/roll.ts). `inertia` = I / (m r²), `radius` in world px (the
+     * graph adds the spin energy ½ I ω²); `measured` = its acceleration down the slope so far, px per step² (null
+     * until measured); `slipping` = sliding while it turns (tan θ > 7/2 μ).
+     */
+    rolling?: { body: Matter.Body; radius: number; inertia: number; measured: () => number | null; slipping: () => boolean };
     /** Pendulum / projectile: the scene reads air drag; the factor ×N on real air the switch sets (air.ts). */
     airDrag?: number;
   };
