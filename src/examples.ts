@@ -14,6 +14,9 @@ export const EXAMPLES: Example[] = [
   { name: 'projectile-gen-01', title: 'Launch' },
   { name: 'pulley-gen-01', title: 'Pulley' },
   { name: 'pulley-gen-03', title: 'Big pulley' },
+  { name: 'roll-gen-02', title: 'Rolling ball' },
+  { name: 'collision-gen-01', title: 'Collision' },
+  { name: 'lever-gen-01', title: 'Seesaw' },
 ];
 
 const BASE = `${import.meta.env.BASE_URL}examples/`;

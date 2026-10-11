@@ -1,0 +1,11 @@
+{
+  "diagram": "collision",
+  "confidence": 0.6,
+  "bodies": [],
+  "constraints": [],
+  "params": {
+    "gravity": 9.8
+  },
+  "explanation": "Two balls roll toward each other and bounce apart.",
+  "source": "cached"
+}

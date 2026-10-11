@@ -31,7 +31,7 @@
  *   One device only: open the page with ?sw=0 (handled by src/sw-register.ts).
  */
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const CACHE_PREFIX = 'whiteboard-alive-';
 const CACHE = `${CACHE_PREFIX}v${CACHE_VERSION}`;
 
@@ -41,9 +41,15 @@ const NETWORK_TIMEOUT_MS = 4000;
 /** Files under public/ that the gallery needs offline. Keep in step with public/examples/ and src/examples.ts. */
 const PRECACHE_EXAMPLES = [
   'examples/fingerprints.json',
+  'examples/collision-gen-01-thumb.jpg',
+  'examples/collision-gen-01.jpg',
+  'examples/collision-gen-01.json',
   'examples/incline-gen-01-thumb.jpg',
   'examples/incline-gen-01.jpg',
   'examples/incline-gen-01.json',
+  'examples/lever-gen-01-thumb.jpg',
+  'examples/lever-gen-01.jpg',
+  'examples/lever-gen-01.json',
   'examples/pendulum-gen-01-thumb.jpg',
   'examples/pendulum-gen-01.jpg',
   'examples/pendulum-gen-01.json',
@@ -56,6 +62,9 @@ const PRECACHE_EXAMPLES = [
   'examples/pulley-gen-03-thumb.jpg',
   'examples/pulley-gen-03.jpg',
   'examples/pulley-gen-03.json',
+  'examples/roll-gen-02-thumb.jpg',
+  'examples/roll-gen-02.jpg',
+  'examples/roll-gen-02.json',
   'examples/spring-gen-01-thumb.jpg',
   'examples/spring-gen-01.jpg',
   'examples/spring-gen-01.json',

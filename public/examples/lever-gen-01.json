@@ -1,0 +1,11 @@
+{
+  "diagram": "lever",
+  "confidence": 0.7,
+  "bodies": [],
+  "constraints": [],
+  "params": {
+    "gravity": 9.8
+  },
+  "explanation": "The heavier weight tips the seesaw down on its side.",
+  "source": "cached"
+}
