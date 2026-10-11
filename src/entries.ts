@@ -16,7 +16,11 @@ export type EntryKey =
   | 'launchSpeed'
   | 'groundLength'
   | 'leftMass'
-  | 'rightMass';
+  | 'rightMass'
+  | 'leftBallMass'
+  | 'rightBallMass'
+  | 'leftSpeed'
+  | 'rightSpeed';
 
 /** What the user entered, in the field's unit. A missing key = empty field (the scene assumes a value). */
 export type Entries = Partial<Record<EntryKey, number>>;
@@ -53,6 +57,11 @@ export const ENTRY_SPECS: Record<EntryKey, EntrySpec> = {
   groundLength: spec('groundLength', 'Ground length', 'm', 'length', 'ground', 0.01, 1000),
   leftMass: spec('leftMass', 'Left mass', 'kg', 'mass', 'left weight', 0.001, 1000),
   rightMass: spec('rightMass', 'Right mass', 'kg', 'mass', 'right weight', 0.001, 1000),
+  leftBallMass: spec('leftBallMass', 'Left mass', 'kg', 'mass', 'left ball', 0.001, 1000),
+  rightBallMass: spec('rightBallMass', 'Right mass', 'kg', 'mass', 'right ball', 0.001, 1000),
+  // Signed: right = +, left = −, 0 = the ball waits.
+  leftSpeed: spec('leftSpeed', 'Left speed', 'm/s', 'speed', 'left ball', -100, 100),
+  rightSpeed: spec('rightSpeed', 'Right speed', 'm/s', 'speed', 'right ball', -100, 100),
 };
 
 /** One input box as shown for a built scene. */
@@ -122,6 +131,15 @@ export function fieldsFor(scene: BuiltScene, analysis: Pick<Analysis, 'params'>)
       if (parts['left weight']) add('leftMass', said(kg('left weight'), kgFrom('left weight')));
       if (parts['right weight']) add('rightMass', said(kg('right weight'), kgFrom('right weight')));
       break;
+    case 'Collision': {
+      if (parts['left ball']) add('leftBallMass', said(kg('left ball'), kgFrom('left ball')));
+      if (parts['right ball']) add('rightBallMass', said(kg('right ball'), kgFrom('right ball')));
+      const v = scene.physics?.ballSpeeds;
+      // The speed the drawing gives (its arrow, or the push when nothing was drawn); a typed one shows in the box itself.
+      if (v && parts['left ball']) add('leftSpeed', said(v.left.drawn, v.left.drawnFrom));
+      if (v && parts['right ball']) add('rightSpeed', said(v.right.drawn, v.right.drawnFrom));
+      break;
+    }
   }
   return out;
 }

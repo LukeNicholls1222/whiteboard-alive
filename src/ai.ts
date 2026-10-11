@@ -23,7 +23,7 @@ const NEXT_MODEL_MS = 6000;
 
 export const hasApiKey = () => API_KEY.length > 0;
 
-const DIAGRAMS: DiagramType[] = ['pendulum', 'spring', 'incline', 'projectile', 'pulley', 'fallback'];
+const DIAGRAMS: DiagramType[] = ['pendulum', 'spring', 'incline', 'projectile', 'pulley', 'collision', 'fallback'];
 const ROLES = ['pivot', 'rope', 'bob', 'spring', 'mass', 'incline', 'ground', 'wheel', 'cannon', 'arrow', 'projectile', 'label', 'other'];
 const RESPONSE_SCHEMA = {
   type: 'OBJECT',
@@ -76,10 +76,11 @@ ${JSON.stringify(list)}
 
 Classify the diagram as exactly one of: pendulum (fixed point/ceiling, string, bob), spring (zigzag line + block),
 incline (triangle/slope + block), projectile (cannon or arrow showing a launch), pulley (wheel, rope, two weights),
-or fallback if none fit.
+collision (two balls on a line with arrows showing motion; they collide), or fallback if none fit.
 Assign a role to every contour id: pivot (fixed point or ceiling line), rope, bob, spring, mass, incline, ground,
 wheel, cannon, arrow, projectile, label (any handwritten letters, words or numbers such as "1 m" or "2 kg";
-never part of the machine, do not read their values), other. Mark static=true for things that should not move (ceiling, ground, incline, wheel axle, cannon, label).
+never part of the machine, do not read their values), other. For a collision, each ball is projectile, each motion
+arrow is arrow and the line they roll on is ground. Mark static=true for things that should not move (ceiling, ground, incline, wheel axle, cannon, label).
 mass: relative mass (1.0 default; bigger drawn weights heavier). A single contour may contain several connected parts
 (e.g. string and bob drawn touching); then give it the role of its main moving part.
 constraints: connections between contour ids (rope / spring / pin). Use the same id for from and to if a part connects to itself.

@@ -14,8 +14,8 @@
 //                      spring needs twice the zigzag score
 // Notebook rules (five or more long thin parallel lines, each its own contour) are taken out of the ink first.
 // Decision order: zigzag -> spring, big triangle -> incline, wheel with a weight on each side below -> pulley,
-// round thing hanging under ink with nothing below -> pendulum, any other ball-sized round thing -> projectile (one
-// big closed curve, e.g. a cloud, is not a ball: fallback).
+// round thing hanging under ink with nothing below -> pendulum, two balls on one level floor with a level arrow ->
+// collision, any other ball-sized round thing -> projectile (one big closed curve, e.g. a cloud, is not a ball: fallback).
 
 import type { Contour, DiagramType } from './types';
 
@@ -118,6 +118,9 @@ export function guessDiagram(input: GuessInput): Guess {
   const hangingRound = hanging.filter((s) => s.kind === 'round');
   if (hangingRound.length && round.length === hangingRound.length && shapes.length <= 2)
     return { diagram: 'pendulum', confidence: 0.65, why: `hanging bob; ${desc}` };
+
+  const coll = collisionGuess(ink, W, H, shapes, wheels, stroke, minSide);
+  if (coll) return { ...coll, why: `${coll.why}; ${desc}` };
 
   // A ball (or a cannon's wheel) is drawn small; one big closed curve (a cloud, a blob) is just a thing that falls.
   if (round.some((s) => Math.max(s.x1 - s.x0, s.y1 - s.y0) <= BALL_MAX * minSide))
@@ -561,4 +564,100 @@ function hangs(ink: Uint8Array, W: number, H: number, s: Shape, stroke: number, 
       if (ex * ex + ey * ey > 1) below++;
     }
   return below < stroke * 3;
+}
+
+// ---- Ball collision ------------------------------------------------------------------------------------
+
+/** Floor and arrows of a collision drawing: within this many degrees of level. */
+const COLL_FLOOR_DEG = 15;
+const COLL_ARROW_DEG = 20;
+/** Share of the columns between and just beside the two balls where the floor line is found. */
+const COLL_FLOOR_COVER = 0.7;
+
+/**
+ * Two balls (round closed shapes, not spoked wheels) side by side on one level floor line, with at least one level
+ * arrow next to (or above) one of them = two balls about to collide. A projectile's launch arrow is slanted, a cannon
+ * has a spoked wheel, and two balls without a floor line under both of them are left to the other rules. Null if not.
+ */
+function collisionGuess(ink: Uint8Array, W: number, H: number, shapes: Shape[], wheels: Wheel[], stroke: number, minSide: number): Guess | null {
+  const balls = shapes.filter((s) => {
+    const size = Math.max(s.x1 - s.x0, s.y1 - s.y0);
+    return s.kind === 'round' && size <= BALL_MAX * minSide && size >= 0.04 * minSide && !wheels.some((w) => Math.hypot(s.cx - w.cx, s.cy - w.cy) < w.r);
+  });
+  if (balls.length < 2) return null;
+  const inkAt = (x: number, y: number) => x >= 0 && y >= 0 && x < W && y < H && !!ink[y * W + x];
+  const tan = Math.tan((COLL_FLOOR_DEG * Math.PI) / 180);
+  /** The floor line under a pair: y = y0 + k (x − x0) through the outer bottoms of the two rings. */
+  let best: { a: Shape; b: Shape; k: number; y0: number; x0: number; cover: number } | null = null;
+  for (const a of balls)
+    for (const b of balls) {
+      if (a === b || a.cx >= b.cx || b.x0 < a.x1 + stroke) continue;
+      const k = (b.y1 - a.y1) / (b.cx - a.cx);
+      if (Math.abs(k) > tan) continue;
+      const rA = (a.x1 - a.x0) / 2, rB = (b.x1 - b.x0) / 2;
+      const yAt = (x: number) => a.y1 + stroke + k * (x - a.cx);
+      const band = 2.5 * stroke + 0.03 * minSide;
+      let n = 0, hit = 0;
+      const cols = (from: number, to: number) => {
+        for (let x = Math.max(0, Math.round(from)); x <= Math.min(W - 1, Math.round(to)); x += 2) {
+          n++;
+          const y0 = Math.round(yAt(x) - stroke), y1 = Math.round(yAt(x) + band);
+          for (let y = y0; y <= y1; y++) if (inkAt(x, y)) { hit++; break; }
+        }
+      };
+      cols(a.x0 - 0.8 * rA, a.x0 - stroke);
+      cols(a.x1 + stroke, b.x0 - stroke);
+      cols(b.x1 + stroke, b.x1 + 0.8 * rB);
+      const cover = n ? hit / n : 0;
+      if (cover >= COLL_FLOOR_COVER && (!best || cover > best.cover)) best = { a, b, k, y0: a.y1 + stroke, x0: a.cx, cover };
+    }
+  if (!best) return null;
+  const { a, b, k } = best;
+  const floorY = (x: number) => best!.y0 + k * (x - best!.x0);
+  const pair = [a, b];
+  const rOf = (s: Shape) => Math.max(s.x1 - s.x0, s.y1 - s.y0) / 2;
+  // Arrows: what is left once the two balls and the floor line are taken out.
+  const floorBand = 2.5 * stroke + 0.03 * minSide;
+  const off = (i: number) => {
+    const x = i % W, y = (i - x) / W;
+    if (Math.abs(y - floorY(x)) <= floorBand) return true;
+    return pair.some((s) => Math.hypot(x - s.cx, y - s.cy) <= rOf(s) + 2 * stroke);
+  };
+  const arrows: string[] = [];
+  components(W, H, (i) => !!ink[i] && !off(i), (pix) => {
+    if (pix.length < 10 * stroke) return;
+    let sx = 0, sy = 0;
+    for (const i of pix) { sx += i % W; sy += Math.floor(i / W); }
+    const mx = sx / pix.length, my = sy / pix.length;
+    let cxx = 0, cyy = 0, cxy = 0;
+    for (const i of pix) {
+      const dx = (i % W) - mx, dy = Math.floor(i / W) - my;
+      cxx += dx * dx; cyy += dy * dy; cxy += dx * dy;
+    }
+    const th = 0.5 * Math.atan2(2 * cxy, cxx - cyy);
+    const tr = cxx + cyy, disc = Math.sqrt(Math.max(0, (tr * tr) / 4 - (cxx * cyy - cxy * cxy)));
+    const elong = Math.sqrt((tr / 2 + disc) / Math.max(1e-9, tr / 2 - disc));
+    let t0 = Infinity, t1 = -Infinity;
+    for (const i of pix) {
+      const t = ((i % W) - mx) * Math.cos(th) + (Math.floor(i / W) - my) * Math.sin(th);
+      t0 = Math.min(t0, t);
+      t1 = Math.max(t1, t);
+    }
+    const len = t1 - t0;
+    const deg = Math.abs((th * 180) / Math.PI);
+    if (elong < 3 || Math.min(deg, 180 - deg) > COLL_ARROW_DEG || len > 0.45 * W) return;
+    // Beside or above one of the balls, above the floor.
+    const near = pair.find((s) => {
+      const r = rOf(s);
+      const x0 = mx - len / 2, x1 = mx + len / 2;
+      return len >= Math.max(0.5 * r, 6 * stroke) && x1 >= s.x0 - 2 * r && x0 <= s.x1 + 2 * r && my >= s.cy - 3.5 * r && my <= s.cy + 0.6 * r && my < floorY(mx) - stroke;
+    });
+    if (near) arrows.push(`${Math.round(mx)},${Math.round(my)}/${Math.round(len)}`);
+  });
+  if (!arrows.length) return null;
+  return {
+    diagram: 'collision',
+    confidence: 0.6,
+    why: `two balls on a level floor (${Math.round((Math.atan(k) * 180) / Math.PI)}°, ${Math.round(best.cover * 100)}%) with level arrows ${arrows.join(' ')}`,
+  };
 }

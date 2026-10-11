@@ -44,6 +44,8 @@ const PART_COLOR: Record<PartName, string> = {
   'left weight': C.orange,
   'right weight': C.orange,
   wheel: C.purple,
+  'left ball': C.orange,
+  'right ball': C.blue,
 };
 
 /** Sizes in CSS px (converted to world px every frame, like the velocity arrows). Two lines: value, then source. */
@@ -367,6 +369,7 @@ function poseKeeps(b: Matter.Body, x: number, y: number, dirs: Point[], len: num
  *   pulley               straight up to the wheel and down to the bottom edge, full-length arrows both ways;
  *   projectile           the parabola until it reaches the ground (or leaves the picture);
  *   spring               the stroke of ± amplitude (speedHint / ω) along the spring;
+ *   collision            the whole floor at the ball's height (it bounces between the walls), arrows both ways;
  *   anything else        straight on along its velocity, then along the ground (a block sliding off a ramp).
  */
 function predictPaths(scene: BuiltScene, engine: Matter.Engine, vis: ViewRect, lmax: number): Keep[] {
@@ -402,6 +405,8 @@ function predictPaths(scene: BuiltScene, engine: Matter.Engine, vis: ViewRect, l
       const wheel = scene.parts?.wheel;
       const top = wheel ? wheel.at().y + (wheel.clear ?? 0) + hh : p.y - vis.h / 2;
       for (let y = Math.min(top, p.y); y <= Math.max(H, p.y); y += PATH_STEP) add(p.x, y, [{ x: 0, y: -1 }, { x: 0, y: 1 }], lmax);
+    } else if (scene.label === 'Collision') {
+      for (let x = X0; x <= W; x += PATH_STEP) add(x, p.y, [{ x: 1, y: 0 }, { x: -1, y: 0 }], lmax);
     } else if (scene.label === 'Projectile') {
       const floor = groundY ?? H;
       const pts: { x: number; y: number; vx: number; vy: number }[] = [];
@@ -605,6 +610,19 @@ function pillsFor(scene: BuiltScene, analysis: Analysis): Pill[] {
       mass('right weight', true);
       if (notedLength() === 'wheel') length('wheel', 'D');
       break;
+    case 'Collision': {
+      // Mass and starting speed of each ball (an arrow shows the direction), and the bounciness on the floor.
+      const v = scene.physics?.ballSpeeds;
+      for (const [part, side] of [['left ball', 'left'], ['right ball', 'right']] as const) {
+        mass(part, true);
+        const s0 = v?.[side];
+        if (s0)
+          add(part, () => `v₀ = ${Math.abs(s0.value) < 1e-9 ? '0 m/s' : `${s0.value < 0 ? '← ' : ''}${formatSpeed(Math.abs(s0.value))}${s0.value > 0 ? ' →' : ''}`}`, () => text(s0.from));
+      }
+      const e = () => Math.min(1, Math.max(0, Number(analysis.params.bounciness ?? 1)));
+      add('ground', () => `e = ${e().toFixed(2)}`, () => (analysis.params.bounciness === undefined ? text('assumed') : text('slider')));
+      break;
+    }
   }
   return out;
 }

@@ -455,6 +455,26 @@ function partsFor(input: OverlayInput): PartMap {
         },
       };
     }
+    case 'Collision': {
+      // The two balls (cut-outs), the floor line under them, and everything else level above it = the arrows.
+      const [l, r] = scene.sprites;
+      const floorY = scene.parts?.ground?.at().y ?? input.height;
+      const rMax = Math.max(...scene.sprites.map((sp) => Math.max(sp.image.width, sp.image.height) / 2));
+      const tol = Math.max(10, input.height * 0.025, 0.25 * rMax);
+      return {
+        parts: {
+          ball0: { text: 'ball 1', color: C.orange, anchor: l ? bodyHome(l) : undefined },
+          ball1: { text: 'ball 2', color: C.blue, anchor: r ? bodyHome(r) : undefined },
+          ground: style(ROLE_STYLE.ground),
+          arrow: { text: 'motion', color: C.red },
+        },
+        partOf: (p) => {
+          const i = hit(p);
+          if (i >= 0) return `ball${Math.min(1, i)}`;
+          return p.y >= floorY - tol ? 'ground' : 'arrow';
+        },
+      };
+    }
     case 'Projectile': {
       const ballSp = scene.sprites[0];
       const roles = new Map(input.analysis.bodies.map((b) => [b.contourId, b.role]));

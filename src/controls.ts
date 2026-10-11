@@ -40,6 +40,8 @@ const GRAVITY: ParamSpec = { key: 'gravity', label: 'Gravity', min: 0, max: 25, 
 const SCENE_PARAMS: Partial<Record<DiagramType, ParamSpec[]>> = {
   incline: [{ key: 'friction', label: 'Friction', min: 0, max: 1.5, step: 0.05, value: 0.3, digits: 2, replay: true }],
   projectile: [{ key: 'speed', label: 'Launch speed', min: 0.5, max: 10, step: 0.1, value: 3, unit: 'm/s', digits: 1, rebuild: true }],
+  // Coefficient of restitution: 1 = elastic, 0 = the balls stick. Read at every hit; replays so a fresh hit shows it.
+  collision: [{ key: 'bounciness', label: 'Bounciness e', min: 0, max: 1, step: 0.05, value: 1, digits: 2, replay: true }],
 };
 
 /** Per-drawing slider settings (range, step, starting value), e.g. a launch speed range around the fitted speed. */
@@ -98,6 +100,10 @@ const SAY_EXAMPLE: Record<EntryKey, string> = {
   groundLength: 'ground 5 meters',
   leftMass: 'left weight 3 kilograms',
   rightMass: 'right weight 1 kilogram',
+  leftBallMass: 'left ball 2 kilograms',
+  rightBallMass: 'right ball 1 kilogram',
+  leftSpeed: 'left ball 2 meters per second',
+  rightSpeed: 'right ball 1 meter per second',
 };
 
 /** Pause after the last keystroke before an entered number is applied. */
@@ -399,8 +405,9 @@ export function createControls(root: HTMLElement, host: ControlsHost) {
   let diagramShown: DiagramType = 'fallback';
 
   /** The sentence to suggest for the scene on screen. */
-  const example = () => (fields.length ? SAY_EXAMPLE[fields[0].key] : diagramShown === 'incline' ? 'no friction' : 'make it the moon');
-  const updateHint = () => (hint.textContent = `Tap Talk and say “${example()}” or “moon”.`);
+  const example = () =>
+    diagramShown === 'collision' ? 'make it stick' : fields.length ? SAY_EXAMPLE[fields[0].key] : diagramShown === 'incline' ? 'no friction' : 'make it the moon';
+  const updateHint = () => (hint.textContent = `Tap Talk and say “${example()}” or “${diagramShown === 'collision' ? 'bouncier' : 'moon'}”.`);
 
   /** Value as shown for a number box: "1.00 m", "45°", "2.00 kg". */
   const fmtEntry = (f: EntryField, v: number) =>

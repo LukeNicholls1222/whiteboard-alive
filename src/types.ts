@@ -39,7 +39,7 @@ export interface Contour {
   hasHole: boolean;
 }
 
-export type DiagramType = 'pendulum' | 'spring' | 'incline' | 'projectile' | 'pulley' | 'fallback';
+export type DiagramType = 'pendulum' | 'spring' | 'incline' | 'projectile' | 'pulley' | 'collision' | 'fallback';
 
 export type BodyRole =
   | 'pivot' // fixed point / ceiling
@@ -69,7 +69,10 @@ export type PartName =
   | 'arrow'
   | 'left weight'
   | 'right weight'
-  | 'wheel';
+  | 'wheel'
+  /** Ball collision: the ball drawn on the left / on the right. */
+  | 'left ball'
+  | 'right ball';
 
 export type Quantity = 'length' | 'mass' | 'angle' | 'speed' | 'friction' | 'spring_constant';
 
@@ -151,8 +154,11 @@ export interface Sprite {
   follow: SpriteFollow;
 }
 
-/** Colour family of a filled clean shape: the moving masses (orange) or the devices (purple: wheel, spring). */
-export type CleanTone = 'mass' | 'device';
+/**
+ * Colour family of a filled clean shape: the moving masses (orange), the second of two masses that must be told apart
+ * (blue: the right ball of a collision) or the devices (purple: wheel, spring).
+ */
+export type CleanTone = 'mass' | 'mass2' | 'device';
 
 /**
  * One shape of the clean, textbook-style picture (clean.ts) the app draws instead of moving the hand-drawn ink.
@@ -282,6 +288,11 @@ export interface BuiltScene {
      * until measured); `slipping` = sliding while it turns (tan θ > 7/2 μ).
      */
     rolling?: { body: Matter.Body; radius: number; inertia: number; measured: () => number | null; slipping: () => boolean };
+    /**
+     * Collision: each ball's starting speed (m/s, right = +) and where it came from (drawn arrow, auto push or entered),
+     * and the speed the drawing alone gives (`drawn`, from `drawnFrom`), shown while nothing is typed.
+     */
+    ballSpeeds?: Record<'left' | 'right', { value: number; from: ValueSource; drawn: number; drawnFrom: ValueSource }>;
     /** Pendulum / projectile: the scene reads air drag; the factor ×N on real air the switch sets (air.ts). */
     airDrag?: number;
   };

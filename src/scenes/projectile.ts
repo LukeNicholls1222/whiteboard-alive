@@ -58,7 +58,7 @@ const ABOVE_ARC = 0.14;
 const AIR_DRAG_TARGET = 0.6;
 const DEBUG = typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug');
 
-interface Axis {
+export interface Axis {
   centroid: Point;
   /** Unit vector of the long axis. */
   dir: Point;
@@ -70,7 +70,7 @@ interface Axis {
   pixels: Point[];
 }
 
-interface Ball {
+export interface Ball {
   center: Point;
   /** Outer radius of the drawn ball (including its outline stroke). */
   r: number;
@@ -81,7 +81,7 @@ interface Ball {
 }
 
 /** Principal axis of a pixel set. */
-function axisOf(pixels: Point[]): Axis | null {
+export function axisOf(pixels: Point[]): Axis | null {
   if (pixels.length < 3) return null;
   let cx = 0, cy = 0;
   for (const p of pixels) {
@@ -132,7 +132,7 @@ function inkAxis(input: SceneInput, contours: Contour[]): Axis | null {
 }
 
 /** Arrow: the head end is the one whose ink spreads widest across the shaft (the barbs). */
-function arrowDirection(ax: Axis): Point {
+export function arrowDirection(ax: Axis): Point {
   const len = ax.max - ax.min;
   const zone = len * 0.3;
   let spreadMin = 0, spreadMax = 0;
@@ -225,7 +225,7 @@ function dilate(src: Uint8Array, W: number, H: number, d: number): Uint8Array {
   return out;
 }
 
-function discMask(W: number, H: number, c: Point, r: number): Uint8Array {
+export function discMask(W: number, H: number, c: Point, r: number): Uint8Array {
   const m = new Uint8Array(W * H);
   const x0 = Math.max(0, Math.floor(c.x - r)), x1 = Math.min(W - 1, Math.ceil(c.x + r));
   const y0 = Math.max(0, Math.floor(c.y - r)), y1 = Math.min(H - 1, Math.ceil(c.y + r));
@@ -235,7 +235,7 @@ function discMask(W: number, H: number, c: Point, r: number): Uint8Array {
 }
 
 /** Width of the ink ring around a hole: median run of ink met when walking outwards from the centre. */
-function ringStroke(ink: Uint8Array, W: number, H: number, c: Point, rHole: number): number {
+export function ringStroke(ink: Uint8Array, W: number, H: number, c: Point, rHole: number): number {
   const runs: number[] = [];
   for (let k = 0; k < 24; k++) {
     const a = (k / 24) * Math.PI * 2;
@@ -263,7 +263,7 @@ function ringStroke(ink: Uint8Array, W: number, H: number, c: Point, rHole: numb
   return Math.max(2, Math.min(rHole * 0.6, runs[Math.floor(runs.length / 2)]));
 }
 
-interface HoleCand {
+export interface HoleCand {
   center: Point;
   /** Radius of the hole in the original (undilated) ink. */
   r: number;
@@ -272,7 +272,7 @@ interface HoleCand {
 }
 
 /** Round, enclosed paper regions in the (slightly dilated, to bridge pen gaps) ink. */
-function roundHoles(ink: Uint8Array, W: number, H: number, d: number): HoleCand[] {
+export function roundHoles(ink: Uint8Array, W: number, H: number, d: number): HoleCand[] {
   const m = d > 0 ? dilate(ink, W, H, d) : ink;
   const minDim = Math.min(W, H);
   const rMin = Math.max(5, minDim * 0.011);
@@ -336,7 +336,7 @@ function insidePoly(p: Point, poly: Point[]): boolean {
   return inside;
 }
 
-function makeBall(input: SceneInput, center: Point, rHole: number, stroke: number): Ball {
+export function makeBall(input: SceneInput, center: Point, rHole: number, stroke: number): Ball {
   const { width: W, height: H, ink } = input;
   const r = rHole + stroke;
   const mask = discMask(W, H, center, r + 2);
@@ -383,7 +383,7 @@ function makeBall(input: SceneInput, center: Point, rHole: number, stroke: numbe
  * Share of ink in the ring 1.8 R .. 3 R around a loop (R = its radius). A drawn ball stands on its own (a ground line
  * or an arrow crosses that ring: under ~10 %); a gap between wheel spokes or a hole in a smudge is surrounded by more ink.
  */
-function inkAround(ink: Uint8Array, W: number, H: number, c: Point, R: number): number {
+export function inkAround(ink: Uint8Array, W: number, H: number, c: Point, R: number): number {
   const r0 = 1.8 * R + 4, r1 = 3 * R;
   let n = 0, on = 0;
   for (let y = Math.max(0, Math.floor(c.y - r1)); y <= Math.min(H - 1, Math.ceil(c.y + r1)); y++)
@@ -397,7 +397,7 @@ function inkAround(ink: Uint8Array, W: number, H: number, c: Point, R: number): 
 }
 
 /** A loop this embedded in other ink is not a ball (wheel gap, smudge). */
-const EMBEDDED_INK = 0.2;
+export const EMBEDDED_INK = 0.2;
 /** A loop this close to the picture's edge (share of its shorter side) and this small is a speck or stain on the paper. */
 const EDGE_SPECK_DIST = 0.18;
 const EDGE_SPECK_R = 0.022;
@@ -497,7 +497,7 @@ function findBall(input: SceneInput, labelled: Contour[]): Ball | null {
 // ---- Arrow / barrel near the ball -------------------------------------------------------------
 
 /** 8-connected ink components (outside `exclude`) as pixel lists; tiny specks are dropped. */
-function inkComponents(ink: Uint8Array, exclude: Uint8Array, W: number, H: number, minPx: number): Point[][] {
+export function inkComponents(ink: Uint8Array, exclude: Uint8Array, W: number, H: number, minPx: number): Point[][] {
   const seen = new Uint8Array(W * H);
   const stack = new Int32Array(W * H);
   const comps: Point[][] = [];

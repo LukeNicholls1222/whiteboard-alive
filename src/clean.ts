@@ -18,6 +18,7 @@ export const FAINT_ALPHA = 0.22;
 
 export const COLORS = {
   mass: { fill: '#ff9600', edge: '#e08600', shadow: '#c97800' },
+  mass2: { fill: '#1cb0f6', edge: '#1899d6', shadow: '#1482b8' },
   device: { fill: '#ce82ff', edge: '#a568cc', shadow: '#9256b8' },
   line: '#4b4b4b',
   solidFill: '#f0f0f0',

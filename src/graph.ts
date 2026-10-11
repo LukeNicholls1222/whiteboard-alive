@@ -33,6 +33,27 @@ const MOON_G = 1.62;
 const GREEN = '#58cc02';
 const BLUE = '#1cb0f6';
 const ORANGE = '#ff9600';
+const PURPLE = '#ce82ff';
+
+const ENERGY_LEGEND = `
+        <span><i style="background:${BLUE}"></i>Kinetic</span>
+        <span><i style="background:${ORANGE}"></i>Potential</span>
+        <span><i style="background:${GREEN}"></i>Total</span>`;
+const MOMENTUM_LEGEND = `
+        <span><i style="background:${ORANGE}"></i>Left p</span>
+        <span><i style="background:${BLUE}"></i>Right p</span>
+        <span><i style="background:${GREEN}"></i>Total p</span>
+        <span><i style="background:${PURPLE}"></i>Kinetic energy</span>`;
+
+/** Ball collision: momentum of each ball (kg·m/s, right = +) and the kinetic energy of both (J). */
+interface MomentumSample {
+  p1: number;
+  p2: number;
+  ke: number;
+}
+
+/** "1.23 kg·m/s" (signed). */
+export const formatMomentum = (p: number) => `${Math.abs(p) < 10 ? p.toFixed(2) : p.toFixed(1)} kg·m/s`;
 
 interface Sample {
   ke: number;
@@ -78,6 +99,12 @@ export class LiveGraph {
   private time = 0;
   private period = new PeriodMeter();
   private lastG = NaN;
+  /** Ball collision on screen: the two balls and their masses (the card shows momentum instead of energy). */
+  private balls: { bodies: [Matter.Body, Matter.Body]; kg: [number, number] } | null = null;
+  private mSamples: MomentumSample[] = [];
+  private pMax = 0;
+  private keMax = 0;
+  private legend: HTMLDivElement;
 
   constructor(after: HTMLElement) {
     injectStyle();
@@ -98,10 +125,7 @@ export class LiveGraph {
         </label>
       </div>
       <canvas class="lg-canvas"></canvas>
-      <div class="lg-legend">
-        <span><i style="background:${BLUE}"></i>Kinetic</span>
-        <span><i style="background:${ORANGE}"></i>Potential</span>
-        <span><i style="background:${GREEN}"></i>Total</span>
+      <div class="lg-legend">${ENERGY_LEGEND}
       </div>
       <div class="lg-wait">Waiting for the drawing…</div>`;
     after.insertAdjacentElement('afterend', this.root);
@@ -112,6 +136,7 @@ export class LiveGraph {
     this.theoryLabel = this.root.querySelector('.lg-theory')!;
     this.moon = this.root.querySelector('input')!;
     this.gLabel = this.root.querySelector('.lg-g')!;
+    this.legend = this.root.querySelector('.lg-legend')!;
     this.moon.addEventListener('change', () => {
       this.sim?.setParams({ gravity: this.moon.checked ? MOON_G : EARTH_G });
       this.syncGravity();
@@ -147,7 +172,16 @@ export class LiveGraph {
     this.period.reset(!main || Math.hypot(main.velocity.x, main.velocity.y) < PeriodMeter.MIN_V);
     this.lastG = NaN;
     this.root.hidden = false;
-    this.metricLabel.textContent = this.measuresPeriod() ? 'Period' : 'Speed';
+    // Two balls colliding: momentum (each ball and the total, which a hit never changes) and the kinetic energy.
+    const left = sim.scene.parts?.['left ball'], right = sim.scene.parts?.['right ball'];
+    this.balls =
+      diagram === 'collision' && sim.scene.label === 'Collision' && left?.body && right?.body
+        ? { bodies: [left.body, right.body], kg: [left.kg ?? DEFAULT_KG, right.kg ?? DEFAULT_KG] }
+        : null;
+    this.mSamples = [];
+    this.pMax = this.keMax = 0;
+    this.legend.innerHTML = this.balls ? MOMENTUM_LEGEND : ENERGY_LEGEND;
+    this.metricLabel.textContent = this.balls ? 'Momentum' : this.measuresPeriod() ? 'Period' : 'Speed';
     this.metricValue.textContent = '--';
     // If Moon mode was on for the previous drawing, keep it on for the new one.
     if (this.moon.checked) sim.setParams({ gravity: MOON_G });
@@ -164,6 +198,7 @@ export class LiveGraph {
    */
   private showTheory() {
     const sim = this.sim;
+    if (this.balls) return; // the kinetic energy line is written every step (onStep)
     let text = '';
     if (sim && this.diagram === 'pendulum' && sim.scene.label === 'Pendulum' && sim.scene.measures?.string) {
       const L = meters(sim.scene.measures.string, this.scale);
@@ -246,6 +281,20 @@ export class LiveGraph {
     const g = sim.gravity;
     const bodies = Matter.Composite.allBodies(engine.world).filter((b) => !b.isStatic);
 
+    if (this.balls) {
+      // Momentum m·v along the floor (right = +) of each ball, in kg·m/s, and the kinetic energy of both.
+      const [b1, b2] = this.balls.bodies, [m1, m2] = this.balls.kg;
+      const v1 = mps(b1.velocity.x, this.scale), v2 = mps(b2.velocity.x, this.scale);
+      const s = { p1: m1 * v1, p2: m2 * v2, ke: 0.5 * m1 * v1 * v1 + 0.5 * m2 * v2 * v2 };
+      this.mSamples.push(s);
+      if (this.mSamples.length > MAX_SAMPLES) this.mSamples.shift();
+      this.metricValue.textContent = formatMomentum(s.p1 + s.p2);
+      this.theoryLabel.textContent = `Kinetic energy ${formatEnergy(s.ke)}`;
+      this.theoryLabel.hidden = false;
+      this.drawMomentum();
+      return;
+    }
+
     // Joules: written or assumed (1 kg) masses, speeds and heights in metres through the scene's scale.
     let ke = 0;
     let pe = 0;
@@ -280,6 +329,103 @@ export class LiveGraph {
       this.metricValue.textContent = f ? formatSpeed(mps(Math.hypot(f.track.vx, f.track.vy), this.scale)) : '--';
     }
     this.draw();
+  }
+
+  /** Ball collision: momentum (each ball and the total) on top, kinetic energy of both below, last 8 s. */
+  private drawMomentum() {
+    const { canvas, ctx } = this;
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth || 300;
+    const cssH = 150;
+    if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+      canvas.width = Math.round(cssW * dpr);
+      canvas.height = Math.round(cssH * dpr);
+      canvas.style.height = `${cssH}px`;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+    const left = 22, right = cssW - 4;
+    const w = right - left;
+    // Momentum panel (zero in the middle: left-going is below) and energy panel, one time axis.
+    const pTop = 6, pBottom = 88, eTop = 98, eBottom = cssH - 18;
+    let peakP = 0, peakE = 0;
+    for (const s of this.mSamples) {
+      peakP = Math.max(peakP, Math.abs(s.p1), Math.abs(s.p2), Math.abs(s.p1 + s.p2));
+      peakE = Math.max(peakE, s.ke);
+    }
+    // Jumps up at once, eases down slowly (as the energy graph).
+    const ease = (cur: number, target: number) => (target > cur ? target : cur + (target - cur) * 0.01);
+    this.pMax = ease(this.pMax, peakP * HEADROOM);
+    this.keMax = ease(this.keMax, peakE * HEADROOM);
+    const pMax = this.pMax > 1e-9 ? this.pMax : 1;
+    const keMax = this.keMax > 1e-9 ? this.keMax : 1;
+    const pMid = (pTop + pBottom) / 2;
+    const yP = (p: number) => pMid - Math.max(-1, Math.min(1, p / pMax)) * ((pBottom - pTop) / 2);
+    const yE = (e: number) => eBottom - Math.max(0, Math.min(1, e / keMax)) * (eBottom - eTop);
+
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#eeeeee';
+    ctx.lineWidth = 2;
+    line(ctx, left, pTop, right, pTop);
+    line(ctx, left, pBottom, right, pBottom);
+    ctx.strokeStyle = '#e0e0e0';
+    line(ctx, left, pTop, left, pBottom);
+    line(ctx, left, eTop, left, eBottom);
+    line(ctx, left, eBottom, right, eBottom);
+    ctx.setLineDash([4, 4]);
+    line(ctx, left, pMid, right, pMid);
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = '#afafaf';
+    ctx.font = '800 11px Nunito, system-ui, sans-serif';
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'right';
+    ctx.fillText('now', right, cssH - 4);
+    ctx.textAlign = 'left';
+    const span = physSeconds(WINDOW_S, this.scale);
+    ctx.fillText(`-${span < 10 ? span.toFixed(1) : span.toFixed(0)} s`, left, cssH - 4);
+    ctx.font = '700 10px Nunito, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('p: right = +', (left + right) / 2, cssH - 4);
+    ctx.font = '800 11px Nunito, system-ui, sans-serif';
+    for (const [text, y] of [['p', pMid], ['KE', (eTop + eBottom) / 2]] as const) {
+      ctx.save();
+      ctx.translate(13, y);
+      ctx.rotate(-Math.PI / 2);
+      ctx.textAlign = 'center';
+      ctx.fillText(text, 0, 0);
+      ctx.restore();
+    }
+
+    const n = this.mSamples.length;
+    if (n >= 2) {
+      const x0 = right - ((n - 1) / (MAX_SAMPLES - 1)) * w;
+      const dx = w / (MAX_SAMPLES - 1);
+      const plot = (color: string, f: (s: MomentumSample) => number, width = 3) => {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        this.mSamples.forEach((s, i) => (i ? ctx.lineTo(x0 + i * dx, f(s)) : ctx.moveTo(x0, f(s))));
+        ctx.stroke();
+      };
+      plot(ORANGE, (s) => yP(s.p1));
+      plot(BLUE, (s) => yP(s.p2));
+      plot(GREEN, (s) => yP(s.p1 + s.p2), 3.5);
+      plot(PURPLE, (s) => yE(s.ke));
+    }
+    // Scale of each panel, on a white halo.
+    ctx.font = '800 11px Nunito, system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#fff';
+    ctx.fillStyle = '#999';
+    for (const [text, y] of [[`±${formatMomentum(pMax)}`, pTop + 2], [formatEnergy(keMax), eTop + 1]] as const) {
+      ctx.strokeText(text, left + 6, y);
+      ctx.fillText(text, left + 6, y);
+    }
   }
 
   private draw() {

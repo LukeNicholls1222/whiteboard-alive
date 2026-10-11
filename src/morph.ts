@@ -181,6 +181,7 @@ function colorOf(p: CleanPart): string {
       return TRACE_COLOR.red;
     case 'body':
     case 'ball':
+      return p.tone === 'mass2' ? TRACE_COLOR.blue : TRACE_COLOR.orange;
     case 'sprite':
       return TRACE_COLOR.orange;
     default:

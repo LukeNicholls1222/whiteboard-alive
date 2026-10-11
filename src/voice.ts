@@ -49,8 +49,8 @@ export function listenOnce(onInterim?: (text: string) => void): { result: Promis
 
 // ---- What can be set -----------------------------------------------------------------------------------
 
-/** Slider keys (gravity, friction, speed) and "Your numbers" keys. */
-export type VoiceKey = 'gravity' | 'friction' | 'speed' | EntryKey;
+/** Slider keys (gravity, friction, speed, bounciness) and "Your numbers" keys. */
+export type VoiceKey = 'gravity' | 'friction' | 'speed' | 'bounciness' | EntryKey;
 
 /** Something the scene on screen lets you change, with its current value (NaN = unknown) and its range. */
 export interface VoiceTarget {
@@ -279,6 +279,8 @@ interface TargetDef {
 }
 
 const mul = (k: number) => (v: number, dir: 1 | -1) => (dir > 0 ? v * k : v / k);
+/** A ball's speed keeps its direction; a ball that waits gets 0.5 m/s to the right when told to go faster. */
+const ballSpeedStep = (v: number, dir: 1 | -1) => (Math.abs(v) < 1e-9 ? (dir > 0 ? 0.5 : 0) : mul(1.4)(v, dir));
 const SPEED_KW = 'speed|velocity|launch|launches|launched|fire|shoot|throw|initial speed|fast|faster|slower|quicker';
 const SPEED_UP = words('faster|quicker|harder|further|farther|more power|speed up|speed it up');
 const SPEED_DOWN = words('slower|slow down|slow it down|softer|gentler|less power');
@@ -340,7 +342,28 @@ const DEFS: TargetDef[] = [
   },
   { key: 'leftMass', kw: words('left'), cats: ['mass'], up: MASS_UP, down: MASS_DOWN, upNeedsName: true, step: mul(2) },
   { key: 'rightMass', kw: words('right'), cats: ['mass'], up: MASS_UP, down: MASS_DOWN, upNeedsName: true, step: mul(2) },
+  // Ball collision: each ball's mass and starting speed (signed, right = +), and the bounciness e (0..1).
+  { key: 'leftBallMass', kw: words('left'), cats: ['mass'], up: MASS_UP, down: MASS_DOWN, upNeedsName: true, step: mul(2) },
+  { key: 'rightBallMass', kw: words('right'), cats: ['mass'], up: MASS_UP, down: MASS_DOWN, upNeedsName: true, step: mul(2) },
+  { key: 'leftSpeed', kw: words('left'), cats: ['speed'], up: SPEED_UP, down: SPEED_DOWN, upNeedsName: true, step: ballSpeedStep },
+  { key: 'rightSpeed', kw: words('right'), cats: ['speed'], up: SPEED_UP, down: SPEED_DOWN, upNeedsName: true, step: ballSpeedStep },
+  {
+    key: 'bounciness',
+    kw: words('bounciness|bouncy|bounce|bouncier|elastic|elasticity|restitution|coefficient of restitution|e'),
+    cats: ['ratio'],
+    up: words('bouncier|more bouncy|more elastic|springier'),
+    down: words('less bouncy|less elastic|deader|stickier'),
+    step: (v, dir) => v + 0.25 * dir,
+  },
 ];
+
+/** Left / right pairs that need "which one" when a number is said without naming either. */
+const LEFT_RIGHT: VoiceKey[][] = [
+  ['leftMass', 'rightMass'],
+  ['leftBallMass', 'rightBallMass'],
+  ['leftSpeed', 'rightSpeed'],
+];
+const BALL_KEYS = new Set<VoiceKey>(['leftBallMass', 'rightBallMass', 'leftSpeed', 'rightSpeed']);
 
 const G_DOUBLE = words('double|twice');
 const G_TRIPLE = words('triple');
@@ -428,6 +451,13 @@ export function parseVoice(utterance: string, ctx: VoiceContext): VoiceResult {
       else if (has(/\b(sticky|rough|rougher|grippy|sandpaper)\b/)) put('friction', Math.min(f.max, Math.max(0.6, f.value * 2)));
     }
 
+    // --- bounciness words (ball collision): stick together = 0, perfectly elastic = 1 ---
+    if (avail.has('bounciness')) {
+      if (has(/\b(stick|sticks|sticky|stuck|inelastic|clay|putty|glue|glued)\b/) && !has(/\b(less|not|no)\b/)) put('bounciness', 0);
+      else if (has(/\b(perfectly|fully|totally|completely|super|perfect) (elastic|bouncy)\b|\belastic collision\b/) || (has(/\belastic\b/) && !has(/\b(less|more|in)\b/)))
+        put('bounciness', 1);
+    }
+
     // --- numbers heard: give each to the setting named nearest to it, or the only one its unit fits ---
     for (const q of quantities(t)) {
       if (q.value === 0 && q.cat === 'mass' && has(/\b0 g\b/)) continue; // "zero g" is gravity, not 0 grams
@@ -445,10 +475,13 @@ export function parseVoice(utterance: string, ctx: VoiceContext): VoiceResult {
       if (!pool.length && q.cat) {
         const byUnit = defs.filter((d) => d.cats[0] === q.cat && !done.has(d.key));
         if (byUnit.length === 1) pool = byUnit;
-        else if (byUnit.length > 1 && q.cat === 'mass' && byUnit.every((d) => d.key === 'leftMass' || d.key === 'rightMass')) {
+        else if (byUnit.length > 1 && LEFT_RIGHT.some((lr) => byUnit.every((d) => lr.includes(d.key)))) {
+          const balls = byUnit.some((d) => BALL_KEYS.has(d.key));
           if (has(/\b(both|each)\b/)) {
             for (const d of byUnit) put(d.key, q.value);
-          } else problem('Say which weight: “left 3 kilograms” or “right 1 kilogram”.');
+          } else if (!balls) problem('Say which weight: “left 3 kilograms” or “right 1 kilogram”.');
+          else if (q.cat === 'speed') problem('Say which ball: “left ball 2 meters per second”.');
+          else problem('Say which ball: “left ball 2 kilograms”.');
           continue;
         } else if (!byUnit.length && !defs.some((d) => done.has(d.key) && d.cats.includes(q.cat!))) {
           problem(`This drawing has no ${CAT_NAME[q.cat]} to set.`);
@@ -484,6 +517,16 @@ export function parseVoice(utterance: string, ctx: VoiceContext): VoiceResult {
       (has(MASS_UP) || has(MASS_DOWN))
     )
       problem('Say which weight: “make the left weight heavier”.');
+    if (
+      avail.has('leftBallMass') &&
+      avail.has('rightBallMass') &&
+      !done.has('leftBallMass') &&
+      !done.has('rightBallMass') &&
+      !('leftBallMass' in out.set) &&
+      !('rightBallMass' in out.set) &&
+      (has(MASS_UP) || has(MASS_DOWN))
+    )
+      problem('Say which ball: “make the left ball heavier”.');
   }
   return out;
 }
