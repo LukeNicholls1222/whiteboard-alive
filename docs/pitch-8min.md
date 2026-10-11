@@ -86,18 +86,20 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 
 > "Pendulums are the classic. But it understands more than that. Here's one I drew earlier: two balls about to crash."
 
-*Take the photo. When it runs, point at the graph card and the green **Total p** line. Point at the **first** hit between the two balls.*
+*Take the photo. As soon as the clean shapes appear, tap the badge at the top left of the picture three times, to **SLOW MOTION 0.11×**. Then point at the graph card and the green **Total p** line, and at the **first** hit between the two balls.*
 
-> "This green line is the total momentum of both balls. Watch the moment they hit each other... it stays flat. Momentum is conserved, and you can see it.
+> "I've slowed it down nine times, so we can see the crash. Only the playback is slower; the numbers on the graph are the real ones.
+> This green line is the total momentum of both balls. Watch the moment they hit each other... it stays flat. Momentum is conserved, and you can see it.
 > I can also change the bounciness. One is a perfectly elastic bounce, zero means they stick together."
 
-*Optional (only if you're on time): drag **Bounciness e** to 0 and let them stick.*
+*Optional (only if you're on time): drag **Bounciness e** to 0 and let them stick. Tap the badge once more to go back to REAL TIME 1× before the next demo.*
 
 Only explain momentum on the **first** collision between the balls. When a ball bounces off a wall at the side, the total changes, because the wall pushes from outside. If a judge spots it, see "If a judge asks" at the end.
 
 **If it goes wrong:**
 - It isn't recognised as a collision: switch to the pre-drawn **seesaw** sheet. Point at the Torque balance card and say: "Same idea with a seesaw: it tips toward the side with the bigger moment, mass times g times distance, and it tells you which side wins."
 - Both fail: run the collision from the example gallery and say "Here's the saved run."
+- The balls hit before you reach the badge: let it play, then reload the same example or retake the photo and tap the badge earlier. Or just point at the step in the graph where they hit.
 
 ## 5. A judge draws (3:30–4:50, 80s)
 
@@ -174,6 +176,7 @@ Only explain momentum on the **first** collision between the balls. When a ball 
 - [ ] Keep a second tab open on the site with `?offline`, already loaded (OpenCV ready), as the backup tab. Section 6 uses it on purpose
 - [ ] Test Talk once in the venue (mic permission granted in the browser), e.g. "make the string 1 meter"
 - [ ] Rehearse section 3 once: set the Length pill to 0.25 m and check the period reads about 1 s, then 1 m reads about 2 s
+- [ ] Rehearse section 4 once: tap the speed badge three times (1× → 0.5× → 0.33× → 0.11×) before the balls meet. Reloading the page puts it back to 1×
 - [ ] Slides open on the laptop (https://lukenicholls1222.github.io/whiteboard-alive/slides/) and tested with the arrow keys
 - [ ] Printed judge sheet (`docs/judge-sheet.pdf`) next to the paper
 - [ ] A timer the speaker can see. Checkpoints: 1:40 Learning moment, 3:30 Judge draws, 4:50 Slides, 6:40 Close

@@ -23,6 +23,7 @@ Built at OCCHacks 2026 (Education track).
    - **Value pills**: right under the moving picture, each value sits in a small pill (for example Length 0.45 m, Mass 1 kg). Tap one to get − / +, a slider and a number box, and change it while you watch it move, with no scrolling. The pills stay in sync with Your numbers.
    - **Your numbers**: type in the real values. String length, mass, spring constant, ramp angle, launch speed, ground length, the left and right pulley masses, each ball's mass and speed in a collision, and each seesaw weight's mass and distance (whichever the diagram uses).
    - **Sliders**: Gravity (every diagram), Friction (incline), Launch speed (projectile), Bounciness e from 0 to 1 (collision).
+   - **Slow motion**: tap the badge at the top left of the picture to step through 1× → 0.5× → 0.33× → 0.11× and back to 1× (it reads REAL TIME 1× or SLOW MOTION 0.11×, for example). It starts at 1× and goes back to 1× on reload. Only the playback slows down: each physics step stays the same length, so the period, speed and energy readouts are the same at every setting.
    - **Gravity presets**: Earth, Moon and Jupiter. Moon mode makes a pendulum swing slowly enough to see the longer period.
    - **Voice**: tap **Talk** and say something like "make the string 1 meter" or "make gravity weaker". Voice can change every setting.
    - **Air resistance**: a switch. The label is honest about the scale: real air, or real air ×N when it is exaggerated so you can see the effect.

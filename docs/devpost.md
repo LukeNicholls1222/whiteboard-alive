@@ -37,6 +37,7 @@ While it runs you can change the physics:
 - **Your numbers**: type in real values. String length, mass, spring constant, ramp angle, launch speed, ground length, and the left and right masses on a pulley. Sizes come from these numbers, not from the paper.
 - **Sliders and presets**: gravity (every diagram), friction (incline), launch speed (projectile), Bounciness e from 0 to 1 (collision: 1 is elastic, 0 sticks), and Earth / Moon / Jupiter. In Moon mode a pendulum visibly slows down.
 - **Voice**: tap Talk and say "make the string 1 meter" or "make gravity weaker". Voice can change every setting.
+- **Slow motion**: tap the badge at the top left of the picture to go 1× → 0.5× → 0.33× → 0.11× and back to 1× ("REAL TIME 1×", "SLOW MOTION 0.11×"). Each physics step keeps the same length, and only the number of steps per frame changes, so the period, speed and energy readouts are the same at every speed.
 - **Air resistance**: a switch that is honest about the scale. It shows real air, or "real air ×N" when the effect is exaggerated so you can see it.
 - **Velocity arrows**: arrow length is proportional to speed, with a scale bar.
 - **Live graph card**, always theory next to measurement:
