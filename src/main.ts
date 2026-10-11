@@ -4,6 +4,7 @@ import { cachedAnalysis, EXAMPLES, exampleBlob, exampleThumb, fingerprint, prelo
 import { createControls, launchSpeedTune } from './controls';
 import { annotationsFrom, fieldsFor, type Entries } from './entries';
 import { LiveGraph } from './graph';
+import { morphHooks } from './morph';
 import { QuantityLabels } from './notes';
 import { buildScene } from './scenes';
 import { AIOverlay } from './overlay';
@@ -80,7 +81,9 @@ interface StartOptions {
 }
 
 async function startScene(input: SceneInput, opts: StartOptions = {}): Promise<BuiltScene | null> {
+  const tScene = performance.now();
   const scene = opts.scene ?? buildScene(input);
+  timing('wa:scene', tScene);
   sim?.stop();
   // Show what the AI understood on top of the paper, then let it come alive.
   if (opts.intro) await overlay.playIntro({ ...input, scene });
@@ -128,6 +131,9 @@ const graph = new LiveGraph(stage.parentElement!);
 
 // Start loading OpenCV right away so it is ready by the time a photo is picked.
 const cvPromise = loadOpenCV();
+cvPromise.then(() => performance.mark('wa:cv-ready'), () => {});
+morphHooks.start.push(() => performance.mark('wa:morph-start'));
+morphHooks.end.push(() => performance.mark('wa:morph-end'));
 // Once OpenCV is in, keep the example photos and answers in memory so the gallery works offline.
 cvPromise.then(preloadExamples, preloadExamples);
 
@@ -271,6 +277,7 @@ async function run(file: Blob, example?: string) {
     if (stale()) return;
     const t0 = performance.now();
     const vision = extractContours(cv, photo);
+    timing('wa:contours', t0);
     console.log(`[vision] ${vision.contours.length} contours in ${Math.round(performance.now() - t0)}ms`, vision.contours);
     // No lines found (vision already retried with lower thresholds): show the photo itself (the cleaned paper would be
     // blank), skip the AI, and the fallback drops the photo's most line-like marks (never a shadow), so something moves.
@@ -278,6 +285,9 @@ async function run(file: Blob, example?: string) {
     if (blank) vision.paper = photo;
 
     setStep('ai');
+    // Line finding and the guess are each a few hundred ms on a slow phone: let "Understanding" show in between.
+    await nextFrame();
+    if (stale()) return;
     const t1 = performance.now();
     const annotated = annotate(vision.paper, vision.contours);
 
@@ -324,6 +334,7 @@ async function run(file: Blob, example?: string) {
           : await analyze(annotated, vision.contours);
       if (stale()) return;
     }
+    timing('wa:guess', t1);
     if (blank) analysis.explanation = 'We could not find clear lines, so here is a guess: the clearest marks in the photo fall.';
     console.log(`[ai] ${analysis.source} ${Math.round(performance.now() - t1)}ms`, analysis);
     if (import.meta.env.DEV) (window as any).__wa.last = { analysis: structuredClone(analysis), fingerprint: fingerprint(vision.contours, analysis) };
@@ -345,6 +356,15 @@ async function run(file: Blob, example?: string) {
     if (!stale()) setStep('error', 'Something went wrong. Try another photo!');
   } finally {
     if (!stale()) busy = false;
+  }
+}
+
+/** User Timing entry (performance.measure) from `start` to now, read by the headless speed check. */
+function timing(name: string, start: number) {
+  try {
+    performance.measure(name, { start, end: performance.now() });
+  } catch {
+    // Old browsers without the options form: the timing is only for measuring.
   }
 }
 

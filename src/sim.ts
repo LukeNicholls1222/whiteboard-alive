@@ -14,6 +14,9 @@ export { STEP_ACCEL, STEP_MS } from './units';
 
 Matter.Common.setDecomp(decomp);
 
+/** ?debug outlines the physics bodies (read once: the query does not change while the page is open). */
+const DEBUG = typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug');
+
 // ---- View (camera) ------------------------------------------------------------------------------------
 // A scene may show more than the photo (BuiltScene.view): the picture keeps the card's width, its height follows
 // the view's shape between MIN_VIEW_ASPECT and MAX_VIEW_ASPECT × the width (not the photo's shape: a long flat shot
@@ -219,7 +222,7 @@ export class Simulation {
       fn(ctx, this.scene, s);
       ctx.restore();
     }
-    if (new URLSearchParams(location.search).has('debug')) this.drawDebug();
+    if (DEBUG) this.drawDebug();
   }
 
   private drawDebug() {
