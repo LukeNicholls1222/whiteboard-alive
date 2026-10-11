@@ -132,9 +132,24 @@ export interface ArrowScale {
   hint: number;
   /** Scale bar in the corner: a round number of m/s and its length in world px (= k × mps). */
   bar: { mps: number; px: number };
-  /** The scale bar's pill, world px. */
+  /** The scale bar's pill, world px (where it is, or is fading in). */
   box: Box;
+  /** Which corner of the picture it is in. */
+  corner: Corner;
 }
+
+/**
+ * Corners the scale bar may use, in order of preference. The top ones sit below the buttons along the
+ * picture's top edge (slow-motion badge, "Show what AI saw").
+ */
+export type Corner = 'bottom-left' | 'bottom-right' | 'top-left' | 'top-right';
+const CORNERS: Corner[] = ['bottom-left', 'bottom-right', 'top-left', 'top-right'];
+/** The bar leaves a corner this long (screen s) before a moving body or its arrow would reach it (> the fade). */
+const BAR_LOOKAHEAD_S = 0.4;
+/** Crossfade from one corner to the next, ms. */
+const BAR_FADE_MS = 300;
+/** Floating buttons whose top is within this of the picture's top edge make up the top row (CSS px). */
+const TOP_ROW_CSS = 60;
 
 export class VelocityArrows {
   enabled = true;
@@ -154,12 +169,23 @@ export class VelocityArrows {
   scale: ArrowScale | null = null;
   /** Boxes (world px, this frame) the speed labels should stay off when they can, e.g. the value labels. */
   avoid: () => Box[] = () => [];
+  /** Scale bar pills drawn in the last frame with their opacity (two while crossfading to another corner). */
+  bars: Array<{ box: Box; alpha: number; corner: Corner }> = [];
+  /** Corner the scale bar is in (or fading into). */
+  private corner: Corner = 'bottom-left';
+  /** The corner it is fading out of, and when the move started (performance.now ms). */
+  private fade: { from: Corner; start: number } | null = null;
+  /** Last frame's arrow tip and label per body, so the bar can keep clear of them too. */
+  private marks = new Map<Matter.Body, { tip: { x: number; y: number }; label: Box }>();
+  /** Bottom of the row of buttons along the picture's top edge (world px below vis.y), re-read every half second. */
+  private topRow: { y: number; css: number; age: number } | null = null;
 
   /** New photo: stop drawing the old drawing's arrows until the next attach(). */
   reset() {
     this.sim = null;
     this.last = [];
     this.scale = null;
+    this.bars = [];
   }
 
   /** Hook into a freshly started simulation. */
@@ -173,6 +199,11 @@ export class VelocityArrows {
     this.hint = hint && hint > 0 && Number.isFinite(hint) ? mps(hint, scaleOf(sim.scene)) : 0;
     this.frames = 0;
     this.kShown = 0;
+    this.bars = [];
+    this.corner = 'bottom-left';
+    this.fade = null;
+    this.marks.clear();
+    this.topRow = null;
     sim.drawListeners.push((ctx, scene, s) => {
       if (this.sim === sim) this.draw(ctx, scene, s);
     });
@@ -195,6 +226,7 @@ export class VelocityArrows {
       if (!this.enabled) {
         this.last = [];
         this.scale = null;
+        this.bars = [];
       }
     });
     this.input = input;
@@ -270,18 +302,22 @@ export class VelocityArrows {
     if (!this.enabled) {
       this.last = [];
       this.scale = null;
+      this.bars = [];
       return;
     }
 
     // Pass 2: arrows first, then every label on top, then the scale bar (labels keep clear of its pill).
     const samples: ArrowSample[] = [];
     ctx.font = `800 ${LABEL_CSS * css}px ${FONT}`;
-    const bar = layoutScaleBar(ctx, css, vis, k, vRef);
-    const obstacles = this.obstacles(scene, bodies, css);
-    // The scale bar and the value labels are text a speed label must never cover, and it keeps a little room from them.
     const space = LABEL_SPACE_CSS * css;
-    obstacles.push({ box: grow(bar.box, space), hard: true });
-    for (const box of this.avoid()) obstacles.push({ box: grow(box, space), hard: true });
+    const avoid = this.avoid();
+    const bars = this.placeScaleBar(ctx, css, vis, k, vRef, bodies, avoid, space);
+    const obstacles = this.obstacles(scene, bodies, css);
+    // The scale bar (both pills while it moves) and the value labels are text a speed label must never cover,
+    // and it keeps a little room from them.
+    for (const b of bars) obstacles.push({ box: grow(b.bar.box, space), hard: true });
+    for (const box of avoid) obstacles.push({ box: grow(box, space), hard: true });
+    this.marks.clear();
     const labels: Array<{ text: string; box: Box }> = [];
     const edge = (HEAD_HALF_W_CSS + OUTLINE_CSS) * css;
     for (const b of bodies) {
@@ -305,13 +341,104 @@ export class VelocityArrows {
       const site: LabelSite = { tip, ux, uy, headLen, origin: { x: p.x, y: p.y }, body: { x: bb.min.x, y: bb.min.y, w: bb.max.x - bb.min.x, h: bb.max.y - bb.min.y } };
       const label = placeLabel(site, tw + 6 * css, (LABEL_CSS + 4) * css, css, vis, obstacles);
       labels.push({ text, box: label });
+      this.marks.set(b, { tip, label });
       samples.push({ x: p.x, y: p.y, vx: mps(t.vx, scale), vy: mps(-t.vy, scale), speed, length, k, drawn, clipped: drawn < length, tip, label });
     }
     // The pill goes under the labels, so a label that had to land on it is still readable.
-    paintScaleBar(ctx, css, bar);
+    for (const b of bars) paintScaleBar(ctx, css, b.bar, b.alpha);
     for (const l of labels) drawLabel(ctx, l.text, l.box, css);
     this.last = samples;
-    this.scale = { k, vRef, hint: this.hint, bar: { mps: bar.mps, px: bar.px }, box: bar.box };
+    const bar = bars[bars.length - 1].bar;
+    this.scale = { k, vRef, hint: this.hint, bar: { mps: bar.mps, px: bar.px }, box: bar.box, corner: this.corner };
+    this.bars = bars.map((b) => ({ box: b.bar.box, alpha: b.alpha, corner: b.corner }));
+  }
+
+  /**
+   * The scale bar's corner this frame. It stays bottom-left unless something is about to cover it: a moving
+   * body or its arrow where they are now or BAR_LOOKAHEAD_S ahead at their current velocity, a speed label
+   * that had to land on it, or a value label. Then it moves to the first free corner (bottom-left, bottom-right, top-left, top-right),
+   * crossfading over BAR_FADE_MS so it never jumps. It stays there while that corner is free (scenes replay the
+   * same motion, so going back would only mean leaving again). When every corner is covered it takes the least
+   * covered one.
+   * Returns the pills to draw: the one fading out (if any) first, then the current one.
+   */
+  private placeScaleBar(
+    ctx: CanvasRenderingContext2D,
+    css: number,
+    vis: ViewRect,
+    k: number,
+    vRef: number,
+    bodies: Matter.Body[],
+    avoid: Box[],
+    space: number,
+  ): Array<{ bar: ScaleBar; alpha: number; corner: Corner }> {
+    const now = performance.now();
+    const topY = this.topRowY(ctx.canvas, css, vis);
+    const at = (c: Corner) => layoutScaleBar(ctx, css, vis, k, vRef, c, topY);
+    const steps = BAR_LOOKAHEAD_S / STEP_S;
+    const zones: Box[] = avoid.map((b) => grow(b, space));
+    for (const b of bodies) {
+      // The body and its arrow, now and where its velocity takes them. The speed label only where it is: it keeps
+      // off the bar by itself (placeLabel), so projecting it would only chase the bar from corner to corner.
+      const bb = b.bounds;
+      let z: Box = { x: bb.min.x, y: bb.min.y, w: bb.max.x - bb.min.x, h: bb.max.y - bb.min.y };
+      const m = this.marks.get(b);
+      if (m) z = union(z, { x: m.tip.x, y: m.tip.y, w: 0, h: 0 });
+      const ahead = { ...z, x: z.x + b.velocity.x * steps, y: z.y + b.velocity.y * steps };
+      zones.push(grow(union(z, ahead), space));
+      if (m) zones.push(m.label);
+    }
+    const cost = new Map<Corner, number>();
+    for (const c of CORNERS) {
+      const box = at(c).box;
+      cost.set(c, zones.reduce((s, z) => s + overlapArea(box, z), 0));
+    }
+    const cur = this.corner;
+    let target = cur;
+    if (cost.get(cur)! > 0) {
+      const free = CORNERS.find((c) => cost.get(c) === 0);
+      if (free) target = free;
+      else {
+        const least = CORNERS.reduce((a, c) => (cost.get(c)! < cost.get(a)! ? c : a), cur);
+        if (cost.get(least)! < 0.5 * cost.get(cur)!) target = least;
+      }
+    }
+    if (target !== cur) {
+      // Nothing on screen yet (first frame): appear in place, no fade.
+      this.fade = this.bars.length ? { from: cur, start: now } : null;
+      this.corner = target;
+    }
+    const out: Array<{ bar: ScaleBar; alpha: number; corner: Corner }> = [];
+    let alpha = 1;
+    if (this.fade) {
+      const t = (now - this.fade.start) / BAR_FADE_MS;
+      if (t >= 1 || this.fade.from === this.corner) this.fade = null;
+      else {
+        alpha = t;
+        out.push({ bar: at(this.fade.from), alpha: 1 - t, corner: this.fade.from });
+      }
+    }
+    out.push({ bar: at(this.corner), alpha, corner: this.corner });
+    return out;
+  }
+
+  /** World y of the bottom of the buttons along the picture's top edge (vis.y if none); read every 30 frames. */
+  private topRowY(canvas: HTMLCanvasElement, css: number, vis: ViewRect): number {
+    const t = this.topRow;
+    if (t && t.css === css && ++t.age < 30) return vis.y + t.y;
+    let y = 0;
+    const card = canvas.parentElement;
+    if (card) {
+      const cr = canvas.getBoundingClientRect();
+      for (const el of card.querySelectorAll<HTMLElement>('.time-badge, .btn-float')) {
+        if (el.hidden || !el.offsetParent) continue;
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height || r.top - cr.top > TOP_ROW_CSS) continue;
+        y = Math.max(y, (r.bottom - cr.top) * css);
+      }
+    }
+    this.topRow = { y, css, age: 0 };
+    return vis.y + y;
   }
 
   /** Top speed the factor is based on, m/s: the expected one, the fastest seen, or the fading seed without a hint. */
@@ -576,8 +703,19 @@ export function scaleBarZone(ctx: CanvasRenderingContext2D, css: number, W: numb
   return { x: x0 + BAR_MARGIN_CSS * css, y: y0 + H - BAR_MARGIN_CSS * css - h, w, h };
 }
 
-/** Bottom-left pill: a line as long as a round number of m/s at the current factor, and that number. */
-function layoutScaleBar(ctx: CanvasRenderingContext2D, css: number, vis: ViewRect, k: number, vRef: number): ScaleBar {
+/**
+ * The pill in a corner of the picture (bottom-left unless something moves there): a line as long as a round
+ * number of m/s at the current factor, and that number. Top corners start below `topY` (the top row of buttons).
+ */
+function layoutScaleBar(
+  ctx: CanvasRenderingContext2D,
+  css: number,
+  vis: ViewRect,
+  k: number,
+  vRef: number,
+  corner: Corner = 'bottom-left',
+  topY = vis.y,
+): ScaleBar {
   const mps = niceBelow(0.8 * vRef);
   const px = k * mps;
   const text = `${fmt(mps)} m/s`;
@@ -585,12 +723,24 @@ function layoutScaleBar(ctx: CanvasRenderingContext2D, css: number, vis: ViewRec
   const padX = 10 * css, padY = 6 * css, gap = 8 * css;
   const w = padX * 2 + px + gap + tw;
   const h = padY * 2 + LABEL_CSS * css;
-  const x = vis.x + BAR_MARGIN_CSS * css;
-  const y = vis.y + vis.h - BAR_MARGIN_CSS * css - h;
+  const margin = BAR_MARGIN_CSS * css;
+  const x = corner.endsWith('left') ? vis.x + margin : vis.x + vis.w - margin - w;
+  const y = corner.startsWith('bottom') ? vis.y + vis.h - margin - h : Math.max(vis.y, topY) + margin;
   return { mps, px, text, box: { x, y, w, h }, lineX: x + padX, textX: x + padX + px + gap, y: y + h / 2 };
 }
 
-function paintScaleBar(ctx: CanvasRenderingContext2D, css: number, bar: ScaleBar) {
+const union = (a: Box, b: Box): Box => {
+  const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+  return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
+};
+
+const overlapArea = (a: Box, b: Box) =>
+  Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+
+function paintScaleBar(ctx: CanvasRenderingContext2D, css: number, bar: ScaleBar, alpha = 1) {
+  if (!(alpha > 0)) return;
+  ctx.save();
+  ctx.globalAlpha *= Math.min(1, alpha);
   const { x, y, w, h } = bar.box;
   const r = h / 2;
   ctx.beginPath();
@@ -617,6 +767,7 @@ function paintScaleBar(ctx: CanvasRenderingContext2D, css: number, bar: ScaleBar
   ctx.textBaseline = 'middle';
   ctx.fillStyle = INK;
   ctx.fillText(bar.text, bar.textX, bar.y);
+  ctx.restore();
 }
 
 let styled = false;

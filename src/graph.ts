@@ -6,6 +6,7 @@ import Matter from 'matter-js';
 import type { Simulation } from './sim';
 import type { DiagramType, Scale } from './types';
 import {
+  BASE_SCALE,
   DEFAULT_KG,
   DEFAULT_SCALE,
   EARTH_G,
@@ -19,6 +20,7 @@ import {
   physSeconds,
   scaleOf,
   springK,
+  STEP_MS,
   STEP_S,
 } from './units';
 
@@ -153,8 +155,10 @@ export class LiveGraph {
   }
 
   /**
-   * The textbook period next to the measured one: pendulum 2π√(L/g) with the drawn string length, spring
-   * 2π√(m/k) with the simulated k. Follows gravity changes (slider, Moon mode).
+   * The textbook period next to the measured one: pendulum 2π√(L/g) with the drawn string length, corrected for
+   * the swing's amplitude θ₀ (shown in the label), spring 2π√(m/k) with the simulated k. Follows gravity changes
+   * (slider, Moon mode). Switching gravity mid-swing changes the amplitude (the bob keeps its speed): switched at
+   * the bottom, a 21° Earth swing becomes a 53° Moon swing, 5.7 % slower than 2π√(L/g), so θ₀ is part of the theory.
    */
   private showTheory() {
     const sim = this.sim;
@@ -162,7 +166,9 @@ export class LiveGraph {
     if (sim && this.diagram === 'pendulum' && sim.scene.label === 'Pendulum' && sim.scene.measures?.string) {
       const L = meters(sim.scene.measures.string, this.scale);
       const g = sim.gravity;
-      text = `Theory 2π√(L/g) = ${g > 0 ? formatSeconds(2 * Math.PI * Math.sqrt(L / g)) : '--'}`;
+      const amp = swingAmplitude(sim, sim.engine.gravity.scale);
+      const T = g > 0 && amp !== null ? (2 * Math.PI * Math.sqrt(L / g)) * amplitudeFactor(amp) : 0;
+      text = amp === null || !(T > 0) ? 'Theory 2π√(L/g) = --' : `Theory (θ₀=${Math.round((amp * 180) / Math.PI)}°) = ${formatSeconds(T)}`;
     } else if (sim && this.diagram === 'spring' && sim.scene.label === 'Spring and mass') {
       const c = sim.scene.constraints[0];
       const block = sim.scene.parts?.block;
@@ -172,7 +178,7 @@ export class LiveGraph {
         text = `Theory 2π√(m/k) = ${formatSeconds(2 * Math.PI * Math.sqrt(m / k))}`;
       }
     }
-    this.theoryLabel.textContent = text;
+    if (this.theoryLabel.textContent !== text) this.theoryLabel.textContent = text;
     this.theoryLabel.hidden = !text;
   }
 
@@ -193,10 +199,17 @@ export class LiveGraph {
     this.gLabel.textContent = `g = ${g.toFixed(g < 10 ? 2 : 1)} m/s²`;
     if (changed) this.showTheory();
     // Old periods were measured under the old gravity. Until the next half swing is measured, show
-    // a provisional estimate: a pendulum's period goes as 1/sqrt(g); a spring's does not depend on g.
+    // a provisional estimate: a pendulum's period goes as 1/sqrt(g) times the amplitude factor (the swing
+    // grows or shrinks with the switch, see showTheory); a spring's does not depend on g.
     if (changed && this.measuresPeriod()) {
       const old = this.period.value();
-      const guess = old ? (this.diagram === 'pendulum' ? old.period * Math.sqrt(oldG / g) : old.period) : null;
+      let ratio = 1;
+      if (this.diagram === 'pendulum' && this.sim) {
+        const a0 = swingAmplitude(this.sim, (BASE_SCALE * oldG) / EARTH_G);
+        const a1 = swingAmplitude(this.sim, this.sim.engine.gravity.scale);
+        ratio = Math.sqrt(oldG / g) * (a0 !== null && a1 !== null ? amplitudeFactor(a1) / amplitudeFactor(a0) : 1);
+      }
+      const guess = old && Number.isFinite(ratio) ? old.period * ratio : null;
       this.period.restart(guess);
       this.showPeriod();
     }
@@ -237,6 +250,8 @@ export class LiveGraph {
       const main = mainBody(bodies);
       if (main) this.period.push(this.time, main);
       this.showPeriod();
+      // The pendulum's theory follows its amplitude (air drag slowly shrinks it).
+      if (this.diagram === 'pendulum') this.showTheory();
     } else {
       // Same tracker, same body, same conversion and formatter as the velocity arrow's number.
       const f = sim.motion.fastest();
@@ -489,6 +504,42 @@ function springEnergyFromRest(engine: Matter.Engine, scale: Scale, kg: Map<Matte
     e += 0.5 * springK(c.stiffness, m, scale) * d * d;
   }
   return e;
+}
+
+/**
+ * Amplitude θ₀ (radians) of the pendulum's swing right now, from its energy: the bob's height and speed give the
+ * angle where it would stop, cos θ₀ = cos θ − v² / (2 g L), under the engine gravity `gravityScale` (Matter's
+ * gravity.scale; pass an old one to get the amplitude the swing had before a gravity change). Null when the scene
+ * is not the pendulum, gravity is off, or the bob goes over the top.
+ */
+export function swingAmplitude(sim: Simulation, gravityScale: number): number | null {
+  const swing = sim.scene.sprites.find((s) => s.follow.kind === 'swing')?.follow;
+  if (swing?.kind !== 'swing') return null;
+  const gv = sim.engine.gravity;
+  const gn = Math.hypot(gv.x, gv.y);
+  // Gravity in px per step², as the pendulum integrates it.
+  const G = gn * gravityScale * STEP_MS * STEP_MS;
+  if (!(G > 0)) return null;
+  const b = swing.body;
+  const dx = b.position.x - swing.pivot.x, dy = b.position.y - swing.pivot.y;
+  const L = Math.hypot(dx, dy);
+  if (!(L > 0)) return null;
+  // Angle from "straight down" along gravity.
+  const cos = (dx * gv.x + dy * gv.y) / (L * gn);
+  const v2 = b.velocity.x ** 2 + b.velocity.y ** 2;
+  const c0 = cos - v2 / (2 * G * L);
+  return c0 < -1 ? null : Math.acos(Math.min(1, c0));
+}
+
+/**
+ * Exact period of a pendulum swinging to ±θ₀ over the small-swing 2π√(L/g): 1 / AGM(1, cos(θ₀/2)).
+ * 20° gives ×1.0077 (≈ 1 + θ₀²/16), 53° gives ×1.057.
+ */
+export function amplitudeFactor(theta0: number): number {
+  let a = 1, b = Math.cos(theta0 / 2);
+  if (!(b > 0)) return Infinity;
+  for (let i = 0; i < 30 && Math.abs(a - b) > 1e-15; i++) [a, b] = [(a + b) / 2, Math.sqrt(a * b)];
+  return 1 / a;
 }
 
 /** The body whose swing is timed: the heaviest moving one (the bob, the spring's block). */
