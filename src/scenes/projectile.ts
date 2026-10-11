@@ -6,6 +6,10 @@
 // the arrow as a long thin stroke starting at the ball, the barrel as the ink right next to the ball.
 // Everything else that was drawn (ground, cliff, cannon) stays in the background and becomes static
 // collision cells, so the ball lands on what was actually drawn.
+//
+// Clean figure: a drawn cannon becomes a clean one (scenes/cannon.ts, clean.ts drawCannon) whose barrel turns about
+// its pivot to an entered launch angle, eased over AIM_MS; the ball starts in its mouth, so the launch point follows
+// the turned barrel. A drawn arrow turns the same way. The physics of the flight itself is unchanged.
 
 import Matter from 'matter-js';
 import type { CleanPart, Contour, PartInfo, PartName, Point, SceneBuilder, SceneInput, Sprite, ValueSource, ViewRect } from '../types';
@@ -18,6 +22,7 @@ import { FlightMeter, defaultRange, flightTheory, steppedLaunch, type FlightNumb
 import type { FlightInfo, LaunchBarrel, LaunchInfo, LaunchPlatform } from '../types';
 import { fmt, inkSegment, segmentY, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters, untidyTurn } from './tidy';
 import type { InkSegment } from './tidy';
+import { aimAngle, aiming, aimShown, aimTo, aimUnit, barrelOf, mouthAt, type Aim } from './cannon';
 
 /**
  * Wait after landing before firing again, in screen time (ms on the clock, not physics steps: at 1× a frame runs several
@@ -860,38 +865,14 @@ function cellsOfPixels(pixels: Point[]): Matter.Body[] {
 }
 
 /**
- * The drawn barrel behind the ball, from the launcher's ink (world px): ink within 2.5 ball radii of the line through
- * the ball along the drawn launch direction, behind the ball, covering most of that stretch. An estimate (a hand-drawn
- * cannon has no exact axis): the clean cannon drawing turns a barrel of this length and thickness about `pivot`.
- * Null when there is no barrel there (a ball with an arrow, a ball on a cliff).
+ * The barrel's turn to an entered angle, per photo (scenes/cannon.ts): the scene is rebuilt for every typed number
+ * and slider, so the turn in progress is kept here, keyed by the photo's ink (a new photo starts a new one).
  */
-function barrelOf(pixels: Point[], ball: Point, unit: Point, r: number): Omit<LaunchBarrel, 'angleDeg' | 'drawnAngleDeg'> | null {
-  const reach = 14 * r, band = 2.5 * r;
-  const ts: number[] = [], ns: number[] = [];
-  for (const p of pixels) {
-    const dx = p.x - ball.x, dy = p.y - ball.y;
-    const t = dx * unit.x + dy * unit.y;
-    const n = Math.abs(-dx * unit.y + dy * unit.x);
-    if (t > 0.5 * r || t < -reach || n > band) continue;
-    ts.push(t);
-    ns.push(n);
-  }
-  if (ts.length < 20) return null;
-  const back = Math.min(...ts);
-  if (back > -2 * r) return null;
-  // Most of the stretch from the back end to the ball has ink (not a few scraps of a cliff edge).
-  const bins = 12;
-  const hit = new Uint8Array(bins);
-  for (const t of ts) if (t <= 0) hit[Math.min(bins - 1, Math.floor(((t - back) / -back) * bins))] = 1;
-  if (hit.reduce((s, v) => s + v, 0) < 0.6 * bins) return null;
-  ns.sort((a, b) => a - b);
-  const thickness = Math.max(2 * r, 2 * ns[Math.floor(ns.length * 0.8)]);
-  const breech = { x: ball.x + unit.x * back, y: ball.y + unit.y * back };
-  const muzzle = { x: ball.x + unit.x * r, y: ball.y + unit.y * r };
-  const length = r - back;
-  const pivot = { x: breech.x + (muzzle.x - breech.x) * 0.35, y: breech.y + (muzzle.y - breech.y) * 0.35 };
-  return { pivot, breech, muzzle, length, thickness };
-}
+const aimCache = new WeakMap<Uint8Array, Aim>();
+
+/** A launcher whose ink is at most this × the barrel's length wide and tall is a cannon alone (its ink is replaced). */
+const CANNON_ONLY_W = 2.4;
+const CANNON_ONLY_H = 1.8;
 
 // ---- Scene ------------------------------------------------------------------------------------
 
@@ -1201,12 +1182,37 @@ export const buildProjectile: SceneBuilder = (input) => {
         ? { x0: Math.min(lb.x0, q.x), y0: Math.min(lb.y0, q.y), x1: Math.max(lb.x1, q.x), y1: Math.max(lb.y1, q.y) }
         : { x0: q.x, y0: q.y, x1: q.x, y1: q.y };
     }
+  // --- Entered launch angle: fired that far above level, towards the side the drawing fires to ---
+  const angleNote = noteFor(input.analysis, 'angle', ['launcher']);
+  const elevDeg = angleNote ? Math.min(MAX_LAUNCH_DEG, Math.max(0, angleNote.value)) : drawnElevDeg;
+  const unit = angleNote ? aimUnit(elevDeg, facing) : drawnUnit;
+  /**
+   * The drawn barrel behind the ball (where it was drawn), the clean cannon's barrel: it turns about its pivot. A
+   * drawing fires with a cannon or an arrow: with an arrow at the ball, what is drawn behind it is a cliff or a box
+   * (its edges can look like a barrel), not a cannon.
+   */
+  const barrelAt = launcherPx.length && !arrowSeg ? barrelOf(launcherPx, drawnStart, drawnUnit, r) : null;
+  /** Pivot to mouth, world px. */
+  const front = barrelAt ? Math.hypot(barrelAt.muzzle.x - barrelAt.pivot.x, barrelAt.muzzle.y - barrelAt.pivot.y) : 0;
+  /**
+   * The ball's centre at launch with the barrel turned to `deg`, at the drawn place (before the height shift): in the
+   * mouth of the turned barrel. Without a barrel (an arrow, a cliff) the ball starts where it was drawn at any angle.
+   */
+  const mouth0 = (deg: number): Point => (barrelAt ? mouthAt(barrelAt.pivot, front, deg, facing) : drawnStart);
+  // The turn to the entered angle, eased over AIM_MS (screen time); the ball waits in the mouth until it is over.
+  const aim = aimTo(aimCache.get(ink), elevDeg, screenNow());
+  aimCache.set(ink, aim);
+  /** The elevation the barrel (or arrow) is shown at right now. */
+  const aimDeg = () => aimShown(aim, screenNow());
+
   let shiftY = 0;
   /** An entered height lower than the launcher allows (a cannon standing on the ground cannot sink into it). */
   let heightAdjusted = false;
   if (heightNote && heightNote.value >= 0) {
+    // The entered height is the launch point's: the mouth of the barrel at the entered angle.
     const want = floorY - bodyR - heightNote.value * ppm;
-    if (Math.abs(want - start.y) >= 0.5) shiftY = want - start.y;
+    const launchY = angleNote ? mouth0(elevDeg).y : start.y;
+    if (Math.abs(want - launchY) >= 0.5) shiftY = want - launchY;
     // Lowered at most until the launcher's bottom (or the ball, with nothing under it) is on the ground.
     const room = Math.max(0, floorY - (lb ? Math.max(lb.y1, start.y + r) : start.y + bodyR));
     if (shiftY > room + 0.5) {
@@ -1255,12 +1261,16 @@ export const buildProjectile: SceneBuilder = (input) => {
     fall = Math.max(0, floorY - bodyR - start.y);
   }
 
-  // --- Entered launch angle: fired that far above level, towards the side the drawing fires to ---
-  const angleNote = noteFor(input.analysis, 'angle', ['launcher']);
-  const elevDeg = angleNote ? Math.min(MAX_LAUNCH_DEG, Math.max(0, angleNote.value)) : drawnElevDeg;
-  const unit = angleNote
-    ? { x: facing * Math.cos((elevDeg * Math.PI) / 180), y: -Math.sin((elevDeg * Math.PI) / 180) }
-    : drawnUnit;
+  // --- The barrel turned to an entered angle: the ball starts in its mouth there (the pivot stays put) ---
+  const down = (q: Point) => ({ x: q.x, y: q.y + shiftY });
+  if (angleNote && barrelAt) {
+    start = down(mouth0(elevDeg));
+    Matter.Body.setPosition(body, start);
+    ghostAtStart = overlapping();
+    fall = Math.max(0, floorY - bodyR - start.y);
+  }
+  /** The ball's centre at the mouth of the barrel as shown right now (it rides along while the barrel turns). */
+  const mouthNow = (): Point => (barrelAt ? down(mouth0(aimDeg())) : start);
   const v0 = { x: unit.x * speed, y: unit.y * speed };
   /** What Matter is handed so its stepped flight runs on the textbook parabola of v0 (flight.ts). */
   const launchVelocity = (gStep: number) => steppedLaunch(v0, gStep);
@@ -1349,8 +1359,9 @@ export const buildProjectile: SceneBuilder = (input) => {
     const { from: a, to: b } = arrowSeg;
     for (const box of [drawing, launcher]) add(box, Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y));
   }
-  // Nothing drawn at the launch point but the ball: the ball is the launcher.
-  if (launcher.x1 < launcher.x0) add(launcher, start.x - r, start.y - r, start.x + r, start.y + r);
+  // Nothing drawn at the launch point but the ball: the ball is the launcher. A barrel turned to an entered angle
+  // reaches as far as its mouth, where the ball now starts.
+  if (launcher.x1 < launcher.x0 || barrelAt) add(launcher, start.x - r, start.y - r, start.x + r, start.y + r);
   if (platform) add(drawing, platform.x0, platform.top, platform.x1, platform.bottom);
   if (level.length) for (const p of level) add(drawing, p.x0, p.y, p.x1, p.y);
   else if (span) add(drawing, span.x0, floorY, span.x1, floorY);
@@ -1507,8 +1518,23 @@ export const buildProjectile: SceneBuilder = (input) => {
     setGhost(true);
   };
 
+  /** The barrel was still turning on the last step: the ball waited in its mouth and is fired when the turn is over. */
+  let aimHeld = false;
   const onStep = (engine: Matter.Engine) => {
     gNow = engine.gravity.y * engine.gravity.scale * STEP_MS * STEP_MS;
+    if (aiming(aim, screenNow())) {
+      // The barrel turns to an entered angle (0.26 s): the ball rides in its mouth and is fired once it has stopped.
+      aimHeld = true;
+      Matter.Body.setPosition(body, mouthNow());
+      Matter.Body.setVelocity(body, { x: 0, y: 0 });
+      return;
+    }
+    if (aimHeld) {
+      aimHeld = false;
+      hold = null;
+      fire();
+      return;
+    }
     steps++;
     if (steps === 1 && landedSteps < 0 && Math.abs(gNow - launchG) > 1e-9 * Math.max(1, gNow)) {
       // The engine's gravity is not the one the scene was built with (Moon mode kept on for a rebuilt scene): fire
@@ -1582,8 +1608,9 @@ export const buildProjectile: SceneBuilder = (input) => {
     pts.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)));
     ctx.stroke();
   };
-  /** Short dotted line along the entered launch angle (the drawn barrel itself does not turn). */
-  const aimLen = Math.max(5 * r, 0.6 * launcherSize);
+  /** The entered angle's arc: about the barrel's pivot (inside the barrel's reach), else about the ball. */
+  const arcAt = barrelAt ? down(barrelAt.pivot) : null;
+  const arcR = barrelAt ? Math.max(0.78 * front, 2 * r) : Math.max(3 * r, 0.4 * launcherSize);
   const onDraw = (ctx: CanvasRenderingContext2D) => {
     // Zoomed out to a long flight: the trail keeps its on-screen width and the ball a visible size.
     const a = ctx.getTransform().a;
@@ -1610,13 +1637,19 @@ export const buildProjectile: SceneBuilder = (input) => {
       ctx.strokeStyle = 'rgba(60,60,60,0.35)';
       strokePath(ctx, [{ x: start.x, y: start.y + bodyR }, { x: start.x, y: floorY }]);
     }
-    // Entered angle: which way it fires now.
+    // Entered angle: a quiet textbook arc from level up to the barrel (its "θ = 60°" label is a value card, notes.ts).
+    // The barrel itself shows the direction; the arc turns with it.
     if (angleNote) {
-      ctx.lineWidth = Math.max(1.5, 2.5 * css);
-      ctx.setLineDash([1, 5 * css]);
-      ctx.strokeStyle = 'rgba(255,75,75,0.9)';
-      const len = Math.max(aimLen, 40 * css);
-      strokePath(ctx, [{ x: start.x, y: start.y }, { x: start.x + unit.x * len, y: start.y + unit.y * len }]);
+      const c = arcAt ?? start;
+      const deg = aimDeg();
+      ctx.lineWidth = Math.max(1, 1.5 * css);
+      ctx.strokeStyle = 'rgba(60,60,60,0.55)';
+      ctx.setLineDash([3 * css, 3 * css]);
+      strokePath(ctx, [{ x: c.x, y: c.y }, { x: c.x + facing * arcR * 1.25, y: c.y }]);
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, arcR, aimAngle(0, facing), aimAngle(deg, facing), facing > 0);
+      ctx.stroke();
     }
     ctx.lineWidth = w;
     ctx.setLineDash([w * 0.1, w * 3]);
@@ -1661,31 +1694,94 @@ export const buildProjectile: SceneBuilder = (input) => {
   };
 
   const launchAt = { ...start };
+  // The clean cannon (scene data for the clean figure; see LaunchInfo). The barrel keeps its drawn length and
+  // thickness; the pivot moves with the launcher (an entered height). It stands on its platform, else on the ground
+  // under it (the ink's bottom when that is not near the ground: a cannon drawn on a cliff), never deeper than a
+  // carriage's worth below the pivot.
+  const barrel: LaunchBarrel | null = barrelAt
+    ? {
+        pivot: down(barrelAt.pivot),
+        breech: down(barrelAt.breech),
+        muzzle: down(barrelAt.muzzle),
+        length: barrelAt.length,
+        thickness: barrelAt.thickness,
+        angleDeg: elevDeg,
+        drawnAngleDeg: drawnElevDeg,
+      }
+    : null;
+  let cannonBase = 0;
+  if (barrel) {
+    const inkBottom = Math.min(floorY, (lb ? lb.y1 : drawnStart.y + r) + shiftY);
+    const under = groundAt(barrel.pivot.x);
+    cannonBase = platform ? platform.top : Math.abs(inkBottom - under) <= 2 * groundBand ? under : inkBottom;
+    cannonBase = Math.max(barrel.pivot.y + 0.2 * barrel.thickness, Math.min(cannonBase, barrel.pivot.y + 2.4 * barrel.thickness));
+  }
   const parts: Partial<Record<PartName, PartInfo>> = {
     arrow: { at: () => launchAt, clear: r * 1.5, side: 'above' },
     ball: { at: () => body.position, clear: r, body, kg: kg ?? DEFAULT_KG, kgFrom: kg ? 'input' : 'assumed' },
-    launcher: { at: () => launchAt, clear: r * 1.5, side: facing > 0 ? 'left' : 'right' },
+    // Its labels (height, angle) sit behind the cannon's breech, clear of the barrel.
+    launcher: barrel
+      ? { at: () => barrel.pivot, clear: Math.max(r * 1.5, barrel.length - front + 0.6 * barrel.thickness), side: facing > 0 ? 'left' : 'right' }
+      : { at: () => launchAt, clear: r * 1.5, side: facing > 0 ? 'left' : 'right' },
   };
   const ground = span;
   if (ground) parts.ground = { at: () => ({ x: (ground.x0 + ground.x1) / 2, y: groundAt((ground.x0 + ground.x1) / 2) }), side: 'below' };
 
-  // Clean figure. The drawn scenery the ball can hit (cannon, cliff, target) stays as its own ink, recoloured to the
-  // scenery grey (minus specks); the drawn ground becomes a straight line at the floor; the launch arrow a straight
-  // arrow where it was drawn; the ball the physics circle. The dotted trail is drawn by onDraw as before. A launcher
-  // moved to an entered height is its own ink at the new place, on a plain platform.
+  // Clean figure. The drawn scenery the ball can hit (cliff, target) stays as its own ink, recoloured to the scenery
+  // grey (minus specks); a drawn cannon becomes the clean cannon (its ink is left to the faint drawing behind; a
+  // cannon drawn as part of something bigger, a cliff, keeps the rest of that ink); the drawn ground becomes a
+  // straight line at the floor; the launch arrow a straight arrow where it was drawn, turned to an entered angle;
+  // the ball the physics circle. The dotted trail is drawn by onDraw as before. A launcher moved to an entered height
+  // stands at the new place, on a pillar.
   const clean: CleanPart[] = [];
+  /** Does this pixel of the launcher's ink stay in the clean figure? */
+  let launcherKeep = (_i: number) => true;
+  if (barrelAt) {
+    const L = barrelAt.length, T = barrelAt.thickness;
+    const cannonOnly = !lb || (lb.x1 - lb.x0 <= CANNON_ONLY_W * L && lb.y1 - lb.y0 <= CANNON_ONLY_H * L);
+    const inBarrel = (i: number) => {
+      const x = i % W, y = (i - x) / W;
+      const dx = x - drawnStart.x, dy = y - drawnStart.y;
+      const t = dx * drawnUnit.x + dy * drawnUnit.y;
+      const n = Math.abs(-dx * drawnUnit.y + dy * drawnUnit.x);
+      return t >= -L - 0.6 * T && t <= r && n <= 0.8 * T;
+    };
+    launcherKeep = cannonOnly ? () => false : (i) => !inBarrel(i);
+  }
   const keep = new Uint8Array(W * H);
-  for (const comp of sceneryComps) if (!shiftY || !launcherComps.has(comp)) for (const p of comp) keep[p.y * W + p.x] = 1;
+  for (const comp of sceneryComps) {
+    const isLauncher = launcherComps.has(comp);
+    if (shiftY && isLauncher) continue;
+    for (const p of comp) {
+      const i = p.y * W + p.x;
+      if (!isLauncher || launcherKeep(i)) keep[i] = 1;
+    }
+  }
   const sceneryInk = inkImage(input, (i) => keep[i] === 1);
   if (sceneryInk) clean.push({ kind: 'image', ...sceneryInk });
   if (platform) {
+    // A pillar with a slightly wider cap (the physics platform is the plain box).
     const { x0, x1, top, bottom } = platform;
-    clean.push({ kind: 'solid', points: [{ x: x0, y: top }, { x: x1, y: top }, { x: x1, y: bottom }, { x: x0, y: bottom }] });
+    const cap = Math.min(0.08 * (x1 - x0), 0.5 * r);
+    const capH = Math.min(0.12 * (bottom - top), 1.2 * r);
+    clean.push({
+      kind: 'solid',
+      points: [
+        { x: x0 - cap, y: top },
+        { x: x1 + cap, y: top },
+        { x: x1 + cap, y: top + capH },
+        { x: x1, y: top + capH },
+        { x: x1, y: bottom },
+        { x: x0, y: bottom },
+        { x: x0, y: top + capH },
+        { x: x0 - cap, y: top + capH },
+      ],
+    });
   }
   /** The moved launcher's own ink (without the arrow: the clean figure draws that straight). */
   if (movedMask) {
     const mm = movedMask;
-    const li = inkImage(input, (i) => mm[i] === 1 && !arrowInk[i]);
+    const li = inkImage(input, (i) => mm[i] === 1 && !arrowInk[i] && launcherKeep(i));
     if (li) clean.push({ kind: 'image', image: li.image, offset: { x: li.offset.x, y: li.offset.y + shiftY } });
   }
   if (level.length) {
@@ -1703,7 +1799,12 @@ export const buildProjectile: SceneBuilder = (input) => {
     });
   } else clean.push({ kind: 'ground', y: floorY });
   tidyLog('Projectile', tidyNotes);
-  if (arrowSeg) clean.push({ kind: 'arrow', ...arrowSeg });
+  if (barrel) clean.push({ kind: 'cannon', pivot: barrel.pivot, angle: () => aimAngle(aimDeg(), facing), front, back: barrel.length - front, thickness: barrel.thickness, base: cannonBase });
+  if (arrowSeg) {
+    // The drawn arrow turns about its tail to an entered angle (as drawn until one is entered).
+    const drawnAngle = Math.atan2(arrowSeg.to.y - arrowSeg.from.y, arrowSeg.to.x - arrowSeg.from.x);
+    clean.push({ kind: 'arrow', ...arrowSeg, ...(angleNote ? { turn: () => aimAngle(aimDeg(), facing) - drawnAngle } : {}) });
+  }
   clean.push({ kind: 'ball', body, radius: bodyR, tone: 'mass', minCss: MIN_BALL_CSS });
 
   // Drawn style: the moved launcher (and its platform) drawn at the new place; erased from the drawn one.
@@ -1726,20 +1827,6 @@ export const buildProjectile: SceneBuilder = (input) => {
     };
   }
 
-  // The launcher for the clean cannon drawing (scene data only; see LaunchInfo).
-  const barrelAt = launcherPx.length ? barrelOf(launcherPx, drawnStart, drawnUnit, r) : null;
-  const down = (q: Point) => ({ x: q.x, y: q.y + shiftY });
-  const barrel: LaunchBarrel | null = barrelAt
-    ? {
-        pivot: down(barrelAt.pivot),
-        breech: down(barrelAt.breech),
-        muzzle: down(barrelAt.muzzle),
-        length: barrelAt.length,
-        thickness: barrelAt.thickness,
-        angleDeg: elevDeg,
-        drawnAngleDeg: drawnElevDeg,
-      }
-    : null;
   const launchInfo: LaunchInfo = {
     start: { ...start },
     facing,

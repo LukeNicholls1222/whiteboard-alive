@@ -212,8 +212,14 @@ export type CleanShape =
   | { kind: 'ground'; y: number; x0?: number; x1?: number }
   /** Fixed solid (ramp, ledge): outlined polygon with a light fill. `drawnPoints` = its corners as drawn (tidy-up). */
   | { kind: 'solid'; points: Point[]; drawnPoints?: Point[] }
-  /** Launch arrow (fixed): shaft from `from`, head at `to`. */
-  | { kind: 'arrow'; from: Point; to: Point }
+  /** Launch arrow (fixed): shaft from `from`, head at `to`; `turn()` = radians it is turned about `from` (read every frame). */
+  | { kind: 'arrow'; from: Point; to: Point; turn?: () => number }
+  /**
+   * Cannon (fixed): a barrel `front` world px from `pivot` to its mouth and `back` to its breech, `thickness` across,
+   * turned to `angle()` (screen radians, read every frame) about the pivot; a carriage and wheel from the pivot down to
+   * `base` (the y it stands on). The ball starts in the mouth. See scenes/cannon.ts.
+   */
+  | { kind: 'cannon'; pivot: Point; angle: () => number; front: number; back: number; thickness: number; base: number }
   /** Small dark dot (pivot, axle). */
   | { kind: 'pin'; at: () => Point }
   /** A fixed image in world px (drawn scenery kept as ink, recoloured). */
@@ -321,13 +327,17 @@ export interface FlightNumbers {
   time: number;
 }
 
-/** Projectile: the drawn barrel behind the ball (world px, where the scene now runs it). An estimate from the ink. */
+/**
+ * Projectile: the drawn barrel behind the ball (world px, where the scene now runs it). An estimate from the ink
+ * (scenes/cannon.ts barrelOf); the clean cannon is drawn from it.
+ */
 export interface LaunchBarrel {
-  /** Point the barrel turns about (35 % of the way from its back end to its mouth). */
+  /** Point the barrel turns about (35 % of the way from its back end to its mouth); the carriage's axle sits under it. */
   pivot: Point;
-  /** Back end and mouth, along the drawn launch direction. */
+  /** Back end, and the mouth = the ball's centre as drawn, along the drawn launch direction. */
   breech: Point;
   muzzle: Point;
+  /** Breech to mouth. */
   length: number;
   thickness: number;
   /** Elevation it fires at now and as drawn: degrees above level, towards LaunchInfo.facing. */
