@@ -40,7 +40,7 @@ While it runs you can change the physics:
 - **Air resistance**: a switch that is honest about the scale. It shows real air, or "real air ×N" when the effect is exaggerated so you can see it.
 - **Velocity arrows**: arrow length is proportional to speed, with a scale bar.
 - **Live graph card**, always theory next to measurement:
-  - Pendulum and spring: kinetic and potential energy (potential measured from the lowest point), plus the measured period next to the theory value, 2π√(L/g) for the pendulum.
+  - Pendulum and spring: kinetic and potential energy (potential measured from the lowest point), plus the measured period next to the theory value: 2π√(L/g) for the pendulum and 2π√(m/k) for the spring.
   - Rolling ball: measured acceleration next to a = 5/7 g sinθ.
   - Collision: momentum of each ball and the total, plus kinetic energy.
   - Seesaw: Torque balance, the moment m·g·d on each side and a verdict (Left wins / Right wins / Balanced! / Nearly balanced).
@@ -87,6 +87,7 @@ We tested it on 42 generated drawings: clean ones, faint pencil, ruled paper, di
 Each diagram type has its own scene builder that turns roles into rigid bodies and constraints. Stiffness and damping for each constraint are fixed constants per diagram type, chosen by us and not by the AI, so the simulation behaves the same way every time. Matter.js friction at low speeds behaves more like drag, so the incline applies its own Coulomb friction step after every physics update.
 
 Where a textbook formula exists, we compute the motion ourselves so the numbers match it:
+- **Spring**: the block moves by the exact solution of u'' = −(k/m)(u − u_eq). Total energy stays flat (0.00% drift), the period is exactly 2π√(m/k), and mass and spring constant are separate values: doubling the mass keeps k and makes the period √2 times longer.
 - **Rolling ball**: a circle on the slope rolls at a = 5/7 g sinθ (a solid ball) and turns by distance / radius. If friction can't hold it, it slides while turning.
 - **Collision**: exact one-dimensional motion from event to event. Momentum is kept through every hit, Bounciness e = 1 keeps the kinetic energy, and e = 0 makes the balls stick.
 - **Seesaw**: the plank tips toward the side with the larger moment m·g·d, and the weights ride on it. It only shows "Balanced!" when the typed values make m₁d₁ = m₂d₂. If the drawn sizes are within 12%, it shows "Nearly balanced" and tilts only slightly.
@@ -107,6 +108,7 @@ Vite + TypeScript with a plain Canvas (no framework). GitHub Actions builds on e
 - **"Nothing happens" is the worst outcome.** We built the fallback scene first, so even a drawing we don't understand still drops something.
 - **Free-tier AI quotas and slow responses.** The app falls through a chain of Flash models. The first one gets 9 seconds and the whole chain is capped at 20. If all of them fail, the shape-based guess still picks a scene.
 - **Physics engine friction isn't textbook friction.** We measured μ = 0.1 and μ = 0.8 looking almost the same in Matter.js, so we wrote our own Coulomb friction for the incline.
+- **A spring that slowly lost energy.** Matter.js soft constraints drain a little energy every cycle, and our top-up to hide it made the total-energy line wobble by 8.8%. We replaced the spring with its exact solution, and the line is now flat.
 - **Being honest about the physics.** Real air resistance on a pendulum is too small to see, so the switch exaggerates it and says by how much ("real air ×N") instead of pretending.
 
 ## Accomplishments that we're proud of
