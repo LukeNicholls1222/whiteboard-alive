@@ -11,14 +11,18 @@
 // Air drag on the bob, F = c·v² with c = ½ρ·Cd·A (air.ts) and v = L·θ', gives θ'' = −(c·L/m)·θ'·|θ'|, so the
 // dimensionless k = params.airDrag × c·L/m (airDrag = factor on real air, 0 = off). k does not depend on the
 // time unit, so the slow-motion factor needs no conversion.
+//
+// View: the picture always holds the whole swing (pendulum-view.ts) - a bob drawn near the edge or a swing that grows
+// on the Moon zooms the picture out, in the photo's own shape, instead of leaving the picture.
 
 import Matter from 'matter-js';
 import type { CleanPart, Point, SceneBuilder } from '../types';
 import { contourMask, cutSprite, deepestPoint, eraseFromPaper, roleOf } from './common';
-import { STEP_ACCEL, STEP_MS } from '../sim';
+import { MAX_VIEW_ASPECT, MIN_VIEW_ASPECT, STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, noteFor, scaleFor } from '../units';
 import { dragConstant, roundFactor } from '../air';
 import { drawnSupport, fmt, TIDY, tidyLog, untidyMatters, untidySegment, untidyTurn } from './tidy';
+import { pendulumTarget, SmoothView, swingAmplitude, swingBox, unionRect } from './pendulum-view';
 
 const KICK_DEG = 20;
 /** Drag k the air switch aims for: about 10 % off a 20° swing per period, the swing visibly dies down in ~30 s. */
@@ -85,10 +89,13 @@ export const buildPendulum: SceneBuilder = (input) => {
   const ppm = scaleFor(input, { string: length }).pxPerMeter;
   const kReal = (dragConstant(bobRadius / ppm) * (length / ppm)) / (kg ?? DEFAULT_KG);
   const airFactor = roundFactor(AIR_K_TARGET / Math.max(1e-12, kReal));
+  // Gravity the swing runs under right now (px per step², downward), for the view; the engine's once it steps.
+  let gNow = STEP_ACCEL * ((params.gravity || 9.8) / 9.8);
   const onStep = (engine: Matter.Engine) => {
     // Engine gravity (slider / voice / Moon mode) in px per step².
     const toStep = engine.gravity.scale * STEP_MS * STEP_MS;
     const gx = engine.gravity.x * toStep, gy = engine.gravity.y * toStep;
+    gNow = gy;
     // Air drag (read live; airDrag = factor on real air, 0 = none): θ'' gets −k·θ'·|θ'|. k = 0.1 takes ~9 % off a 20° swing per period.
     const k = Math.max(0, Number(params.airDrag) || 0) * kReal;
     // Tangential gravity over L (the tangent is (cos θ, −sin θ)), minus drag.
@@ -143,6 +150,21 @@ export const buildPendulum: SceneBuilder = (input) => {
   tidyLog('Pendulum', tidyNotes);
   const clean: CleanPart[] = [support, rope, { kind: 'pin', at: () => pivot }, { kind: 'ball', body, radius: bobRadius, tone: 'mass' }];
 
+  // View (pendulum-view.ts): the whole swing, from its range (energy now, gravity now), never from the bob's place;
+  // the photo while that fits, else zoomed out in the photo's shape, eased so a gravity change glides.
+  const geo = { pivot, length, bobRadius };
+  const hatch = 12;
+  const supportBox = unionRect(
+    { x: support.from.x - hatch, y: support.from.y - hatch, w: 2 * hatch, h: 2 * hatch },
+    { x: support.to.x - hatch, y: support.to.y - hatch, w: 2 * hatch, h: 2 * hatch },
+  );
+  const smooth = new SmoothView(W, H);
+  const view = () => {
+    const box = unionRect(swingBox(geo, swingAmplitude(length, theta, omega, gNow)), supportBox);
+    const target = pendulumTarget(W, H, box, { min: MIN_VIEW_ASPECT, max: MAX_VIEW_ASPECT });
+    return smooth.read(target, performance.now() / 1000);
+  };
+
   return {
     bodies: [body],
     constraints: [],
@@ -155,6 +177,7 @@ export const buildPendulum: SceneBuilder = (input) => {
     ],
     background: eraseFromPaper(input, [swing]),
     label: 'Pendulum',
+    view,
     onStep,
     // L in 2π√(L/g) is pivot to bob centre.
     measures: { string: length },
