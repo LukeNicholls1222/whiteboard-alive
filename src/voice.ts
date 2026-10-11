@@ -489,7 +489,11 @@ export function parseVoice(utterance: string, ctx: VoiceContext): VoiceResult {
         }
       }
       const d = nearest(pool, t, q.at);
-      if (d) put(d.key, q.value);
+      if (d && (d.key === 'leftSpeed' || d.key === 'rightSpeed')) {
+        // A ball's speed is signed (right = +): "minus 1", "1 meter per second to the left".
+        const neg = t[q.at - 1] === 'minus' || t[q.at - 1] === 'negative' || has(/\b(leftwards|leftward|to the left|going left|moving left)\b/);
+        put(d.key, neg ? -Math.abs(q.value) : q.value);
+      } else if (d) put(d.key, q.value);
     }
 
     // --- relative words ("heavier", "steeper", "double gravity") for settings without a number ---

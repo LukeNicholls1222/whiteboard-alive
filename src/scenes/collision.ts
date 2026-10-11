@@ -369,7 +369,7 @@ export const buildCollision: SceneBuilder = (input) => {
 
   const parts: Partial<Record<PartName, PartInfo>> = {};
   bodies.forEach((body, k) => {
-    parts[sides[k]] = { at: () => body.position, clear: bodyR[k], body, kg: mass[k].kg, kgFrom: mass[k].from, side: 'above' };
+    parts[sides[k]] = { at: () => body.position, clear: bodyR[k], body, kg: mass[k].kg, kgFrom: mass[k].from, side: 'below' };
   });
   parts.ground = { at: () => ({ x: mid, y: floorLine.y }), side: 'below' };
 
