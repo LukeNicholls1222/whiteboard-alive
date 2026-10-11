@@ -43,7 +43,7 @@ Built at OCCHacks 2026 (Education track).
 | Spring and mass | Ceiling or wall, zig-zag, box | Oscillates |
 | Incline (block) | Triangle with a box on the slope | Slides down; friction can stop it |
 | Incline (ball) | Triangle with a circle on the slope | Rolls down, turning as it goes (a = 5/7 g sinθ), or slides while turning if friction can't hold it |
-| Projectile | Cannon or arrow, ball, ground | Flies in a parabola. Raise the launch height and the cannon rises on a stand |
+| Projectile | Cannon or arrow, ball, ground | A drawn cannon turns into a clean cannon and fires the ball from its muzzle in a parabola. Change the angle and the barrel turns; raise the launch height and the cannon rises on a stand. A drawn arrow stays an arrow and turns with the angle |
 | Pulley | Wheel, rope over it, two weights | The heavier side drops |
 | Collision | Floor line, two circles, an arrow showing which way each one moves | The balls hit and bounce; total momentum is kept |
 | Seesaw / lever | Triangle pivot, a plank on top, boxes on the plank | Tips toward the side with the larger moment m·g·d |

@@ -58,7 +58,7 @@ A single progress line shows each step so the screen never looks frozen. If it c
 | Spring and mass (zig-zag + box → oscillates) | Working |
 | Incline with a block (triangle + box → slides, friction stops it) | Working |
 | Incline with a ball (triangle + circle → rolls, a = 5/7 g sinθ) | Working |
-| Projectile (cannon or arrow → parabola; launch angle, height and ball mass can be set) | Working |
+| Projectile (cannon or arrow → clean cannon fires a parabola; launch angle, height and ball mass can be set) | Working |
 | Pulley (wheel + rope + two weights → heavier one drops) | Working |
 | Collision (floor + two circles + arrows → they hit and bounce, momentum kept) | Working |
 | Seesaw / lever (triangle pivot + plank + boxes → tips toward the larger moment) | Working |
@@ -90,7 +90,7 @@ Each diagram type has its own scene builder that turns roles into rigid bodies a
 
 Where a textbook formula exists, we compute the motion ourselves so the numbers match it:
 - **Spring**: the block moves by the exact solution of u'' = −(k/m)(u − u_eq). Total energy stays flat (0.00% drift), the period is exactly 2π√(m/k), and mass and spring constant are separate values: doubling the mass keeps k and makes the period √2 times longer.
-- **Projectile**: launch angle, launch height and ball mass are inputs. Raising the height lifts the cannon on a stand; a cannon standing on the ground can't go below it, and then shows "h = 0.17 m (lowest)". The default speed is chosen from the drawing so the ball lands about 70% of the way along the drawn ground. Range, max height and flight time match the theory within 0.083% across Earth and Moon, several heights and speeds, and 15°, 45° and 75°.
+- **Projectile**: a drawn cannon becomes a clean cannon: a grey barrel with a muzzle band and a rear knob, purple wheels, a light carriage and an axle pin. Launch angle, launch height and ball mass are inputs. Changing the angle turns the barrel smoothly around the axle (0.26 s), and the ball leaves exactly from the muzzle along the barrel (0.00 px off, within 0.01°). A small arc at the axle shows the angle. A drawing with only an arrow keeps the arrow, which turns with the angle. Raising the height lifts the cannon on a capped stand; a cannon standing on the ground can't go below it, and then shows "h = 0.17 m (lowest)". The default speed is chosen from the drawing so the ball lands about 70% of the way along the drawn ground. Range, max height and flight time match the theory within 0.083% across Earth and Moon, several heights and speeds, and 15°, 45° and 75°.
 - **Rolling ball**: a circle on the slope rolls at a = 5/7 g sinθ (a solid ball) and turns by distance / radius. If friction can't hold it, it slides while turning.
 - **Collision**: exact one-dimensional motion from event to event. Momentum is kept through every hit, Bounciness e = 1 keeps the kinetic energy, and e = 0 makes the balls stick.
 - **Seesaw**: the plank tips toward the side with the larger moment m·g·d, and the weights ride on it. It only shows "Balanced!" when the typed values make m₁d₁ = m₂d₂. If the drawn sizes are within 12%, it shows "Nearly balanced" and tilts only slightly.
