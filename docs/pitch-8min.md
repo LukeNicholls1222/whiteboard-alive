@@ -17,7 +17,7 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 | 3:30 | 5. A judge draws | 80s |
 | 4:50 | 6. How it works: Slides 8–9 + the no-AI switch | 80s |
 | 6:10 | 7. What was hard | 30s |
-| 6:40 | 8. What's next and close | 20s |
+| 6:40 | 8. Close | 20s |
 | 7:00 | End (1 minute spare) | |
 
 ---
@@ -156,19 +156,18 @@ Only explain momentum on the **first** collision between the balls. When a ball 
 
 ## 7. What was hard (6:10–6:40, 30s)
 
-**[Slide 10]** What was hard / What's next. It stays up through section 8.
+**[Slide 10]** What was hard.
 
 > "Three things were hard.
-> One: getting the AI to stop inventing coordinates. Early on we asked it where the pivot was, and it was always close but never exact. Giving it numbered strokes and only asking for roles fixed that.
-> Two: real photos. Most of our time went into shadows, faint pencil and broken lines.
-> Three: honest physics. The physics engine's friction isn't textbook friction, so we wrote our own. And real air resistance on a pendulum is too small to see, so when we exaggerate it, the app tells you by how much."
+> One: the AI got positions wrong. So now the AI only names the lines. The camera measures them.
+> Two: shadows and stains looked like lines. So we only pick up black ink.
+> Three: making the physics correct. We check every result against the textbook formula."
 
 **If it goes wrong:** if you're running late (past 6:20), say only "One" and skip the other two.
 
-## 8. What's next and close (6:40–7:00, 20s)
+## 8. Close (6:40–7:00, 20s)
 
-> "Next: point a live camera at a real classroom whiteboard, add circuits and optics, and let a teacher share a drawing with the class as a link.
-> **[Slide 11]** Whiteboard Alive. Draw it, snap it, watch it move. The QR code opens it on your phone right now. Thank you!"
+> **[Slide 11]** "Whiteboard Alive. Draw it, snap it, watch it move. The QR code opens it on your phone right now. Thank you!"
 
 *Spare minute (7:00–8:00): run the judge's drawing if it wasn't finished, or take a question. Leave Slide 11 (the QR code) on screen.*
 
