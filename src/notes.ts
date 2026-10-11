@@ -1,5 +1,6 @@
 // Values on the drawing: a small card next to each part with its physical value and, underneath, where that
-// value came from ("L = 0.42 m / assumed", "m = 2 kg / you entered"), plus the slow-motion badge on the picture.
+// value came from ("L = 0.42 m / assumed", "m = 2 kg / you entered"), plus the playback speed badge on the picture
+// (tap: 1× -> 0.5× -> 0.33× -> 0.11×, playback.ts).
 // Everything is read from the scene (measures, parts, physics) and converted by units.ts.
 //
 // Where a card goes: next to its part, but off the way of everything that moves. When the scene starts, the
@@ -11,6 +12,7 @@
 // arrows as they are now.
 
 import Matter from 'matter-js';
+import { cycleSpeed, playbackSpeed, playedSpeed, speedLabel } from './playback';
 import { DEFAULT_FRICTION } from './scenes/incline';
 import { visibleRect, type Simulation } from './sim';
 import type { Analysis, BuiltScene, PartInfo, PartName, Point, ValueSource, ViewRect } from './types';
@@ -27,7 +29,6 @@ import {
   noteFor,
   scaleOf,
   springK,
-  timeLabel,
 } from './units';
 import { ARROW_HEAD_HALF_CSS, LABEL_SPACE_CSS, LMAX_FRACTION, scaleBarZone } from './vectors';
 
@@ -101,7 +102,7 @@ export class QuantityLabels {
   enabled = true;
   private sim: Simulation | null = null;
   private groups: Group[] = [];
-  private badge: HTMLDivElement;
+  private badge: HTMLButtonElement;
   /** Label boxes of the last frame (world px), so the velocity arrows can keep their numbers off them. */
   boxes: Box[] = [];
   /** Predicted paths of the moving bodies and their arrows (world px), worked out on the first frame. */
@@ -116,10 +117,31 @@ export class QuantityLabels {
 
   constructor(private card: HTMLElement) {
     injectStyle();
-    this.badge = document.createElement('div');
+    this.badge = document.createElement('button');
+    this.badge.type = 'button';
     this.badge.className = 'time-badge';
     this.badge.hidden = true;
+    this.badge.addEventListener('click', () => {
+      cycleSpeed();
+      navigator.vibrate?.(10);
+      this.showSpeed();
+      // A small bounce: restart the animation on every tap.
+      this.badge.classList.remove('tb-pop');
+      void this.badge.offsetWidth;
+      this.badge.classList.add('tb-pop');
+    });
     card.appendChild(this.badge);
+  }
+
+  /** The badge for the chosen speed on this drawing ("Slow motion 0.5×"). */
+  private showSpeed() {
+    const tf = this.sim ? scaleOf(this.sim.scene).timeFactor : null;
+    if (tf === null) return;
+    const { word, num } = speedLabel(playbackSpeed(), tf);
+    this.badge.innerHTML = `<span class="tb-word">${word}</span><span class="tb-num">${num}</span>`;
+    const real = Number((1 / playedSpeed(playbackSpeed(), tf)).toPrecision(2));
+    this.badge.title = `Tap to change speed (1 s of real time takes ${real} s on screen)`;
+    this.badge.setAttribute('aria-label', `Playback speed ${word} ${num}. Tap to change speed`);
   }
 
   /** New photo: hide until its simulation starts. */
@@ -132,7 +154,6 @@ export class QuantityLabels {
 
   attach(sim: Simulation, analysis: Analysis) {
     this.sim = sim;
-    const scale = scaleOf(sim.scene);
     this.groups = [];
     this.boxes = [];
     this.paths = null;
@@ -144,8 +165,7 @@ export class QuantityLabels {
       if (g) g.pills.push(pill);
       else this.groups.push({ part: pill.part, pills: [pill], spot: 0, at: null, retry: 0 });
     }
-    this.badge.textContent = timeLabel(scale);
-    this.badge.title = `1 s on screen = ${Number(scale.timeFactor.toPrecision(2))} s of real time`;
+    this.showSpeed();
     this.badge.hidden = false;
     sim.drawListeners.push((ctx, scene, s) => {
       if (this.sim === sim && this.enabled) this.draw(ctx, scene, s);
@@ -697,11 +717,20 @@ function injectStyle() {
   styled = true;
   const css = `
   .time-badge {
-    position: absolute; top: 10px; left: 10px; z-index: 2; pointer-events: none;
-    font-size: 12px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: #1899d6;
-    background: rgba(255, 255, 255, 0.94); border: 2px solid #e5e5e5; border-bottom-width: 3px; border-radius: 12px;
-    padding: 6px 10px; white-space: nowrap;
+    position: absolute; top: 10px; left: 10px; z-index: 2; margin: 0; cursor: pointer; user-select: none;
+    display: inline-flex; align-items: center; gap: 6px;
+    font: inherit; font-size: 12px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: #1899d6;
+    background: rgba(255, 255, 255, 0.94); border: 2px solid #e5e5e5; border-bottom-width: 4px; border-radius: 999px;
+    padding: 5px 6px 5px 12px; white-space: nowrap; -webkit-tap-highlight-color: transparent;
+    transition: transform 0.05s;
   }
+  .time-badge .tb-num {
+    color: #fff; background: #1cb0f6; border-radius: 999px; padding: 2px 8px; text-transform: none;
+    min-width: 3.4em; text-align: center;
+  }
+  .time-badge:active { transform: translateY(2px); border-bottom-width: 2px; }
+  .time-badge.tb-pop .tb-num { animation: tb-pop 0.28s cubic-bezier(0.3, 1.6, 0.5, 1); }
+  @keyframes tb-pop { 0% { transform: scale(0.82); } 60% { transform: scale(1.12); } 100% { transform: scale(1); } }
   .time-badge[hidden] { display: none; }
   `;
   const el = document.createElement('style');

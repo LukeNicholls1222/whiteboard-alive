@@ -1,4 +1,4 @@
-// Live readout under the simulation: energy graph in joules (last 8 s on screen), period / speed, and Moon mode.
+// Live readout under the simulation: energy graph in joules (last 480 steps), period / speed, and Moon mode.
 // A seesaw shows its torque balance instead: the moment m·g·d of each side as a bar, and which side wins.
 // Reads everything from the running Simulation each step; keeps no gravity state of its own. Every number is in
 // physical units through units.ts (the scene's px per metre and slow-motion factor).
@@ -29,6 +29,7 @@ import {
   STEP_S,
 } from './units';
 
+/** Engine seconds the graph shows (8 s on screen at one step per frame; physical span = × timeFactor). */
 const WINDOW_S = 8;
 const MAX_SAMPLES = Math.round(WINDOW_S / STEP_S);
 const MOON_G = 1.62;
@@ -70,7 +71,7 @@ interface Sample {
  * measured from the lowest point the moving body can reach, not from the bottom of the picture:
  *  - pendulum: the bottom of the swing (pivot + string length straight down), fixed;
  *  - spring:   the rest (equilibrium) position: gravity and spring together give ½ k d², d from rest;
- *  - window:   anything else, the lowest PE in the last 8 s on screen (subtracted when drawing).
+ *  - window:   anything else, the lowest PE in the last 480 steps (subtracted when drawing).
  */
 type PeRef = { kind: 'pendulum'; bottomY: number } | { kind: 'spring' } | { kind: 'window' };
 
@@ -100,8 +101,10 @@ export class LiveGraph {
   private samples: Sample[] = [];
   private yMax = 0;
   private peRef: PeRef = { kind: 'window' };
-  /** Screen seconds since the drawing started (the period meter works in screen time). */
+  /** Engine seconds (steps × STEP_S) since the drawing started (the period meter works in engine time). */
   private time = 0;
+  /** A step changed what the card shows; it is painted once, at the end of the frame (a frame may run many steps). */
+  private redraw = false;
   private period = new PeriodMeter();
   private lastG = NaN;
   /** Ball collision on screen: the two balls and their masses (the card shows momentum instead of energy). */
@@ -198,7 +201,18 @@ export class LiveGraph {
     if (this.moon.checked) sim.setParams({ gravity: MOON_G });
     this.syncGravity();
     this.showTheory();
+    this.redraw = false;
     sim.stepListeners.push((engine) => this.onStep(sim, engine));
+    sim.frameListeners.push(() => this.onFrame(sim));
+  }
+
+  /** Once per frame, after its steps: paint the card if any step changed it. */
+  private onFrame(sim: Simulation) {
+    if (this.sim !== sim || !this.redraw) return;
+    this.redraw = false;
+    if (this.lever) this.showTorque(this.lever, sim.gravity);
+    else if (this.balls) this.drawMomentum();
+    else this.draw();
   }
 
   /**
@@ -278,7 +292,7 @@ export class LiveGraph {
     }
   }
 
-  /** Measured period, converted from screen seconds to physical seconds. */
+  /** Measured period, converted from engine seconds to physical seconds. */
   private showPeriod() {
     const p = this.period.value();
     const T = p ? physSeconds(p.period, this.scale) : 0;
@@ -291,7 +305,7 @@ export class LiveGraph {
     this.syncGravity();
     const g = sim.gravity;
     if (this.lever) {
-      this.showTorque(this.lever, g);
+      this.redraw = true;
       return;
     }
     const bodies = Matter.Composite.allBodies(engine.world).filter((b) => !b.isStatic);
@@ -306,7 +320,7 @@ export class LiveGraph {
       setText(this.metricValue, formatMomentum(s.p1 + s.p2));
       setText(this.theoryLabel, `Kinetic energy ${formatEnergy(s.ke)}`);
       this.theoryLabel.hidden = false;
-      this.drawMomentum();
+      this.redraw = true;
       return;
     }
 
@@ -343,7 +357,7 @@ export class LiveGraph {
       const f = sim.motion.fastest();
       setText(this.metricValue, f ? formatSpeed(mps(Math.hypot(f.track.vx, f.track.vy), this.scale)) : '--');
     }
-    this.draw();
+    this.redraw = true;
   }
 
   /** Ball collision: momentum (each ball and the total) on top, kinetic energy of both below, last 8 s. */
@@ -556,7 +570,7 @@ export class LiveGraph {
     ctx.textAlign = 'right';
     ctx.fillText('now', right, cssH - 4);
     ctx.textAlign = 'left';
-    // The window is 8 s on screen; the axis is in physical time like every other readout.
+    // The window is 480 steps (8 engine seconds); the axis is in physical time like every other readout.
     const span = physSeconds(WINDOW_S, this.scale);
     ctx.fillText(`-${span < 10 ? span.toFixed(1) : span.toFixed(0)} s`, left, cssH - 4);
     // Where PE is zero, small, between the time labels (clear of the curves).

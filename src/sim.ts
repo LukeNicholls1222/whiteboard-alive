@@ -6,8 +6,9 @@ import decomp from 'poly-decomp';
 import { MotionTracker } from './motion';
 import { drawClean, drawnSnapshot, FAINT_ALPHA, usesClean } from './clean';
 import { drawMorph, ghostAlpha, type IntroLayer, morphHooks, morphLabelAlpha, morphProgress } from './morph';
+import { playbackSpeed, StepClock, stepRate } from './playback';
 import type { BuiltScene, SimParams, Sprite, ViewRect } from './types';
-import { BASE_SCALE, STEP_MS } from './units';
+import { BASE_SCALE, STEP_MS, scaleOf } from './units';
 
 // The step constants live in units.ts (a leaf module); re-exported here for the scene builders.
 export { STEP_ACCEL, STEP_MS } from './units';
@@ -61,8 +62,12 @@ export class Simulation {
   private ctx: CanvasRenderingContext2D;
   /** Smoothed velocities of the moving bodies, updated right after every step (arrows and graph share it). */
   readonly motion: MotionTracker;
-  /** Called after every physics step (graphs, readouts). */
+  /** Called after every physics step (graphs, readouts). A frame may run several steps, or none (playback.ts). */
   stepListeners: Array<(engine: Matter.Engine) => void> = [];
+  /** Called once per frame after that frame's physics steps (even when it ran none), before it is drawn. */
+  frameListeners: Array<() => void> = [];
+  /** Spreads the playback speed's steps over the frames (playback.ts). */
+  private clock = new StepClock();
   /** Called after every setParams, whoever made the change (slider, chip, voice, Moon switch). */
   paramListeners: Array<(p: Partial<SimParams>) => void> = [];
   /** Called every frame after the sprites, in world coordinates. `pxScale` = canvas px per world px. */
@@ -144,11 +149,16 @@ export class Simulation {
         this.morphEnd = performance.now();
         for (const fn of morphHooks.end) fn(this.scene);
       }
-      this.scene.step?.(this.engine);
-      Matter.Engine.update(this.engine, STEP_MS);
-      this.scene.onStep?.(this.engine);
-      this.motion.update();
-      for (const fn of this.stepListeners) fn(this.engine);
+      // The playback speed decides how many steps this frame runs; each step is the same physical time as ever.
+      const steps = this.clock.next(stepRate(playbackSpeed(), scaleOf(this.scene).timeFactor));
+      for (let i = 0; i < steps; i++) {
+        this.scene.step?.(this.engine);
+        Matter.Engine.update(this.engine, STEP_MS);
+        this.scene.onStep?.(this.engine);
+        this.motion.update();
+        for (const fn of this.stepListeners) fn(this.engine);
+      }
+      for (const fn of this.frameListeners) fn();
       this.draw();
       this.raf = requestAnimationFrame(loop);
     };
