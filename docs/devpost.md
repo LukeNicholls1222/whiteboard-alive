@@ -34,15 +34,16 @@ Simulation apps exist, but they make you rebuild the problem with their sliders 
 While it runs you can change the physics:
 
 - **Value pills**: right under the moving picture, each value is shown as a small pill with its unit (for example Length 0.45 m, Mass 1 kg). Tap one to get − / +, a slider and a number box, so you can change it while you watch it move, with no scrolling. The pills stay in sync with Your numbers.
-- **Your numbers**: type in real values. String length, mass, spring constant, ramp angle, launch speed, ground length, and the left and right masses on a pulley. Sizes come from these numbers, not from the paper.
+- **Your numbers**: type in real values. String length, mass, spring constant, ramp angle, launch speed, launch angle (0–89°), launch height (0–50 m), ball mass (0.1–20 kg), ground length, and the left and right masses on a pulley. Sizes come from these numbers, not from the paper.
 - **Sliders and presets**: gravity (every diagram), friction (incline), launch speed (projectile), Bounciness e from 0 to 1 (collision: 1 is elastic, 0 sticks), and Earth / Moon / Jupiter. In Moon mode a pendulum visibly slows down.
-- **Voice**: tap Talk and say "make the string 1 meter" or "make gravity weaker". Voice can change every setting.
+- **Voice**: tap Talk and say "make the string 1 meter", "make gravity weaker", "angle 45 degrees", "aim higher" or "launch height 5 meters". Voice can change every setting.
 - **Slow motion**: tap the badge at the top left of the picture to go 1× → 0.5× → 0.33× → 0.11× and back to 1× ("REAL TIME 1×", "SLOW MOTION 0.11×"). Each physics step keeps the same length, and only the number of steps per frame changes, so the period, speed and energy readouts are the same at every speed.
-- **Air resistance**: a switch that is honest about the scale. It shows real air, or "real air ×N" when the effect is exaggerated so you can see it.
+- **Air resistance**: a switch that is honest about the scale. It shows real air, or "real air ×N" when the effect is exaggerated so you can see it. With air off, a heavier ball follows exactly the same path; with air on, it flies farther (at 75° and 2 m/s, 1 kg lands at 0.25 m and 10 kg at 0.65 m, against 0.78 m with no air).
 - **Velocity arrows**: arrow length is proportional to speed, with a scale bar.
 - **Live graph card**, always theory next to measurement:
   - Pendulum and spring: kinetic and potential energy (potential measured from the lowest point), plus the measured period next to the theory value: 2π√(L/g) for the pendulum and 2π√(m/k) for the spring.
   - Rolling ball: measured acceleration next to a = 5/7 g sinθ.
+  - Projectile: Range, Max height and Flight time as "measured · theory", plus a dotted range line on the ground and a "Range = 0.72 m" card.
   - Collision: momentum of each ball and the total, plus kinetic energy.
   - Seesaw: Torque balance, the moment m·g·d on each side and a verdict (Left wins / Right wins / Balanced! / Nearly balanced).
 - **Show what AI saw**: brings the colour-coded overlay back with one tap.
@@ -57,7 +58,7 @@ A single progress line shows each step so the screen never looks frozen. If it c
 | Spring and mass (zig-zag + box → oscillates) | Working |
 | Incline with a block (triangle + box → slides, friction stops it) | Working |
 | Incline with a ball (triangle + circle → rolls, a = 5/7 g sinθ) | Working |
-| Projectile (cannon or arrow → parabola) | Working |
+| Projectile (cannon or arrow → parabola; launch angle, height and ball mass can be set) | Working |
 | Pulley (wheel + rope + two weights → heavier one drops) | Working |
 | Collision (floor + two circles + arrows → they hit and bounce, momentum kept) | Working |
 | Seesaw / lever (triangle pivot + plank + boxes → tips toward the larger moment) | Working |
@@ -89,6 +90,7 @@ Each diagram type has its own scene builder that turns roles into rigid bodies a
 
 Where a textbook formula exists, we compute the motion ourselves so the numbers match it:
 - **Spring**: the block moves by the exact solution of u'' = −(k/m)(u − u_eq). Total energy stays flat (0.00% drift), the period is exactly 2π√(m/k), and mass and spring constant are separate values: doubling the mass keeps k and makes the period √2 times longer.
+- **Projectile**: launch angle, launch height and ball mass are inputs. Raising the height lifts the cannon on a stand; a cannon standing on the ground can't go below it, and then shows "h = 0.17 m (lowest)". The default speed is chosen from the drawing so the ball lands about 70% of the way along the drawn ground. Range, max height and flight time match the theory within 0.083% across Earth and Moon, several heights and speeds, and 15°, 45° and 75°.
 - **Rolling ball**: a circle on the slope rolls at a = 5/7 g sinθ (a solid ball) and turns by distance / radius. If friction can't hold it, it slides while turning.
 - **Collision**: exact one-dimensional motion from event to event. Momentum is kept through every hit, Bounciness e = 1 keeps the kinetic energy, and e = 0 makes the balls stick.
 - **Seesaw**: the plank tips toward the side with the larger moment m·g·d, and the weights ride on it. It only shows "Balanced!" when the typed values make m₁d₁ = m₂d₂. If the drawn sizes are within 12%, it shows "Nearly balanced" and tilts only slightly.
@@ -109,6 +111,8 @@ Vite + TypeScript with a plain Canvas (no framework). GitHub Actions builds on e
 - **"Nothing happens" is the worst outcome.** We built the fallback scene first, so even a drawing we don't understand still drops something.
 - **Free-tier AI quotas and slow responses.** The app falls through a chain of Flash models. The first one gets 9 seconds and the whole chain is capped at 20. If all of them fail, the shape-based guess still picks a scene.
 - **Physics engine friction isn't textbook friction.** We measured μ = 0.1 and μ = 0.8 looking almost the same in Matter.js, so we wrote our own Coulomb friction for the incline.
+- **One step short.** Matter.js moves in whole steps, so every flight ended one step earlier than the theory. Correcting the launch velocity by half a step made the range, height and flight time match.
+- **Mass that didn't matter.** In our first air-resistance model, changing the ball's mass also changed the drag itself, so a heavier ball flew exactly like a light one. Now the drag no longer changes with the mass, so a heavier ball flies farther, as it should.
 - **A spring that slowly lost energy.** Matter.js soft constraints drain a little energy every cycle, and our top-up to hide it made the total-energy line wobble by 8.8%. We replaced the spring with its exact solution, and the line is now flat.
 - **Being honest about the physics.** Real air resistance on a pendulum is too small to see, so the switch exaggerates it and says by how much ("real air ×N") instead of pretending.
 
