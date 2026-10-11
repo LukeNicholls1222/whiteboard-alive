@@ -57,6 +57,11 @@ If voice doesn't respond within ~3 seconds (noisy room, mic permission), don't r
 
 > "That's your drawing, turned into physics."
 
+If they drew two balls colliding, point at the **first** hit between the balls and the green Total p line:
+> "Watch the green line, the total momentum. When the two balls hit, it doesn't change. Momentum is conserved."
+
+Total momentum is only conserved when the balls hit each other. When a ball bounces off a wall at the side, the total changes, because the wall pushes from outside. So always explain it on the first collision, before either ball reaches a wall.
+
 If recognition misses:
 > "It didn't recognise that one, so it falls back to plain gravity. It never just freezes. Real handwriting is messy, and that's exactly the problem we're working on."
 
@@ -101,3 +106,8 @@ If recognition misses:
 1. Use the example gallery and run one of the saved examples. It needs no network. If that fails too, switch to the backup `?offline` tab, which is already loaded, and snap the backup pre-drawn pendulum.
 2. Say: "The Wi-Fi died, but this is a saved run of exactly the same pipeline."
 3. Then carry on from section 4 (Your numbers / Moon) as normal.
+
+## If a judge asks
+
+**"The total momentum changed. Isn't it supposed to be conserved?"**
+> "It's conserved when the two balls hit each other: look at the first collision, the green total line stays flat. When a ball bounces off the wall at the side, the wall pushes on it from outside the system, so the total changes. That's correct physics: momentum is only conserved when there's no outside force."
