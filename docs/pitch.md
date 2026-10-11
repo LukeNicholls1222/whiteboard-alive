@@ -57,7 +57,7 @@ If voice doesn't respond within ~3 seconds (noisy room, mic permission), don't r
 
 > "That's your drawing, turned into physics."
 
-If they drew two balls colliding, tap the badge at the top left of the picture until it reads **SLOW MOTION 0.11×** *before* you take the photo (the speed carries over to the next photo), then point at the **first** hit between the balls and the green Total p line:
+If they drew two balls colliding, leave the speed at REAL TIME 1× (the balls take about 3 seconds to meet) and point at the **first** hit between the balls and the green Total p line:
 > "Watch the green line, the total momentum. When the two balls hit, it doesn't change. Momentum is conserved."
 
 Total momentum is only conserved when the balls hit each other. When a ball bounces off a wall at the side, the total changes, because the wall pushes from outside. So always explain it on the first collision, before either ball reaches a wall.

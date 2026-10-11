@@ -20,10 +20,11 @@ Built at OCCHacks 2026 (Education track).
    - The fixed parts of your drawing stay faintly in the background. The hand-drawn moving parts fade out after a few seconds.
    - Tap **Show what AI saw** to bring the colour overlay back at any time.
 5. Change the physics while it runs:
-   - **Value pills**: right under the moving picture, each value sits in a small pill (for example Length 0.45 m, Mass 1 kg). Tap one to get − / +, a slider and a number box, and change it while you watch it move, with no scrolling. A ramp (block or rolling ball) has a Friction pill, and a launch has Speed, Angle, Height and Mass pills. A pill, its slider, Your numbers and voice ("rough", for example) all change the same value.
+   - **Value pills**: right under the moving picture, each value sits in a small pill (for example Length 2.2 m, Mass 1 kg). Tap one to get − / +, a slider and a number box, and change it while you watch it move, with no scrolling. A ramp (block or rolling ball) has a Friction pill, and a launch has Speed, Angle, Height and Mass pills. A pill, its slider, Your numbers and voice ("rough", for example) all change the same value.
+   - **Defaults**: with nothing typed in, each scene is sized so one motion takes about 3 seconds at real time (normal gravity, 9.8 m/s²). For example a 2.2 m pendulum (period 3.00 s), a 1 kg mass on a 4.4 N/m spring, a launch that flies 52 m in 3.00 s, or two balls that meet after about 3 s. Any value you type in is used as it is (a 1 m string gives 2.02 s).
    - **Your numbers**: type in the real values. String length, mass, spring constant, ramp angle, launch speed, launch angle (0–89°), launch height (0–50 m), ball mass (0.1–20 kg), ground length, the left and right pulley masses, each ball's mass and speed in a collision, and each seesaw weight's mass and distance (whichever the diagram uses).
    - **Sliders**: Gravity (every diagram), Friction (incline), Launch speed (projectile), Bounciness e from 0 to 1 (collision).
-   - **Slow motion**: tap the badge at the top left of the picture to step through 1× → 0.5× → 0.33× → 0.11× and back to 1× (it reads REAL TIME 1× or SLOW MOTION 0.11×, for example). It starts at 1× and goes back to 1× on reload. Only the playback slows down: each physics step stays the same length, so the period, speed and energy readouts are the same at every setting.
+   - **Slow motion**: tap the badge at the top left of the picture to step through 1× → 0.5× → 0.33× → 0.11× and back to 1× (it reads REAL TIME 1× or SLOW MOTION 0.11×, for example). It starts at 1× and goes back to 1× on reload. Only the playback slows down: each physics step stays the same length, so the period, speed and energy readouts are the same at every setting. Drawing is interpolated between physics steps, so even 0.11× moves smoothly.
    - **Gravity presets**: Earth, Moon and Jupiter. Moon mode makes a pendulum swing slowly enough to see the longer period.
    - **Voice**: tap **Talk** and say something like "make the string 1 meter", "make gravity weaker", "angle 45 degrees", "aim higher", "launch height 5 meters" or "ball mass 2 kilograms". Voice can change every setting.
    - **Air resistance**: a switch. The label is honest about the scale: real air, or real air ×N when it is exaggerated so you can see the effect. With air off, a heavier ball flies on exactly the same path (as in the textbook). With air on, a heavier ball flies farther.
@@ -31,7 +32,7 @@ Built at OCCHacks 2026 (Education track).
 6. Below the simulation there is a live graph card that shows the theory next to what was measured:
    - Pendulum and spring: energy graph (potential energy measured from the lowest point) and the period next to the theory value (2π√(L/g) for the pendulum, 2π√(m/k) for the spring). The spring's total energy line stays flat.
    - Rolling ball: the measured acceleration next to a = 5/7 g sinθ.
-   - Projectile: Range, Max height and Flight time, each as "measured · theory". A dotted line on the ground marks the range, with a card such as "Range = 0.72 m". With air on, the theory value is labelled "(no air)".
+   - Projectile: Range, Max height and Flight time, each as "measured · theory". A dotted line on the ground marks the range, with a card such as "Range = 52 m". With air on, the theory value is labelled "(no air)".
    - Collision: the momentum of each ball and the total, plus the kinetic energy.
    - Seesaw: a Torque balance card comparing m·g·d on each side (Left wins / Right wins / Balanced! / Nearly balanced).
 

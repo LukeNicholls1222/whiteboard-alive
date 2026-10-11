@@ -84,7 +84,7 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 
 > "And one more tap: we're on the Moon. Gravity is a sixth, so the same pendulum swings more slowly. You can see it on the graph."
 
-*Set up the next demo before you leave this one: tap **Earth**, then tap the badge at the top left of the picture three times until it reads **SLOW MOTION 0.11×**. The speed stays on for the next photo on the same page (only a reload puts it back to 1×), so the collision will already play slowly.*
+*Before you leave this demo, tap **Earth** so the next one runs with normal gravity. Leave the speed badge on **REAL TIME 1×**.*
 
 **If it goes wrong:**
 - Voice doesn't respond within ~3 seconds (noise, mic permission): don't retry. Tap the **Length** pill and type 1 instead. Say "The room's a bit loud, so I'll type it."
@@ -96,22 +96,19 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 
 > "Pendulums are the classic. But it understands more than that. Here's one I drew earlier: two balls about to crash."
 
-*Check the badge reads **SLOW MOTION 0.11×** (you set it at the end of section 3). Take the photo. When it runs, point at the graph card and the green **Total p** line, and at the **first** hit between the two balls.*
+*Take the photo. At real time the balls take about 3 seconds to reach each other, so there's time to point. When it runs, point at the graph card and the green **Total p** line, and at the **first** hit between the two balls.*
 
-> "I've slowed it down nine times, so we can see the crash. Only the playback is slower; the numbers on the graph are the real ones.
-> This green line is the total momentum of both balls. Watch the moment they hit each other... it stays flat. Momentum is conserved, and you can see it.
+> "This green line is the total momentum of both balls. Watch the moment they hit each other... it stays flat. Momentum is conserved, and you can see it.
 > I can also change the bounciness. One is a perfectly elastic bounce, zero means they stick together."
 
 *Optional (only if you're on time): drag **Bounciness e** to 0 and let them stick.*
-
-*Before handing over to the judge, tap the badge once to go back to **REAL TIME 1×**.*
 
 Only explain momentum on the **first** collision between the balls. When a ball bounces off a wall at the side, the total changes, because the wall pushes from outside. If a judge spots it, see "If a judge asks" at the end.
 
 **If it goes wrong:**
 - It isn't recognised as a collision: switch to the pre-drawn **seesaw** sheet. Point at the Torque balance card and say: "Same idea with a seesaw: it tips toward the side with the bigger moment, mass times g times distance, and it tells you which side wins."
 - Both fail: run the collision from the example gallery and say "Here's the saved run."
-- You forgot to set 0.11× and the balls already hit: don't reload (that also clears the page). Tap the badge three times now and retake the same photo.
+- You missed the first hit while talking: retake the same photo (don't reload the page) and point at it this time. Or point at the step in the graph where they hit.
 
 ## 5. A judge draws (3:30–4:50, 80s)
 
@@ -188,7 +185,7 @@ Only explain momentum on the **first** collision between the balls. When a ball 
 - [ ] Keep a second tab open on the site with `?offline`, already loaded (OpenCV ready), as the backup tab. Section 6 uses it on purpose
 - [ ] Test Talk once in the venue (mic permission granted in the browser), e.g. "make the string 1 meter"
 - [ ] Rehearse section 3 once: set the Length pill to 0.25 m and check the period reads about 1 s, then 1 m reads about 2 s
-- [ ] Rehearse sections 3–5 once: at the end of section 3, tap Earth and set the speed badge to 0.11× (three taps: 1× → 0.5× → 0.33× → 0.11×), check the collision photo plays slowly, then one tap back to 1× before the judge draws. Reloading the page puts it back to 1×
+- [ ] Rehearse section 4 once at REAL TIME 1×: the balls should take about 3 seconds to meet, enough time to point at the first hit and the green Total p line
 - [ ] Slides open on the laptop (https://lukenicholls1222.github.io/whiteboard-alive/slides/), on Slide 1, full screen (`f`), tested with the arrow keys. Scan the QR code on Slide 11 once with a phone
 - [ ] Printed judge sheet (`docs/judge-sheet.pdf`) next to the paper
 - [ ] A timer the speaker can see. Checkpoints: 1:40 Learning moment, 3:30 Judge draws, 4:50 Slides, 6:40 Close
