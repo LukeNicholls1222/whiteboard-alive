@@ -8,6 +8,7 @@ import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
 import { replayWhenStopped } from './replay';
 import { PAPER_FILL, STEP_ACCEL } from '../sim';
 import { DEFAULT_KG, noteFor } from '../units';
+import { fmt, lineDeg, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters, untidyTurn } from './tidy';
 
 /** Coulomb friction coefficient μ used when the AI gives no `params.friction`. */
 export const DEFAULT_FRICTION = 0.3;
@@ -621,17 +622,53 @@ const boundsOf = (pts: Point[]) => {
   return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
 };
 
+/**
+ * Tidy-up (tidy.ts): the ramp's floor level and its back wall plumb when they were drawn within 15° of that, the
+ * slope itself untouched (its angle is the physics). The floor goes through the middle of the two drawn floor corners
+ * and the foot slides along the drawn slope line to it, so the slope's angle is exactly as drawn. Returns the new
+ * corners in the same order, and what was done (for ?debug).
+ */
+function tidyRamp(tri: Tri, slope: Slope): { tri: Tri; slope: Slope; notes: string[]; floorTurn: number } {
+  const { top, bottom } = slope;
+  const third = tri.find((p) => p !== top && p !== bottom);
+  if (!third) return { tri, slope, notes: [], floorTurn: 0 };
+  const notes: string[] = [];
+  const floorDeg = lineDeg({ x: third.x - bottom.x, y: third.y - bottom.y });
+  const wallDeg = lineDeg({ x: top.x - third.x, y: top.y - third.y });
+  const wallOff = wallDeg > 0 ? wallDeg - 90 : wallDeg + 90;
+  // The floor is the edge from the foot to the third corner; it must be meant level for any of this to apply.
+  if (Math.abs(floorDeg) > TIDY_MAX_DEG) {
+    notes.push(`floor ${fmt(floorDeg)} (kept: slanted on purpose)`);
+    return { tri, slope, notes, floorTurn: 0 };
+  }
+  const floorY = (bottom.y + third.y) / 2;
+  // Foot: along the slope line (top → bottom) to floorY.
+  const k = (floorY - top.y) / (bottom.y - top.y || 1);
+  const foot = { x: top.x + (bottom.x - top.x) * k, y: floorY };
+  const wallStraight = Math.abs(wallOff) <= TIDY_MAX_DEG;
+  const corner = { x: wallStraight ? top.x : third.x, y: floorY };
+  notes.push(`floor ${fmt(floorDeg)} → 0°`, `wall ${fmt(90 + wallOff)}${wallStraight ? ' → 90°' : ' (kept: slanted on purpose)'}`);
+  const out = tri.map((p) => (p === bottom ? foot : p === third ? corner : p)) as Tri;
+  // The same slope line from the same top corner (slopeFrom keeps the corner objects, see `third` in buildIncline).
+  return { tri: out, slope: slopeFrom(top, foot, corner), notes, floorTurn: (floorDeg * Math.PI) / 180 };
+}
+
 export const buildIncline: SceneBuilder = (input) => {
   const { width: W, height: H } = input;
   const usable = input.contours.filter((c) => c.hull.length >= 3);
   const incline = pickIncline(input, usable);
   if (!incline) throw new Error('incline: no ramp-like contour');
   const ink = contourInk(input, incline);
-  const rampShape = findRamp(input, incline, ink);
-  if (!rampShape) throw new Error('incline: no ramp-like contour');
-  const drawnSlope = slopeOf(rampShape.tri);
-  const blocks = pickBlocks(input, usable, incline, ink, rampShape, drawnSlope);
+  const found = findRamp(input, incline, ink);
+  if (!found) throw new Error('incline: no ramp-like contour');
+  const foundSlope = slopeOf(found.tri);
+  const blocks = pickBlocks(input, usable, incline, ink, found, foundSlope);
   if (!blocks.length) throw new Error('incline: no block found');
+  // From here on the ramp is the tidied one (same slope line; floor level, wall plumb). Blocks were found on the drawn one.
+  const tidied = TIDY ? tidyRamp(found.tri, foundSlope) : { tri: found.tri, slope: foundSlope, notes: [] as string[], floorTurn: 0 };
+  const rampShape: Ramp = { ...found, tri: tidied.tri };
+  const drawnSlope = tidied.slope;
+  tidyLog('Incline', [...tidied.notes, `slope ${fmt(deg(foundSlope.angle))} → ${fmt(deg(drawnSlope.angle))} (never changed)`]);
 
   // An entered angle stretches the ramp vertically (base as drawn); blank paper is added above the photo when the
   // stretched ramp is taller than it (fit.st.pad: the whole world is then that much lower).
@@ -778,11 +815,15 @@ export const buildIncline: SceneBuilder = (input) => {
   const angleFrom: ValueSource = asked === undefined ? 'drawn' : fit.adjusted ? 'adjusted' : 'input';
   // Clean figure: the floor line, the ramp as the physics triangle (stretched to an entered angle like the body) and
   // each block as its physics outline.
-  const clean: CleanPart[] = [
-    { kind: 'ground', y: floorY },
-    { kind: 'solid', points: [a, b, c] },
-    ...moving.map((body): CleanPart => ({ kind: 'body', body, tone: 'mass' })),
-  ];
+  const groundPart: CleanPart = { kind: 'ground', y: floorY };
+  const rampPart: CleanPart = { kind: 'solid', points: [a, b, c] };
+  if (TIDY && tidied.tri !== found.tri) {
+    // Where the ramp and the floor were drawn, for the morph to snap them from (stretched like the ramp).
+    rampPart.drawnPoints = found.tri.map((p) => stretchPt(p, fit.st));
+    const turn = untidyTurn({ x: slope.bottom.x, y: floorY }, tidied.floorTurn);
+    if (untidyMatters(turn, W / 2)) groundPart.untidy = turn;
+  }
+  const clean: CleanPart[] = [groundPart, rampPart, ...moving.map((body): CleanPart => ({ kind: 'body', body, tone: 'mass' }))];
   return {
     bodies,
     constraints: [],

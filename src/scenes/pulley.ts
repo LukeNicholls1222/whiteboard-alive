@@ -21,6 +21,7 @@ import { STEP_ACCEL, STEP_MS } from '../sim';
 import { noteFor } from '../units';
 import { buildFallback } from './fallback';
 import { contourMask, cutSprite, deepestPoint, eraseFromPaper, maskBounds, roleOf } from './common';
+import { deg, drawnSupport, fmt, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters, untidyMove, untidySegment, untidyTurn } from './tidy';
 
 /** Ratio applied when both weights are (nearly) equal, so the scene always moves. */
 const TIE_BREAK_RATIO = 1.25;
@@ -495,6 +496,42 @@ export const buildPulley: SceneBuilder = (input) => {
   };
   const bodyL = makeBody(left);
   const bodyR = makeBody(right);
+  const drawnL = { ...bodyL.position };
+  const drawnR = { ...bodyR.position };
+
+  // Tidy-up (tidy.ts): the ropes hang straight down from the wheel's sides, so each weight is moved sideways until
+  // its centre is under its rope (the rope meets the middle of its top), when the rope to the drawn weight leans
+  // less than 15°. The two weights never overlap: if both cannot be centred, each goes as far as it can. The motion
+  // below is built from these positions, so the weights fall and rise straight under their ropes.
+  const tidyNotes: string[] = [];
+  if (TIDY) {
+    const ropeX = { L: C.x - R, R: C.x + R };
+    const want = (b: Matter.Body, x: number) => {
+      const lean = deg(Math.atan2(Math.abs(x - b.position.x), Math.max(1, b.bounds.min.y - C.y)));
+      return lean <= TIDY_MAX_DEG ? x - b.position.x : 0;
+    };
+    let dL = want(bodyL, ropeX.L), dR = want(bodyR, ropeX.R);
+    const GAP = 4;
+    const overlap = bodyL.bounds.max.x + dL + GAP - (bodyR.bounds.min.x + dR);
+    if (overlap > 0) {
+      // Weights wider than the wheel: take back the inward part of the moves (shared in proportion) until they clear.
+      const inL = Math.max(0, dL), inR = Math.max(0, -dR), inward = inL + inR;
+      if (inward >= overlap) {
+        dL -= (overlap * inL) / inward;
+        dR += (overlap * inR) / inward;
+      } else {
+        dL = Math.min(dL, 0);
+        dR = Math.max(dR, 0);
+      }
+    }
+    Matter.Body.translate(bodyL, { x: dL, y: 0 });
+    Matter.Body.translate(bodyR, { x: dR, y: 0 });
+    const note = (name: string, drawn: Point, b: Matter.Body, x: number) => {
+      const after = Math.abs(b.position.x - x);
+      return `${name} rope attach offset ${Math.abs(drawn.x - x).toFixed(1)}px → ${after < 0.5 ? 'centre' : `${after.toFixed(1)}px (kept: ${Math.abs(drawn.x - x) === after ? 'leans over 15°' : 'no room'})`}`;
+    };
+    tidyNotes.push(note('left', drawnL, bodyL, ropeX.L), note('right', drawnR, bodyR, ropeX.R));
+  }
   const homeL = { ...bodyL.position };
   const homeR = { ...bodyR.position };
 
@@ -608,18 +645,56 @@ export const buildPulley: SceneBuilder = (input) => {
   if (hangY > 8) {
     const half = Math.max(R * 1.6, 30);
     const x0 = ceiling ? Math.min(ceiling.x0, C.x - R) : C.x - half, x1 = ceiling ? Math.max(ceiling.x1, C.x + R) : C.x + half;
-    clean.push(
-      { kind: 'support', from: { x: x0, y: hangY }, to: { x: x1, y: hangY }, side: { x: 0, y: -1 } },
-      { kind: 'rope', from: () => ({ x: C.x, y: hangY }), to: () => C },
-    );
+    const support: CleanPart = { kind: 'support', from: { x: x0, y: hangY }, to: { x: x1, y: hangY }, side: { x: 0, y: -1 } };
+    if (ceiling) {
+      // The drawn ceiling's tilt: level within 15° (it is already drawn level here); steeper stays as drawn.
+      const mid = { x: (x0 + x1) / 2, y: hangY };
+      const fit = drawnSupport(input.ink, W, H, mid, 'h', (x1 - x0) / 2, Math.max(10, R * 0.4));
+      if (fit) {
+        const used = TIDY ? fit.used : 0;
+        tidyNotes.push(`ceiling ${fmt(fit.drawn)} → ${fmt(used)}${used !== 0 ? ' (kept: slanted on purpose)' : ''}`);
+        if (used !== 0) {
+          // Turned about the hanger's top, which stays on it.
+          const r = (used * Math.PI) / 180, c = Math.cos(r), sn = Math.sin(r);
+          const at = (x: number) => ({ x: C.x + (x - C.x) * c, y: hangY + (x - C.x) * sn });
+          Object.assign(support, { from: at(x0), to: at(x1), side: { x: sn, y: -c } });
+        }
+        const turn = untidyTurn({ x: C.x, y: hangY }, ((fit.drawn - used) * Math.PI) / 180);
+        if (TIDY && untidyMatters(turn, (x1 - x0) / 2)) support.untidy = turn;
+      }
+    }
+    clean.push(support, { kind: 'rope', from: () => ({ x: C.x, y: hangY }), to: () => C });
   }
+  const ropeL: CleanPart = { kind: 'rope', from: () => ({ x: C.x - R, y: C.y }), to: () => ropeEnd(bodyL, C.x - R) };
+  const ropeR: CleanPart = { kind: 'rope', from: () => ({ x: C.x + R, y: C.y }), to: () => ropeEnd(bodyR, C.x + R) };
+  const weightL: CleanPart = { kind: 'body', body: bodyL, tone: 'mass' };
+  const weightR: CleanPart = { kind: 'body', body: bodyR, tone: 'mass' };
+  if (TIDY) {
+    // Where the weights and the ends of their ropes were drawn, for the morph to snap them from.
+    const drawnEnd = (drawn: Point, b: Matter.Body, x: number) => {
+      const w = (b.bounds.max.x - b.bounds.min.x) / 2;
+      const inside = x >= drawn.x - w + 2 && x <= drawn.x + w - 2;
+      return { x: inside ? x : drawn.x, y: b.bounds.min.y };
+    };
+    for (const [rope, weight, body, drawn, x] of [
+      [ropeL, weightL, bodyL, drawnL, C.x - R],
+      [ropeR, weightR, bodyR, drawnR, C.x + R],
+    ] as const) {
+      const top = { x, y: C.y };
+      const ur = untidySegment(top, ropeEnd(body, x), top, drawnEnd(drawn, body, x));
+      if (untidyMatters(ur, 1)) rope.untidy = ur;
+      const ub = untidyMove(drawn, body.position);
+      if (untidyMatters(ub, 1)) weight.untidy = ub;
+    }
+  }
+  tidyLog('Pulley', tidyNotes);
   clean.push(
-    { kind: 'rope', from: () => ({ x: C.x - R, y: C.y }), to: () => ropeEnd(bodyL, C.x - R) },
-    { kind: 'rope', from: () => ({ x: C.x + R, y: C.y }), to: () => ropeEnd(bodyR, C.x + R) },
+    ropeL,
+    ropeR,
     { kind: 'wheel', center: C, radius: R, angle: () => -s / R },
     { kind: 'arc', center: C, radius: R, from: Math.PI, to: 2 * Math.PI },
-    { kind: 'body', body: bodyL, tone: 'mass' },
-    { kind: 'body', body: bodyR, tone: 'mass' },
+    weightL,
+    weightR,
   );
 
   const half = (s: Side) => Math.max(s.weightBox.w, s.weightBox.h) / 2;

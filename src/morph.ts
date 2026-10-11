@@ -13,11 +13,14 @@
 //   0.36-1.2 s   the masses (bob, block, ball, weights) are traced around and snap in: the solid shape pops up with a
 //                small overshoot, a ring spreads from it with a few sparks
 //   1.08-1.40 s  "alive": the masses lift a little and settle; the value labels and arrows fade in
+// A part the tidy-up straightened or moved (scenes/tidy.ts: CleanPart.untidy / drawnPoints) is traced where it was
+// drawn, then snaps into its tidy place as it appears (SNAP_MS, a slight overshoot), so the straightening is seen.
 // Every part's light starts a little after the previous one in its group. prefers-reduced-motion: a short cross-fade
 // (the overlay's colours fade with it).
 
 import type { BuiltScene, CleanPart, Point } from './types';
 import { drawClean, FAINT_ALPHA, partCenter, partOutline } from './clean';
+import { untidyCanvas, untidyPoint } from './scenes/tidy';
 
 /** True when the device asks for less motion: the morph is a plain cross-fade. */
 const REDUCED = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -50,6 +53,8 @@ const TRACE_MS = 330;
 const POP_MS = 320;
 /** ...while the coloured trace fades out. */
 const TRACE_FADE_MS = 220;
+/** A tidied part goes from where it was drawn to its tidy place over this long, right after its trace. */
+const SNAP_MS = 260;
 /** The drawing dims to FAINT_ALPHA over this long. */
 const DIM_MS = 900;
 const ALIVE_FROM = 1080;
@@ -101,6 +106,7 @@ export interface MorphFrame {
 }
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+const lerpPoint = (a: Point, b: Point, k: number): Point => ({ x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k });
 const ease = (t: number) => t * t * (3 - 2 * t);
 const easeOut = (t: number) => 1 - (1 - t) * (1 - t) * (1 - t);
 const easeIn = (t: number) => t * t;
@@ -190,7 +196,13 @@ function planFor(ctx: CanvasRenderingContext2D, scene: BuiltScene, px: number): 
   const counts: Record<Group, number> = { fixed: 0, link: 0, mass: 0 };
   plan = parts.map((part) => {
     const group = groupOf(part);
-    const outline = partOutline(ctx, part, px);
+    let outline = partOutline(ctx, part, px);
+    // The light runs where the part was drawn (it snaps into its tidy place afterwards).
+    if (outline && part.kind === 'solid' && part.drawnPoints?.length === part.points.length) outline = { points: part.drawnPoints, closed: true };
+    else if (outline && part.untidy) {
+      const u = part.untidy;
+      outline = { points: outline.points.map((q) => untidyPoint(u, q)), closed: outline.closed };
+    }
     let path: PartPlan['path'] = null;
     let size = 0, minSize = 0;
     if (outline) {
@@ -362,7 +374,15 @@ export function drawMorph(f: MorphFrame) {
       const lift = p.group === 'mass' && alive > 0 ? -6 * px * Math.sin(Math.PI * alive) : 0;
       if (lift) ctx.translate(0, lift);
       const scale = p.filled && p.part.kind !== 'pin' ? 0.72 + 0.28 * backOut(easeOut(u)) : 1;
-      drawClean(ctx, [p.part], px, { alpha: Math.min(1, u * 5 + 0.15), scale });
+      // Tidied parts: from where they were drawn (k = 1) into place (k = 0), a little past it and back.
+      const k = 1 - backOut(clamp01((local - TRACE_MS) / SNAP_MS));
+      const part = p.part.kind === 'solid' && p.part.drawnPoints?.length === p.part.points.length
+        ? { ...p.part, points: p.part.points.map((q, i) => lerpPoint(q, (p.part as { drawnPoints: Point[] }).drawnPoints[i], k)) }
+        : p.part;
+      ctx.save();
+      if (p.part.untidy && k !== 0) untidyCanvas(ctx, p.part.untidy, k);
+      drawClean(ctx, [part], px, { alpha: Math.min(1, u * 5 + 0.15), scale });
+      ctx.restore();
       if (lift) ctx.translate(0, -lift);
       if (u < 1) {
         if (p.filled) snapBurst(ctx, p, u, px);
