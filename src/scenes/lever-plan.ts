@@ -19,7 +19,8 @@
 //   I = Σ mᵢ rᵢ² + I_plank
 // The plank is light: its own weight is taken to act at the tip (a seesaw balances on its own), it only adds a little
 // inertia. The plank end stops on the floor (the triangle's base), bounces a little and rests; then it replays.
-// Balanced (Σ mᵢ uᵢ = 0, i.e. m₁d₁ = m₂d₂): it does not tip; a small rocking shows that it settles back level.
+// Balanced (Σ mᵢ uᵢ = 0, i.e. m₁d₁ = m₂d₂, every value typed in): it does not tip; a small rocking shows that it settles
+// back level. Nearly balanced (moments within the drawing's error): it tips a little toward the heavier side and stays.
 
 import type { BBox, Point } from '../types';
 
@@ -546,6 +547,47 @@ export function imbalance(m: LeverModel): number {
   return abs > 0 ? net / abs : 0;
 }
 
+/** Drawn sizes are rough: moments this close (share of the larger, |imbalance|) only count as nearly balanced. */
+export const DRAWN_BALANCE = 0.12;
+/** Every value typed in: the moments must match to this. */
+export const INPUT_BALANCE = 1e-3;
+/** Nearly balanced: the plank settles this much toward the heavier side per unit of imbalance, at most NEARLY_MAX. */
+const NEARLY_PER = (25 * Math.PI) / 180;
+const NEARLY_MAX = (3 * Math.PI) / 180;
+
+export interface Balance {
+  /** It does not tip to the floor (rocks gently instead). */
+  balanced: boolean;
+  /** Balanced only within the drawing's error (some value is estimated from the drawn size): "Nearly balanced". */
+  nearly: boolean;
+  /** Where it settles, radians from the start (toward the heavier side, positive = right end down). */
+  settle: number;
+}
+
+/**
+ * The verdict for imbalance `tilt` (see imbalance()). `exact`: every mass and distance was typed in, so only
+ * m₁d₁ = m₂d₂ is balanced. Otherwise moments within DRAWN_BALANCE are "nearly balanced": it tips a little toward the
+ * heavier side (in proportion to the difference) and stops there, instead of slamming down or claiming a tie.
+ */
+export function balanceOf(tilt: number, exact: boolean, twoSides = true): Balance {
+  if (!twoSides) return { balanced: false, nearly: false, settle: 0 };
+  if (exact) return { balanced: Math.abs(tilt) <= INPUT_BALANCE, nearly: false, settle: 0 };
+  if (Math.abs(tilt) > DRAWN_BALANCE) return { balanced: false, nearly: false, settle: 0 };
+  return { balanced: true, nearly: true, settle: Math.sign(tilt) * Math.min(NEARLY_MAX, Math.abs(tilt) * NEARLY_PER) };
+}
+
+/**
+ * A point fixed in the plank frame at (u, v) from the pivot `P`, with the plank at angle θ turning at ω (per step):
+ * where it is and how fast it moves (d/dt of the pose). Weights ride on the plank this way: never on their own.
+ */
+export function riding(P: Point, u: number, v: number, theta: number, omega: number): { at: Point; vel: Point } {
+  const c = Math.cos(theta), s = Math.sin(theta);
+  return {
+    at: { x: P.x + u * c - v * s, y: P.y + u * s + v * c },
+    vel: { x: -omega * (u * s + v * c), y: omega * (u * c - v * s) },
+  };
+}
+
 /** Restitution when the plank end hits the floor. */
 const BOUNCE = 0.3;
 /** Slower than this after a bounce (rad/step): it rests. */
@@ -572,10 +614,15 @@ export class LeverMotion {
   readonly model: LeverModel;
   readonly theta0: number;
   readonly balanced: boolean;
-  constructor(model: LeverModel, theta0: number, balanced: boolean) {
+  /** Nearly balanced: it settles this far (radians) from theta0 toward the heavier side, and rocks about there. */
+  readonly settle: number;
+  constructor(model: LeverModel, theta0: number, balanced: boolean, settle = 0) {
     this.model = model;
     this.theta0 = theta0;
     this.balanced = balanced;
+    // Never as far as the floor: a gentle tilt, well inside the turning range.
+    const room = settle > 0 ? model.thetaMax - theta0 : theta0 - model.thetaMin;
+    this.settle = balanced ? Math.sign(settle) * Math.min(Math.abs(settle), 0.5 * Math.max(0, room)) : 0;
     this.theta = theta0;
   }
 
@@ -594,9 +641,17 @@ export class LeverMotion {
 
   step(g: number) {
     if (this.balanced) {
-      const k = this.t++ % ROCK_CYCLE;
-      const at = (s: number) => this.theta0 + ROCK_AMP * Math.sin((2 * Math.PI * s) / ROCK_PERIOD) * Math.exp(-s / ROCK_DECAY);
-      const next = at(k);
+      const t = this.t++;
+      const k = t % ROCK_CYCLE;
+      const rock = (s: number) => ROCK_AMP * Math.sin((2 * Math.PI * s) / ROCK_PERIOD) * Math.exp(-s / ROCK_DECAY);
+      // Nearly balanced: the first cycle is a damped swing from theta0 over to the tilted rest (no jump at the start);
+      // after it, the same gentle rocking as balanced, about that rest.
+      const next =
+        this.settle === 0
+          ? this.theta0 + rock(k)
+          : t < ROCK_CYCLE
+            ? this.theta0 + this.settle * (1 - Math.exp(-t / ROCK_DECAY) * Math.cos((2 * Math.PI * t) / ROCK_PERIOD))
+            : this.theta0 + this.settle + 0.5 * rock(k);
       this.omega = next - this.theta;
       this.theta = next;
       return;

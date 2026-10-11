@@ -433,7 +433,9 @@ function partsFor(input: OverlayInput): PartMap {
     }
     case 'Incline': {
       const parts: Record<string, Part> = { ramp: style(ROLE_STYLE.incline) };
-      scene.sprites.forEach((sp, i) => (parts[`block${i}`] = style(ROLE_STYLE.mass, bodyHome(sp))));
+      // A round thing on the slope rolls as a ball (a Matter circle): call it a ball, not a block.
+      const round = (sp: Sprite) => sp.follow.kind === 'body' && !!sp.follow.body.circleRadius;
+      scene.sprites.forEach((sp, i) => (parts[`block${i}`] = style(round(sp) ? ROLE_STYLE.projectile : ROLE_STYLE.mass, bodyHome(sp))));
       return { parts, partOf: (p) => (hit(p) < 0 ? 'ramp' : `block${hit(p)}`) };
     }
     case 'Pulley': {

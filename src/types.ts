@@ -317,6 +317,8 @@ export interface LeverInfo {
   right: LeverSide | null;
   /** m₁d₁ = m₂d₂ (within drawing tolerance): it rocks and settles level instead of tipping. */
   balanced: boolean;
+  /** Balanced only within the drawing's error (a value is estimated from the drawn size): "Nearly balanced", a small tilt. */
+  nearly: boolean;
   /** The turning point (world px) and the plank's range of angles (radians, clockwise on screen). */
   pivot: Point;
   thetaMin: number;

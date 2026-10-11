@@ -161,6 +161,7 @@ export class LiveGraph {
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.metricValue.textContent = '--';
+    this.metricValue.classList.remove('lg-long');
   }
 
   attach(sim: Simulation, diagram: DiagramType) {
@@ -192,6 +193,7 @@ export class LiveGraph {
     this.root.classList.toggle('lg-momentum', !!this.balls);
     this.metricLabel.textContent = this.balls ? 'Momentum' : this.lever ? 'Torque balance' : this.measuresPeriod() ? 'Period' : 'Speed';
     this.metricValue.textContent = '--';
+    this.metricValue.classList.remove('lg-long');
     // If Moon mode was on for the previous drawing, keep it on for the new one.
     if (this.moon.checked) sim.setParams({ gravity: MOON_G });
     this.syncGravity();
@@ -448,8 +450,10 @@ export class LiveGraph {
   private showTorque(lever: LeverInfo, g: number) {
     const tau = (s: LeverSide | null) => (s ? s.kg * g * s.d : 0);
     const tl = tau(lever.left), tr = tau(lever.right);
-    const verdict = lever.balanced ? 'Balanced!' : tl > tr ? 'Left wins' : 'Right wins';
+    const verdict = lever.nearly ? 'Nearly balanced' : lever.balanced ? 'Balanced!' : tl > tr ? 'Left wins' : 'Right wins';
     if (this.metricValue.textContent !== verdict) this.metricValue.textContent = verdict;
+    // "Nearly balanced" at full size runs into the Moon mode switch on a phone.
+    this.metricValue.classList.toggle('lg-long', verdict.length > 12);
     const theory = `${formatTorque(tl)} ${lever.balanced ? '≈' : tl > tr ? '>' : '<'} ${formatTorque(tr)}`;
     if (this.theoryLabel.textContent !== theory) this.theoryLabel.textContent = theory;
     this.theoryLabel.hidden = false;
@@ -836,6 +840,7 @@ function injectStyle() {
   .lg-metric { display: flex; flex-direction: column; min-width: 0; }
   .lg-metric-label { font-size: 12px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: #afafaf; }
   .lg-momentum .lg-metric-value { font-size: 24px; }
+  .lg-metric-value.lg-long { font-size: 22px; line-height: 1.5; }
   .lg-metric-value { font-size: 30px; font-weight: 900; color: #3c3c3c; line-height: 1.1; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .lg-moon { display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; flex-shrink: 0; }
   .lg-moon input { position: absolute; opacity: 0; pointer-events: none; }

@@ -1,6 +1,7 @@
 // Seesaw / lever: a plank lying on a triangle's tip, a weight on each side. The side with the larger moment m·g·d goes
 // down until the plank's end reaches the floor (the triangle's base), bounces a little, rests, and the scene replays.
-// m₁d₁ = m₂d₂: it does not tip; it rocks gently and settles level ("Balanced!").
+// m₁d₁ = m₂d₂ with every value typed in: it does not tip; it rocks gently and settles level ("Balanced!"). Within the
+// drawing's error (sizes estimated from the drawing): it tips a little toward the heavier side and stops ("Nearly balanced").
 //
 // Geometry comes only from the ink (lever-plan.ts): pivot = where the plank touches the tip, plank ends and thickness,
 // weights = the strokes resting on the plank, left / right of the pivot. Masses ∝ drawn area (lighter = 1 kg), the
@@ -8,7 +9,8 @@
 // mass (kg) and Left / Right distance (m; the weight slides along the plank to it).
 //
 // Physics: one rigid body turning about the pivot, integrated here every step (θ'' = τ / I, lever-plan.ts); the Matter
-// bodies (plank, weights) are only placed on that pose, like the pulley. Gravity is read from the engine each step, so
+// bodies (plank, weights) are only placed on that pose, like the pulley: the weights are fixed to the plank (same spot on
+// it at every angle, including the small bounce on the floor), and their velocity is the plank's turning (ω × r). Gravity is read from the engine each step, so
 // the slider, voice and Moon mode apply at once. The fall is slowed to about TARGET_TIP_S on screen (gravityScale),
 // and units.ts plays the physical time at the matching slow-motion factor.
 
@@ -21,20 +23,19 @@ import {
   findLever,
   floorLimits,
   framePoint,
+  balanceOf,
   imbalance,
   leverInertia,
   leverTorque,
   LeverMotion,
   PLANK_MASS_SHARE,
+  riding,
   rodInertia,
   type LeverItem,
   type LeverWeight,
 } from './lever-plan';
 import { fmt, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters } from './tidy';
 
-/** Drawn sizes are rough: moments this close (share of the larger) count as balanced. Typed values must match. */
-const DRAWN_BALANCE = 0.12;
-const INPUT_BALANCE = 1e-3;
 /** Heavier : lighter drawn weight is capped at this (a drawn box 10× bigger would slam down). */
 const MAX_MASS_RATIO = 4;
 /** Seconds on screen for the plank to reach the floor at Earth gravity (never faster than real gravity on the paper). */
@@ -146,12 +147,14 @@ export const buildLever: SceneBuilder = (input) => {
 
   const allInput = pieces.length === 2 && kgFromL === 'input' && kgFromR === 'input' && dFrom.left !== 'scaled' && dFrom.left !== 'assumed' && dFrom.right !== 'scaled' && dFrom.right !== 'assumed';
   const tilt = imbalance(model);
-  const balanced = pieces.length === 2 && Math.abs(tilt) <= (allInput ? INPUT_BALANCE : DRAWN_BALANCE);
+  // Typed values: balanced only when m₁d₁ = m₂d₂. Drawn sizes: close moments are "nearly balanced" (a small tilt).
+  const verdict = balanceOf(tilt, allInput, pieces.length === 2);
+  const { balanced } = verdict;
   // Drawn already resting on the side it tips to (a steep drawn plank): start level instead, so it visibly tips.
   const tauSign = Math.sign(leverTorque(model, theta0, 1));
   const room = (th: number) => (tauSign > 0 ? model.thetaMax - th : th - model.thetaMin);
   if (!balanced && tauSign !== 0 && room(theta0) < rad(3)) theta0 = 0;
-  const motion = new LeverMotion(model, theta0, balanced);
+  const motion = new LeverMotion(model, theta0, balanced, verdict.settle);
 
   // Slow-down so the tip takes ~TARGET_TIP_S on screen: θ = α t² / 2 => scale = 2 θ / (α T²), α at Earth gravity.
   const alpha0 = Math.abs(leverTorque(model, theta0, STEP_ACCEL)) / leverInertia(model);
@@ -165,16 +168,12 @@ export const buildLever: SceneBuilder = (input) => {
   const plank = Matter.Bodies.rectangle(0, 0, len, T, ghost);
   const plankLocal = { u: uc, v: -T / 2 };
   const weights = pieces.map((p) => Matter.Bodies.rectangle(0, 0, Math.max(4, p.width), Math.max(4, p.height), ghost));
-  const at = (u: number, v: number, th: number): Point => {
-    const c = Math.cos(th), s = Math.sin(th);
-    return { x: P.x + u * c - v * s, y: P.y + u * s + v * c };
-  };
   const place = (b: Matter.Body, u: number, v: number, th: number, w: number) => {
-    Matter.Body.setPosition(b, at(u, v, th));
+    const r = riding(P, u, v, th, w);
+    Matter.Body.setPosition(b, r.at);
     Matter.Body.setAngle(b, th);
-    // d/dt of the pose: ω × (−(u sinθ + v cosθ), u cosθ − v sinθ).
-    const c = Math.cos(th), s = Math.sin(th);
-    Matter.Body.setVelocity(b, { x: -w * (u * s + v * c), y: w * (u * c - v * s) });
+    // setVelocity / setAngularVelocity also set the previous pose (Verlet): nothing of the engine's own step remains.
+    Matter.Body.setVelocity(b, r.vel);
     Matter.Body.setAngularVelocity(b, w);
   };
   const pose = () => {
@@ -254,6 +253,7 @@ export const buildLever: SceneBuilder = (input) => {
     left: sideInfo('left'),
     right: sideInfo('right'),
     balanced,
+    nearly: verdict.nearly,
     pivot: { ...P },
     thetaMin: model.thetaMin,
     thetaMax: model.thetaMax,

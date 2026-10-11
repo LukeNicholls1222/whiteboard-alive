@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
-import { findLever, floorLimits, HOLD_STEPS, imbalance, leverInertia, leverTorque, LeverMotion, rodInertia, type LeverModel } from '../src/scenes/lever-plan.ts';
+import { balanceOf, findLever, floorLimits, HOLD_STEPS, imbalance, leverInertia, leverTorque, LeverMotion, riding, rodInertia, type LeverModel } from '../src/scenes/lever-plan.ts';
 import { guessDiagram } from '../src/guess.ts';
 import { parseVoice } from '../src/voice.ts';
 
@@ -169,6 +169,42 @@ test('balanced (m₁d₁ = m₂d₂): no torque, it never tips (rocks a little a
   assert.ok(maxAbs > 0, 'it moves a little (never frozen)');
   assert.ok(maxAbs < (3 * Math.PI) / 180, `stays within 3° (${(maxAbs * 180) / Math.PI}°)`);
   assert.ok(motion.theta < m.thetaMax && motion.theta > m.thetaMin);
+});
+
+test('balanced only when typed values match; drawn sizes within 12% are "nearly balanced" and tilt a little', () => {
+  assert.deepEqual(balanceOf(0, true), { balanced: true, nearly: false, settle: 0 });
+  assert.equal(balanceOf(0.05, true).balanced, false, 'typed values 5% apart tip');
+  const n = balanceOf(-0.11, false); // lever-gen-03: 3.30 vs 2.96 N·m, left heavier
+  assert.ok(n.balanced && n.nearly);
+  assert.ok(n.settle < 0 && n.settle > (-3.01 * Math.PI) / 180, `settle ${n.settle}`);
+  assert.ok(Math.abs(balanceOf(0.04, false).settle) < Math.abs(balanceOf(0.08, false).settle), 'bigger difference, bigger tilt');
+  assert.equal(balanceOf(0.2, false).balanced, false, 'far apart: tips');
+  assert.equal(balanceOf(0, false, false).balanced, false, 'one weight: tips');
+
+  // It settles at the small tilt, toward the heavier (left) side, and never reaches the floor.
+  const m = model(2.2, 150, 1, 300);
+  const motion = new LeverMotion(m, 0, true, n.settle);
+  let lowest = 0;
+  for (let i = 0; i < 1200; i++) {
+    motion.step(0.278);
+    lowest = Math.min(lowest, motion.theta);
+    assert.ok(motion.theta > m.thetaMin + 0.01 && motion.theta < m.thetaMax, 'never down to the floor');
+  }
+  assert.ok(Math.abs(motion.theta - n.settle) < (1.5 * Math.PI) / 180, `rests near the tilt (${motion.theta} vs ${n.settle})`);
+  assert.ok(lowest < 0, 'tilts left');
+});
+
+test('weights ride on the plank: same spot in its frame at every angle, velocity = ω × r', () => {
+  const P = { x: 400, y: 300 };
+  const u = -180, v = -45, omega = 0.013;
+  for (const th of [-0.36, -0.1, 0, 0.2, 0.36]) {
+    const a = riding(P, u, v, th, omega), b = riding(P, u, v, th + omega, omega);
+    // Back in the plank frame: exactly (u, v).
+    const dx = a.at.x - P.x, dy = a.at.y - P.y, c = Math.cos(th), s = Math.sin(th);
+    assert.ok(Math.abs(dx * c + dy * s - u) < 1e-9 && Math.abs(-dx * s + dy * c - v) < 1e-9);
+    // One step later it has moved by its velocity (to first order).
+    assert.ok(Math.hypot(b.at.x - a.at.x - a.vel.x, b.at.y - a.at.y - a.vel.y) < 0.01 * Math.hypot(a.vel.x, a.vel.y));
+  }
 });
 
 test('the heavier side goes down to the floor and rests there, then replays', () => {
