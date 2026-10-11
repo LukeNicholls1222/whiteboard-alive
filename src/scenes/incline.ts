@@ -8,7 +8,7 @@ import type { CleanPart, Contour, Point, SceneBuilder, SceneInput, Sprite, Value
 import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
 import { replayWhenStopped } from './replay';
 import { PAPER_FILL, STEP_ACCEL, STEP_MS } from '../sim';
-import { DEFAULT_KG, noteFor } from '../units';
+import { DEFAULT_KG, noteFor, scaleOf } from '../units';
 import { fmt, lineDeg, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters, untidyTurn } from './tidy';
 import { ROUND_MAX_RESIDUAL, rollAccel, type RollPath, rollPath, rollPosition, rollStart, rollStep, rollTangent, roundness, SlopeAccelMeter, SOLID_BALL_K } from './roll';
 
@@ -942,10 +942,10 @@ export const buildIncline: SceneBuilder = (input) => {
     if (untidyMatters(turn, W / 2)) groundPart.untidy = turn;
   }
   clean.unshift(groundPart, rampPart);
-  const replay = replayWhenStopped(moving);
+  const replay = replayWhenStopped(moving, () => scaleOf(scene).timeFactor);
   const rolling = balls.find((bl) => bl.body === block);
   const gFactor = (input.analysis.params.gravity || 9.8) / 9.8;
-  return {
+  const scene: ReturnType<SceneBuilder> = {
     bodies,
     constraints: [],
     sprites,
@@ -988,4 +988,5 @@ export const buildIncline: SceneBuilder = (input) => {
       ? Math.max(MIN_START_SPEED, Math.sqrt(2 * Math.max(0, rollAccel(STEP_ACCEL * gFactor, slope.angle, mu).a) * rolling.path.slopeLen))
       : Math.hypot(Math.max(MIN_START_SPEED, Math.sqrt(2 * Math.max(0, STEP_ACCEL * (mu * Math.cos(slope.angle) - Math.sin(slope.angle))) * slope.length * MIN_SLIDE_FRACTION)), Math.sqrt(2 * Math.max(0, STEP_ACCEL * ((input.analysis.params.gravity || 9.8) / 9.8) * (Math.sin(slope.angle) - mu * Math.cos(slope.angle))) * slope.length * Math.min(1, Math.max(0, 1 - along(block.position, slope))))),
   };
+  return scene;
 };

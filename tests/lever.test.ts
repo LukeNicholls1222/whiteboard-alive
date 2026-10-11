@@ -8,9 +8,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
-import { balanceOf, findLever, floorLimits, HOLD_STEPS, imbalance, leverInertia, leverTorque, LeverMotion, riding, rodInertia, type LeverModel } from '../src/scenes/lever-plan.ts';
+import { balanceOf, findLever, floorLimits, HOLD_S, HOLD_STEPS, imbalance, leverInertia, leverTorque, LeverMotion, riding, rodInertia, type LeverModel } from '../src/scenes/lever-plan.ts';
 import { guessDiagram } from '../src/guess.ts';
 import { parseVoice } from '../src/voice.ts';
+import { cycleSpeed, playbackSpeed, ScreenWait, StepClock, stepRate } from '../src/playback.ts';
 
 type Pt = [number, number];
 
@@ -234,6 +235,33 @@ test('the heavier side goes down to the floor and rests there, then replays', ()
     for (let i = 0; i < HOLD_STEPS; i++) motion.step(g);
     assert.ok(motion.hold === 0 && motion.theta === 0, 'replayed from level after the hold');
   }
+});
+
+test('the rest on the floor lasts about 1 s on screen at 1× and at 0.11× (was 0.2 s at 1×: counted in steps)', () => {
+  const m = model(1, 200, 3, 200);
+  // A seesaw slowed to tip in about a second has a small timeFactor: 1× then runs the most steps a frame (15).
+  const tf = 0.05;
+  const g = 0.278 * 0.02;
+  for (const speed of [1, 1 / 9]) {
+    while (playbackSpeed() !== speed) cycleSpeed();
+    const motion = new LeverMotion(m, 0, false, 0, new ScreenWait(HOLD_S, () => tf));
+    const clock = new StepClock();
+    let restFrames = 0, rested = false, replayed = false;
+    for (let frame = 0; frame < 20_000 && !replayed; frame++) {
+      const n = clock.next(stepRate(speed, tf));
+      let restingNow = false;
+      for (let i = 0; i < n && !replayed; i++) {
+        motion.step(g);
+        if (motion.hold > 0) rested = restingNow = true;
+        else if (rested) replayed = true;
+      }
+      if (restingNow) restFrames++;
+    }
+    assert.ok(replayed, `${speed}×: tipped, rested and replayed`);
+    const restS = restFrames / 60;
+    assert.ok(restS >= 0.95 && restS <= 1.1, `${speed}×: rested ${restS.toFixed(2)} s on screen`);
+  }
+  while (playbackSpeed() !== 1) cycleSpeed();
 });
 
 // ---- Voice --------------------------------------------------------------------------------------------------------

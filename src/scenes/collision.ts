@@ -16,6 +16,7 @@ import { inkImage } from '../clean';
 import { contourMask, cutSprite, eraseFromPaper, maskBounds, roleOf } from './common';
 import { DEFAULT_KG, mps, noteFor, pxPerStep, scaleFor } from '../units';
 import { STEP_MS } from '../sim';
+import { ScreenWait } from '../playback';
 import { fmt, inkSegment, segmentY, TIDY, tidyLog, untidyMatters, untidyMove, untidySegment, untidyTurn, type InkSegment } from './tidy';
 import {
   axisOf,
@@ -40,8 +41,8 @@ const ARROW_MAX_DEG = 25;
 const WALL_IN = 0.012;
 /** Walls are drawn this × the bigger ball's radius tall. */
 const WALL_TALL = 2.6;
-/** Once stopped, the still picture stays this long, then it plays again. */
-const HOLD_MS = 1800;
+/** Once stopped, the still picture stays this long on screen (any playback speed), then it plays again. */
+const HOLD_S = 1.2;
 /** A run that never stops (elastic) plays again after this long, so the drawn start is seen again. */
 const MAX_RUN_MS = 30000;
 const DEBUG = typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug');
@@ -295,26 +296,27 @@ export const buildCollision: SceneBuilder = (input) => {
     );
 
   // --- Run, stop, play again ---
-  const holdSteps = Math.round(HOLD_MS / STEP_MS);
+  const wait = new ScreenWait(HOLD_S, () => scale.timeFactor);
   const maxSteps = Math.round(MAX_RUN_MS / STEP_MS);
   let run = 0;
-  let held = -1;
+  let held = false;
   const restart = () => {
     state[0] = { ...start[0] };
     state[1] = { ...start[1] };
     run = 0;
-    held = -1;
+    held = false;
   };
   const onStep = () => {
-    if (held >= 0) {
-      if (++held >= holdSteps) restart();
+    if (held) {
+      if (wait.tick()) restart();
     } else {
       const e = Math.min(1, Math.max(0, Number(params.bounciness ?? 1)));
       advance(state, 1, walls, Number.isFinite(e) ? e : 1);
       if (++run >= maxSteps) restart();
       else if (run > 10 && atRest(state, vStart)) {
         state[0].v = state[1].v = 0;
-        held = 0;
+        held = true;
+        wait.reset();
       }
     }
     write();

@@ -14,6 +14,7 @@ import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
 import { replayWhenStopped } from './replay';
 import { linePatch, type Patch } from './blank-patch';
 import { STEP_ACCEL } from '../sim';
+import { scaleOf } from '../units';
 import { fmt, inkSegment, offAxis, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters, untidyTurn } from './tidy';
 
 /** A body whose bottom is closer than this (× view height) to the floor hops first. */
@@ -279,15 +280,16 @@ export const buildFallback: SceneBuilder = (input) => {
   if (!input.contours.length) for (const sprite of sprites) clean.push({ kind: 'sprite', sprite });
   else for (const body of moving) clean.push({ kind: 'body', body, tone: 'mass' });
 
-  return {
+  const scene: ReturnType<SceneBuilder> = {
     bodies,
     constraints: [],
     sprites,
     clean,
     background: eraseFromPaper(input, masks),
     label: 'Falling objects',
-    onStep: replayWhenStopped(moving),
+    onStep: replayWhenStopped(moving, () => scaleOf(scene).timeFactor),
     // Fastest on hitting the floor: v² = v₀² + 2g·(drop height), the highest of all the falling bodies.
     speedHint: Math.max(0, ...moving.map((b) => Math.sqrt(b.velocity.x ** 2 + b.velocity.y ** 2 + 2 * STEP_ACCEL * ((input.analysis.params.gravity || 9.8) / 9.8) * Math.max(0, floorTop - b.bounds.max.y)))),
   };
+  return scene;
 };
