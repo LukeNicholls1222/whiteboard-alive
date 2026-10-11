@@ -39,7 +39,7 @@ export interface Contour {
   hasHole: boolean;
 }
 
-export type DiagramType = 'pendulum' | 'spring' | 'incline' | 'projectile' | 'pulley' | 'collision' | 'fallback';
+export type DiagramType = 'pendulum' | 'spring' | 'incline' | 'projectile' | 'pulley' | 'collision' | 'lever' | 'fallback';
 
 export type BodyRole =
   | 'pivot' // fixed point / ceiling
@@ -53,6 +53,8 @@ export type BodyRole =
   | 'cannon'
   | 'arrow'
   | 'projectile'
+  /** Seesaw / lever board lying on its pivot. */
+  | 'plank'
   /** Handwritten text / numbers ("1 m", "2 kg"): never simulated (the numbers are typed into the app instead). */
   | 'label'
   | 'other';
@@ -156,9 +158,9 @@ export interface Sprite {
 
 /**
  * Colour family of a filled clean shape: the moving masses (orange), the second of two masses that must be told apart
- * (blue: the right ball of a collision) or the devices (purple: wheel, spring).
+ * (blue: the right ball of a collision), the devices (purple: wheel, spring) or a seesaw's board (dark grey).
  */
-export type CleanTone = 'mass' | 'mass2' | 'device';
+export type CleanTone = 'mass' | 'mass2' | 'device' | 'beam';
 
 /**
  * One shape of the clean, textbook-style picture (clean.ts) the app draws instead of moving the hand-drawn ink.
@@ -295,9 +297,32 @@ export interface BuiltScene {
     ballSpeeds?: Record<'left' | 'right', { value: number; from: ValueSource; drawn: number; drawnFrom: ValueSource }>;
     /** Pendulum / projectile: the scene reads air drag; the factor ×N on real air the switch sets (air.ts). */
     airDrag?: number;
+    /** Seesaw: each side's weight and distance from the pivot, and how the plank turns (for the torque card and labels). */
+    lever?: LeverInfo;
   };
   /** px per metre and the time factor; set by buildScene for every scene. */
   scale?: Scale;
+}
+
+/** One side of a seesaw: mass (kg) and distance from the pivot along the plank (m), and where each came from. */
+export interface LeverSide {
+  kg: number;
+  kgFrom: ValueSource;
+  d: number;
+  dFrom: ValueSource;
+}
+
+export interface LeverInfo {
+  left: LeverSide | null;
+  right: LeverSide | null;
+  /** m₁d₁ = m₂d₂ (within drawing tolerance): it rocks and settles level instead of tipping. */
+  balanced: boolean;
+  /** The turning point (world px) and the plank's range of angles (radians, clockwise on screen). */
+  pivot: Point;
+  thetaMin: number;
+  thetaMax: number;
+  /** The plank's angle now (radians). */
+  theta: () => number;
 }
 
 export interface PartInfo {

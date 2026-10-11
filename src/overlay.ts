@@ -29,6 +29,7 @@ const ROLE_STYLE: Record<BodyRole, { label: string; color: string }> = {
   cannon: { label: 'cannon', color: C.red },
   arrow: { label: 'arrow', color: C.red },
   projectile: { label: 'ball', color: C.orange },
+  plank: { label: 'plank', color: C.blue },
   label: { label: 'note', color: C.grey },
   other: { label: 'other', color: C.grey },
 };
@@ -472,6 +473,22 @@ function partsFor(input: OverlayInput): PartMap {
           const i = hit(p);
           if (i >= 0) return `ball${Math.min(1, i)}`;
           return p.y >= floorY - tol ? 'ground' : 'arrow';
+        },
+      };
+    }
+    case 'Seesaw': {
+      // Sprite 0 is the plank, the others the weights; everything else (triangle, floor) is the fixed pivot.
+      const lever = scene.physics?.lever;
+      const parts: Record<string, Part> = {
+        pivot: style(ROLE_STYLE.pivot, lever ? { x: lever.pivot.x, y: lever.pivot.y + 24 } : undefined),
+        plank: style(ROLE_STYLE.plank),
+      };
+      scene.sprites.slice(1).forEach((sp, i) => (parts[`weight${i}`] = { text: 'weight', color: C.orange, anchor: bodyHome(sp) }));
+      return {
+        parts,
+        partOf: (p) => {
+          const i = hit(p);
+          return i < 0 ? 'pivot' : i === 0 ? 'plank' : `weight${i - 1}`;
         },
       };
     }

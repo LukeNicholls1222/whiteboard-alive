@@ -407,6 +407,19 @@ function predictPaths(scene: BuiltScene, engine: Matter.Engine, vis: ViewRect, l
       for (let y = Math.min(top, p.y); y <= Math.max(H, p.y); y += PATH_STEP) add(p.x, y, [{ x: 0, y: -1 }, { x: 0, y: 1 }], lmax);
     } else if (scene.label === 'Collision') {
       for (let x = X0; x <= W; x += PATH_STEP) add(x, p.y, [{ x: 1, y: 0 }, { x: -1, y: 0 }], lmax);
+    } else if (scene.label === 'Seesaw' && scene.physics?.lever) {
+      // Turning with the plank about the pivot, from one floor stop to the other; arrows both ways along the arc.
+      const { pivot: c, thetaMin, thetaMax, theta } = scene.physics.lever;
+      const th0 = theta();
+      const dx = p.x - c.x, dy = p.y - c.y;
+      const r = Math.hypot(dx, dy);
+      const a0 = Math.atan2(dy, dx) - th0;
+      const n = Math.min(120, Math.max(2, Math.ceil(((thetaMax - thetaMin) * r) / PATH_STEP)));
+      for (let i = 0; i <= n; i++) {
+        const a = a0 + thetaMin + ((thetaMax - thetaMin) * i) / n;
+        const t = { x: -Math.sin(a), y: Math.cos(a) };
+        add(c.x + r * Math.cos(a), c.y + r * Math.sin(a), [t, { x: -t.x, y: -t.y }], lmax);
+      }
     } else if (scene.label === 'Projectile') {
       const floor = groundY ?? H;
       const pts: { x: number; y: number; vx: number; vy: number }[] = [];
@@ -621,6 +634,17 @@ function pillsFor(scene: BuiltScene, analysis: Analysis): Pill[] {
       }
       const e = () => Math.min(1, Math.max(0, Number(analysis.params.bounciness ?? 1)));
       add('ground', () => `e = ${e().toFixed(2)}`, () => (analysis.params.bounciness === undefined ? text('assumed') : text('slider')));
+      break;
+    }
+    case 'Seesaw': {
+      // Each weight: its mass and its distance d from the pivot (the moment is m·g·d, see the torque card).
+      const lever = scene.physics?.lever;
+      for (const [part, side] of [['left weight', lever?.left], ['right weight', lever?.right]] as const) {
+        mass(part, true);
+        if (!side || !measures[part]) continue;
+        const from = side.dFrom === 'adjusted' ? 'most that fits' : text(side.dFrom);
+        add(part, () => `d = ${formatLength(side.d)}`, () => from);
+      }
       break;
     }
   }

@@ -10,6 +10,7 @@ import { buildProjectile } from './projectile';
 import { buildSpring } from './spring';
 import { buildPulley } from './pulley';
 import { buildCollision } from './collision';
+import { buildLever } from './lever';
 
 const BUILDERS: Partial<Record<DiagramType, SceneBuilder>> = {
   pendulum: buildPendulum,
@@ -18,6 +19,7 @@ const BUILDERS: Partial<Record<DiagramType, SceneBuilder>> = {
   projectile: buildProjectile,
   pulley: buildPulley,
   collision: buildCollision,
+  lever: buildLever,
   fallback: buildFallback,
 };
 

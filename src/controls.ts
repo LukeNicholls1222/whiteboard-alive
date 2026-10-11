@@ -104,6 +104,8 @@ const SAY_EXAMPLE: Record<EntryKey, string> = {
   rightBallMass: 'right ball 1 kilogram',
   leftSpeed: 'left ball 2 meters per second',
   rightSpeed: 'right ball 1 meter per second',
+  leftDistance: 'move the left weight further',
+  rightDistance: 'right distance 30 centimeters',
 };
 
 /** Pause after the last keystroke before an entered number is applied. */

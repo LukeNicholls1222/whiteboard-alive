@@ -20,7 +20,9 @@ export type EntryKey =
   | 'leftBallMass'
   | 'rightBallMass'
   | 'leftSpeed'
-  | 'rightSpeed';
+  | 'rightSpeed'
+  | 'leftDistance'
+  | 'rightDistance';
 
 /** What the user entered, in the field's unit. A missing key = empty field (the scene assumes a value). */
 export type Entries = Partial<Record<EntryKey, number>>;
@@ -62,6 +64,8 @@ export const ENTRY_SPECS: Record<EntryKey, EntrySpec> = {
   // Signed: right = +, left = −, 0 = the ball waits.
   leftSpeed: spec('leftSpeed', 'Left speed', 'm/s', 'speed', 'left ball', -100, 100),
   rightSpeed: spec('rightSpeed', 'Right speed', 'm/s', 'speed', 'right ball', -100, 100),
+  leftDistance: spec('leftDistance', 'Left distance', 'm', 'length', 'left weight', 0.001, 1000),
+  rightDistance: spec('rightDistance', 'Right distance', 'm', 'length', 'right weight', 0.001, 1000),
 };
 
 /** One input box as shown for a built scene. */
@@ -138,6 +142,14 @@ export function fieldsFor(scene: BuiltScene, analysis: Pick<Analysis, 'params'>)
       // The speed the drawing gives (its arrow, or the push when nothing was drawn); a typed one shows in the box itself.
       if (v && parts['left ball']) add('leftSpeed', said(v.left.drawn, v.left.drawnFrom));
       if (v && parts['right ball']) add('rightSpeed', said(v.right.drawn, v.right.drawnFrom));
+      break;
+    }
+    case 'Seesaw': {
+      // Masses and distances from the pivot (the weight slides along the plank to an entered distance).
+      if (parts['left weight']) add('leftMass', said(kg('left weight'), kgFrom('left weight')));
+      if (parts['right weight']) add('rightMass', said(kg('right weight'), kgFrom('right weight')));
+      if (parts['left weight']) add('leftDistance', length('left weight'));
+      if (parts['right weight']) add('rightDistance', length('right weight'));
       break;
     }
   }

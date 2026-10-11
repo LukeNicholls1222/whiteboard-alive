@@ -13,11 +13,13 @@
 //                      wheels crosses ink as often and as regularly as a spring does); with one in the picture a
 //                      spring needs twice the zigzag score
 // Notebook rules (five or more long thin parallel lines, each its own contour) are taken out of the ink first.
-// Decision order: zigzag -> spring, big triangle -> incline, wheel with a weight on each side below -> pulley,
-// round thing hanging under ink with nothing below -> pendulum, two balls on one level floor with a level arrow ->
-// collision, any other ball-sized round thing -> projectile (one big closed curve, e.g. a cloud, is not a ball: fallback).
+// Decision order: zigzag -> spring, triangle with a long level plank on its tip -> lever, big triangle -> incline,
+// wheel with a weight on each side below -> pulley, round thing hanging under ink with nothing below -> pendulum, two
+// balls on one level floor with a level arrow -> collision, any other ball-sized round thing -> projectile (one big
+// closed curve, e.g. a cloud, is not a ball: fallback).
 
 import type { Contour, DiagramType } from './types';
+import { findLever } from './scenes/lever-plan';
 
 export interface GuessInput {
   width: number;
@@ -103,6 +105,7 @@ export function guessDiagram(input: GuessInput): Guess {
   // A spoked wheel means a cannon or cart: a wheel cut off or half hidden (not recognised as one) still leaves
   // spoke crossings, so only a clearly deep zigzag counts as a spring there.
   if (zig >= ZIG_DEPTH * (wheels.length ? 2 : 1)) return { diagram: 'spring', confidence: Math.round(Math.min(0.9, 0.5 + zig / 10) * 100) / 100, why: `zigzag; ${desc}` };
+  const lever = leverGuess(ink, W, H, desc); if (lever) return lever;
   if (tri) return { diagram: 'incline', confidence: 0.7, why: `triangle; ${desc}` };
 
   // Pulley: a wheel with closed shapes hanging lower on both its left and right.
@@ -660,4 +663,13 @@ function collisionGuess(ink: Uint8Array, W: number, H: number, shapes: Shape[], 
     confidence: 0.6,
     why: `two balls on a level floor (${Math.round((Math.atan(k) * 180) / Math.PI)}°, ${Math.round(best.cover * 100)}%) with level arrows ${arrows.join(' ')}`,
   };
+}
+
+/**
+ * Seesaw / lever: a triangle with a long, nearly level plank lying on its tip, running both ways (scenes/lever-plan.ts).
+ * A ramp's triangle has its slope (and the block on it) running one way from its top corner only, so it stays an incline.
+ */
+function leverGuess(ink: Uint8Array, W: number, H: number, desc: string): Guess | null {
+  const f = findLever(ink, W, H, true);
+  return f ? { diagram: 'lever', confidence: 0.7, why: `plank on a triangle (${f.why}); ${desc}` } : null;
 }

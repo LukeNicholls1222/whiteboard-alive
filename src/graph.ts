@@ -1,10 +1,11 @@
 // Live readout under the simulation: energy graph in joules (last 8 s on screen), period / speed, and Moon mode.
+// A seesaw shows its torque balance instead: the moment m·g·d of each side as a bar, and which side wins.
 // Reads everything from the running Simulation each step; keeps no gravity state of its own. Every number is in
 // physical units through units.ts (the scene's px per metre and slow-motion factor).
 
 import Matter from 'matter-js';
 import type { Simulation } from './sim';
-import type { DiagramType, Scale } from './types';
+import type { DiagramType, LeverInfo, LeverSide, Scale } from './types';
 import { rollAccel } from './scenes/roll';
 import { DEFAULT_FRICTION } from './scenes/incline';
 import {
@@ -13,6 +14,8 @@ import {
   DEFAULT_SCALE,
   EARTH_G,
   formatEnergy,
+  formatLength,
+  formatMass,
   formatSeconds,
   formatSpeed,
   massesOf,
@@ -44,6 +47,8 @@ const MOMENTUM_LEGEND = `
         <span><i style="background:${BLUE}"></i>Right p</span>
         <span><i style="background:${GREEN}"></i>Total p</span>
         <span><i style="background:${PURPLE}"></i>Kinetic energy</span>`;
+const TORQUE_LEGEND = `
+        <span>Moment = m · g · d (N·m)</span>`;
 
 /** Ball collision: momentum of each ball (kg·m/s, right = +) and the kinetic energy of both (J). */
 interface MomentumSample {
@@ -105,6 +110,8 @@ export class LiveGraph {
   private pMax = 0;
   private keMax = 0;
   private legend: HTMLDivElement;
+  /** Seesaw on screen: its sides, for the torque bars instead of the energy graph. */
+  private lever: LeverInfo | null = null;
 
   constructor(after: HTMLElement) {
     injectStyle();
@@ -166,6 +173,7 @@ export class LiveGraph {
     this.yMax = 0;
     this.time = 0;
     this.peRef = peRefOf(sim, diagram);
+    this.lever = diagram === 'lever' && sim.scene.label === 'Seesaw' ? sim.scene.physics?.lever ?? null : null;
     // Released from rest = the start is a turning point. A spring (or a pendulum drawn hanging straight) starts
     // with a push through the middle instead, so its first gap to a turning point is only a quarter swing.
     const main = mainBody(Matter.Composite.allBodies(sim.engine.world).filter((b) => !b.isStatic));
@@ -180,9 +188,9 @@ export class LiveGraph {
         : null;
     this.mSamples = [];
     this.pMax = this.keMax = 0;
-    this.legend.innerHTML = this.balls ? MOMENTUM_LEGEND : ENERGY_LEGEND;
+    this.legend.innerHTML = this.balls ? MOMENTUM_LEGEND : this.lever ? TORQUE_LEGEND : ENERGY_LEGEND;
     this.root.classList.toggle('lg-momentum', !!this.balls);
-    this.metricLabel.textContent = this.balls ? 'Momentum' : this.measuresPeriod() ? 'Period' : 'Speed';
+    this.metricLabel.textContent = this.balls ? 'Momentum' : this.lever ? 'Torque balance' : this.measuresPeriod() ? 'Period' : 'Speed';
     this.metricValue.textContent = '--';
     // If Moon mode was on for the previous drawing, keep it on for the new one.
     if (this.moon.checked) sim.setParams({ gravity: MOON_G });
@@ -280,6 +288,10 @@ export class LiveGraph {
     this.time += STEP_S;
     this.syncGravity();
     const g = sim.gravity;
+    if (this.lever) {
+      this.showTorque(this.lever, g);
+      return;
+    }
     const bodies = Matter.Composite.allBodies(engine.world).filter((b) => !b.isStatic);
 
     if (this.balls) {
@@ -427,6 +439,63 @@ export class LiveGraph {
       ctx.strokeText(text, left + 6, y);
       ctx.fillText(text, left + 6, y);
     }
+  }
+
+  /**
+   * Seesaw: the moment m·g·d of each side (N·m) as two bars, which side wins, and each side's m and d. Follows gravity
+   * (slider, Moon mode): both moments scale with g, the winner does not change.
+   */
+  private showTorque(lever: LeverInfo, g: number) {
+    const tau = (s: LeverSide | null) => (s ? s.kg * g * s.d : 0);
+    const tl = tau(lever.left), tr = tau(lever.right);
+    const verdict = lever.balanced ? 'Balanced!' : tl > tr ? 'Left wins' : 'Right wins';
+    if (this.metricValue.textContent !== verdict) this.metricValue.textContent = verdict;
+    const theory = `${formatTorque(tl)} ${lever.balanced ? '≈' : tl > tr ? '>' : '<'} ${formatTorque(tr)}`;
+    if (this.theoryLabel.textContent !== theory) this.theoryLabel.textContent = theory;
+    this.theoryLabel.hidden = false;
+
+    const { canvas, ctx } = this;
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth || 300;
+    const cssH = 120;
+    if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+      canvas.width = Math.round(cssW * dpr);
+      canvas.height = Math.round(cssH * dpr);
+      canvas.style.height = `${cssH}px`;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+    const labelW = 46, valueW = 76;
+    const x0 = labelW, x1 = cssW - valueW;
+    const top = Math.max(tl, tr, 1e-9);
+    const rows: [string, LeverSide | null, number][] = [['Left', lever.left, tl], ['Right', lever.right, tr]];
+    rows.forEach(([name, side, t], k) => {
+      const y = 10 + k * 56;
+      const heavier = !lever.balanced && t === top;
+      const color = lever.balanced ? GREEN : heavier ? ORANGE : BLUE;
+      ctx.font = '800 13px Nunito, system-ui, sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#3c3c3c';
+      ctx.fillText(name, 0, y + 11);
+      // Track, then the bar (rounded), then the value.
+      ctx.fillStyle = '#f0f0f0';
+      roundRect(ctx, x0, y, x1 - x0, 22, 11);
+      ctx.fill();
+      const w = Math.max(t > 0 ? 22 : 0, ((x1 - x0) * t) / top);
+      if (w > 0) {
+        ctx.fillStyle = color;
+        roundRect(ctx, x0, y, w, 22, 11);
+        ctx.fill();
+      }
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#3c3c3c';
+      ctx.fillText(formatTorque(t), cssW, y + 11);
+      ctx.font = '700 11px Nunito, system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#999';
+      ctx.fillText(side ? `m = ${formatMass(side.kg)} · d = ${formatLength(side.d)}` : 'no weight', x0 + 2, y + 34);
+    });
   }
 
   private draw() {
@@ -727,6 +796,19 @@ function range(a: number[]) {
 }
 
 const formatAccel = (a: number) => `${a.toFixed(2)} m/s²`;
+/** Moment in newton metres, as many digits as the energies. */
+const formatTorque = (v: number) => `${v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2)} N·m`;
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
 
 function line(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number) {
   ctx.beginPath();
@@ -768,6 +850,7 @@ function injectStyle() {
   .lg-moon input:focus-visible + .lg-switch { outline: 3px solid #84d8ff; outline-offset: 2px; }
   .lg-canvas { display: block; width: 100%; height: 120px; }
   .lg-legend { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; font-size: 13px; font-weight: 800; color: #777; }
+  .lg-legend[hidden] { display: none; }
   .lg-legend i { display: inline-block; width: 12px; height: 4px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
   `;
   const el = document.createElement('style');

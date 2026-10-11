@@ -274,6 +274,11 @@ interface TargetDef {
   down?: RegExp;
   /** Its own up/down words only count when it is named too ("left ... heavier"). */
   upNeedsName?: boolean;
+  /**
+   * Named only when this is said too, or a number with one of its units is heard ("left" alone means the left mass;
+   * "move the left weight further" / "left 30 cm" mean the left distance).
+   */
+  also?: RegExp;
   /** One step up (+1) or down (−1) from v. */
   step: (v: number, dir: 1 | -1) => number;
 }
@@ -286,6 +291,12 @@ const SPEED_UP = words('faster|quicker|harder|further|farther|more power|speed u
 const SPEED_DOWN = words('slower|slow down|slow it down|softer|gentler|less power');
 const MASS_UP = words('heavier|heavy|more massive');
 const MASS_DOWN = words('lighter|less heavy|less massive');
+/** A seesaw weight's distance from the pivot. */
+const DIST_UP = words('further|farther|further out|farther out|further away|farther away|outward|outwards|out|away from the middle|away from the pivot|to the end');
+const DIST_DOWN = words('closer|nearer|inward|inwards|in closer|towards the middle|toward the middle|towards the pivot|toward the pivot|to the middle');
+const DIST_WORDS = new RegExp(
+  `${words('distance|far|further|farther|closer|nearer|move|moved|slide|shift|put|place|position|arm|from the pivot|from the middle|out|outward|outwards|inward|inwards').source}|${DIST_UP.source}|${DIST_DOWN.source}`,
+);
 
 const DEFS: TargetDef[] = [
   { key: 'gravity', kw: words('gravity|gravitational|g force'), cats: ['accel', 'speed'], step: mul(1.5) },
@@ -356,6 +367,18 @@ const DEFS: TargetDef[] = [
     down: words('less bouncy|less elastic|deader|stickier'),
     step: (v, dir) => v + 0.25 * dir,
   },
+  ...(['left', 'right'] as const).map(
+    (side): TargetDef => ({
+      key: side === 'left' ? 'leftDistance' : 'rightDistance',
+      kw: words(side),
+      also: DIST_WORDS,
+      cats: ['length'],
+      up: DIST_UP,
+      down: DIST_DOWN,
+      upNeedsName: true,
+      step: mul(1.5),
+    }),
+  ),
 ];
 
 /** Left / right pairs that need "which one" when a number is said without naming either. */
@@ -415,7 +438,8 @@ export function parseVoice(utterance: string, ctx: VoiceContext): VoiceResult {
       out.set[key] = v;
       done.add(key);
     };
-    const named = defs.filter((d) => has(d.kw));
+    const lengthHeard = quantities(t).some((q) => q.cat === 'length');
+    const named = defs.filter((d) => has(d.kw) && (!d.also || has(d.also) || (lengthHeard && d.cats.includes('length'))));
 
     // --- switches ---
     if (has(/\b(air|drag|air resistance|wind resistance)\b/) || has(/\bvacuum\b/)) {
@@ -483,6 +507,11 @@ export function parseVoice(utterance: string, ctx: VoiceContext): VoiceResult {
           } else if (!balls) problem('Say which weight: “left 3 kilograms” or “right 1 kilogram”.');
           else if (q.cat === 'speed') problem('Say which ball: “left ball 2 meters per second”.');
           else problem('Say which ball: “left ball 2 kilograms”.');
+          continue;
+        } else if (byUnit.length > 1 && q.cat === 'length' && byUnit.every((d) => d.key === 'leftDistance' || d.key === 'rightDistance')) {
+          if (has(/\b(both|each)\b/)) {
+            for (const d of byUnit) put(d.key, q.value);
+          } else problem('Say which weight: “left distance 30 centimeters”.');
           continue;
         } else if (!byUnit.length && !defs.some((d) => done.has(d.key) && d.cats.includes(q.cat!))) {
           problem(`This drawing has no ${CAT_NAME[q.cat]} to set.`);

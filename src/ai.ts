@@ -23,8 +23,8 @@ const NEXT_MODEL_MS = 6000;
 
 export const hasApiKey = () => API_KEY.length > 0;
 
-const DIAGRAMS: DiagramType[] = ['pendulum', 'spring', 'incline', 'projectile', 'pulley', 'collision', 'fallback'];
-const ROLES = ['pivot', 'rope', 'bob', 'spring', 'mass', 'incline', 'ground', 'wheel', 'cannon', 'arrow', 'projectile', 'label', 'other'];
+const DIAGRAMS: DiagramType[] = ['pendulum', 'spring', 'incline', 'projectile', 'pulley', 'collision', 'lever', 'fallback'];
+const ROLES = ['pivot', 'rope', 'bob', 'spring', 'mass', 'incline', 'ground', 'wheel', 'cannon', 'arrow', 'projectile', 'plank', 'label', 'other'];
 const RESPONSE_SCHEMA = {
   type: 'OBJECT',
   properties: {
@@ -77,11 +77,15 @@ ${JSON.stringify(list)}
 Classify the diagram as exactly one of: pendulum (fixed point/ceiling, string, bob), spring (zigzag line + block),
 incline (triangle/slope with a block or a ball on it; a ball rolls), projectile (cannon or arrow showing a launch),
 pulley (wheel, rope, two weights), collision (two balls on a flat horizontal line with arrows showing motion; they
-collide), or fallback if none fit. A ball on a slope is incline, not collision.
-Assign a role to every contour id: pivot (fixed point or ceiling line), rope, bob, spring, mass, incline, ground,
-wheel, cannon, arrow, projectile, label (any handwritten letters, words or numbers such as "1 m" or "2 kg";
-never part of the machine, do not read their values), other. On an incline, the block or ball on the slope is mass
-(or bob). For a collision, each ball is projectile, each motion arrow is arrow and the flat line they roll on is ground. Mark static=true for things that should not move (ceiling, ground, incline, wheel axle, cannon, label).
+collide), lever (a seesaw/lever: a long plank balanced on a triangle pivot, with weights on it), or fallback if none
+fit. A ball on a slope is incline, not collision. Lever vs incline: in a lever the plank lies nearly level (within
+about 20°) across the triangle's top corner, runs out on both sides of it and is at least twice as long as the
+triangle is wide, with the weights on the plank; in an incline the block or ball sits on the triangle's sloping side.
+Assign a role to every contour id: pivot (fixed point, ceiling line, or a lever's triangle), rope, bob, spring, mass,
+incline, ground, wheel, cannon, arrow, projectile, plank (a lever's board), label (any handwritten letters, words or
+numbers such as "1 m" or "2 kg"; never part of the machine, do not read their values), other. On an incline, the
+block or ball on the slope is mass (or bob). For a collision, each ball is projectile, each motion arrow is arrow and
+the flat line they roll on is ground. For a lever, the weights on the plank are mass. Mark static=true for things that should not move (ceiling, ground, incline, wheel axle, cannon, pivot, label).
 mass: relative mass (1.0 default; bigger drawn weights heavier). A single contour may contain several connected parts
 (e.g. string and bob drawn touching); then give it the role of its main moving part.
 constraints: connections between contour ids (rope / spring / pin). Use the same id for from and to if a part connects to itself.
