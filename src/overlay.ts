@@ -287,11 +287,11 @@ export class AIOverlay {
       canvas.height = ph;
     }
     canvas.style.height = `${cssH}px`;
-    const { S: s, tx, ty } = pictureTransform(view, d.width, canvas.width, canvas.height);
+    const { S: s, tx, ty } = pictureTransform(view, d.width, canvas.width, canvas.height, d.height);
     const px = dpr / s; // world units per CSS pixel
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (withPaper && view) {
+    if (withPaper && (view || ty > 0)) {
       ctx.fillStyle = PAPER_FILL;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }

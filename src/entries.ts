@@ -14,6 +14,9 @@ export type EntryKey =
   | 'blockMass'
   | 'rampAngle'
   | 'launchSpeed'
+  | 'launchAngle'
+  | 'launchHeight'
+  | 'projectileMass'
   | 'groundLength'
   | 'leftMass'
   | 'rightMass'
@@ -56,6 +59,12 @@ export const ENTRY_SPECS: Record<EntryKey, EntrySpec> = {
   blockMass: spec('blockMass', 'Block mass', 'kg', 'mass', 'block', 0.001, 1000),
   rampAngle: spec('rampAngle', 'Angle', '°', 'angle', 'ramp', 5, 75),
   launchSpeed: spec('launchSpeed', 'Launch speed', 'm/s', 'speed', 'arrow', 0.1, 100),
+  // Elevation above level, towards the side the drawing fires to (the fitted speed stays the drawing's).
+  launchAngle: spec('launchAngle', 'Launch angle', '°', 'angle', 'launcher', 0, 89),
+  // Launch point above the ground, same scale: the launcher moves up onto a platform (or down), scenes/projectile.ts.
+  launchHeight: spec('launchHeight', 'Launch height', 'm', 'length', 'launcher', 0, 50),
+  // The ball's mass: the path is the same without air; with air a heavier ball is slowed less (and the energy grows).
+  projectileMass: spec('projectileMass', 'Ball mass', 'kg', 'mass', 'ball', 0.1, 20),
   groundLength: spec('groundLength', 'Ground length', 'm', 'length', 'ground', 0.01, 1000),
   leftMass: spec('leftMass', 'Left mass', 'kg', 'mass', 'left weight', 0.001, 1000),
   rightMass: spec('rightMass', 'Right mass', 'kg', 'mass', 'right weight', 0.001, 1000),
@@ -124,6 +133,13 @@ export function fieldsFor(scene: BuiltScene, analysis: Pick<Analysis, 'params'>)
         const speed = analysis.params.speed;
         add('launchSpeed', said(ls.fit), typeof speed === 'number' && speed > 0 ? { mirror: speed } : {});
       }
+      const launch = scene.physics?.launch;
+      if (launch) {
+        add('launchAngle', said(Math.round(launch.drawnAngleDeg)));
+        // 0 for a shot from the ground.
+        add('launchHeight', said(launch.heightDrawnM));
+      }
+      if (parts.ball) add('projectileMass', said(kg('ball')));
       if (measures.ground) add('groundLength', length('ground'));
       break;
     }

@@ -5,7 +5,7 @@
 
 import Matter from 'matter-js';
 import type { Simulation } from './sim';
-import type { DiagramType, LeverInfo, LeverSide, Scale } from './types';
+import type { DiagramType, FlightNumbers, LeverInfo, LeverSide, Scale } from './types';
 import { rollAccel } from './scenes/roll';
 import { DEFAULT_FRICTION } from './scenes/incline';
 import {
@@ -247,6 +247,22 @@ export class LiveGraph {
       // px per step² -> m/s².
       const measured = m === null ? '--' : formatAccel(meters(m, this.scale) / (STEP_S * this.scale.timeFactor) ** 2);
       text = `${t.rolls ? 'Rolls: a = 5/7 g sinθ' : 'Slides: g(sinθ − μcosθ)'} = ${formatAccel(t.a)}\nmeasured ${measured}`;
+    } else if (sim && sim.scene.label === 'Projectile' && sim.scene.physics?.flight) {
+      // The last flight (measured, under the gravity now on) next to the textbook one from the same speed, angle and
+      // height. With air on the theory is still the no-air one, and says so.
+      const f = sim.scene.physics.flight;
+      const t = f.theory(sim.gravity);
+      const m = f.last();
+      // Short rows so the card stays narrow: "Range 0.38 · 0.40 m" = measured · theory.
+      const bare = (s: string) => s.replace(/ [ms]$/, '');
+      const row = (name: string, pick: (n: FlightNumbers) => number, fmt: (v: number) => string) =>
+        `${name} ${m ? bare(fmt(pick(m))) : '--'} · ${t ? fmt(pick(t)) : '--'}`;
+      text = [
+        `Measured · theory${f.air() ? ' (no air)' : ''}`,
+        row('Range', (n) => n.range, formatLength),
+        row('Max height', (n) => n.maxHeight, formatLength),
+        row('Flight time', (n) => n.time, formatSeconds),
+      ].join('\n');
     }
     if (this.theoryLabel.textContent !== text) this.theoryLabel.textContent = text;
     this.theoryLabel.hidden = !text;
@@ -254,7 +270,7 @@ export class LiveGraph {
 
   /** True when the theory line follows the motion and is redrawn every step. */
   private liveTheory() {
-    return this.diagram === 'pendulum' || !!this.sim?.scene.physics?.rolling;
+    return this.diagram === 'pendulum' || !!this.sim?.scene.physics?.rolling || !!this.sim?.scene.physics?.flight;
   }
 
   private measuresPeriod() {

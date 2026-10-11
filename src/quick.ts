@@ -6,6 +6,7 @@
 // path as typing into a box (controls.ts enterValue -> host.enter -> rebuilt scene); nothing is applied here.
 
 import type { EntryField, EntryKey } from './entries';
+import { holdPictureHeight } from './hold';
 
 // ---- Pure helpers (tested in tests/quick.test.ts) -----------------------------------------------------------
 
@@ -255,6 +256,7 @@ export class QuickNumbers {
 
   hide() {
     this.root.hidden = true;
+    holdPictureHeight(false);
     this.cancel();
   }
 
@@ -300,6 +302,8 @@ export class QuickNumbers {
     }
     const f = this.field();
     this.edit.hidden = !f;
+    // While a number is being changed the picture above never gets shorter (the buttons would jump up under the finger).
+    holdPictureHeight(!!f && !this.root.hidden);
     if (!f) return;
     this.label.textContent = f.label;
     this.unit.textContent = f.unit;

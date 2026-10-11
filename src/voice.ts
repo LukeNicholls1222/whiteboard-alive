@@ -279,6 +279,8 @@ interface TargetDef {
    * "move the left weight further" / "left 30 cm" mean the left distance).
    */
   also?: RegExp;
+  /** Never meant when this is said ("aim higher" turns the barrel, it does not raise the launcher). */
+  not?: RegExp;
   /** One step up (+1) or down (−1) from v. */
   step: (v: number, dir: 1 | -1) => number;
 }
@@ -297,6 +299,9 @@ const DIST_DOWN = words('closer|nearer|inward|inwards|in closer|towards the midd
 const DIST_WORDS = new RegExp(
   `${words('distance|far|further|farther|closer|nearer|move|moved|slide|shift|put|place|position|arm|from the pivot|from the middle|out|outward|outwards|inward|inwards').source}|${DIST_UP.source}|${DIST_DOWN.source}`,
 );
+
+/** Words about the launch angle (projectile). */
+const AIM_WORDS = words('aim|aimed|aiming|angle|barrel|tilt|elevation|degrees|steeper|flatter');
 
 const DEFS: TargetDef[] = [
   { key: 'gravity', kw: words('gravity|gravitational|g force'), cats: ['accel', 'speed'], step: mul(1.5) },
@@ -342,6 +347,26 @@ const DEFS: TargetDef[] = [
     up: words('steeper|steep|steepen'),
     down: words('flatter|flat|flatten|less steep|gentler|shallower'),
     step: (v, dir) => v + 10 * dir,
+  },
+  // Projectile: the ball's mass, the launch angle and how high the launch point is ("make it higher").
+  { key: 'projectileMass', kw: words('ball|cannonball|projectile|mass|weight|object|heavy|heavier|lighter'), cats: ['mass'], up: MASS_UP, down: MASS_DOWN, step: mul(2) },
+  {
+    key: 'launchAngle',
+    kw: words('angle|aim|aimed|aiming|elevation|barrel|tilt'),
+    cats: ['angle'],
+    up: words('higher|steeper|up|upward|upwards'),
+    down: words('lower|flatter|down|downward|downwards'),
+    upNeedsName: true,
+    step: (v, dir) => v + 10 * dir,
+  },
+  {
+    key: 'launchHeight',
+    kw: words('height|high|tall|cliff|platform|tower|pillar|above the ground|off the ground'),
+    not: AIM_WORDS,
+    cats: ['length'],
+    up: words('higher|taller|raise|raise it|up higher'),
+    down: words('lower|closer to the ground'),
+    step: (v, dir) => (dir > 0 ? Math.max(v * 1.5, v + 1) : v < 0.5 ? 0 : v / 1.5),
   },
   {
     key: 'groundLength',
@@ -439,7 +464,9 @@ export function parseVoice(utterance: string, ctx: VoiceContext): VoiceResult {
       done.add(key);
     };
     const lengthHeard = quantities(t).some((q) => q.cat === 'length');
-    const named = defs.filter((d) => has(d.kw) && (!d.also || has(d.also) || (lengthHeard && d.cats.includes('length'))));
+    const named = defs.filter(
+      (d) => has(d.kw) && (!d.not || !has(d.not)) && (!d.also || has(d.also) || (lengthHeard && d.cats.includes('length'))),
+    );
 
     // --- switches ---
     if (has(/\b(air|drag|air resistance|wind resistance)\b/) || has(/\bvacuum\b/)) {
@@ -528,7 +555,7 @@ export function parseVoice(utterance: string, ctx: VoiceContext): VoiceResult {
 
     // --- relative words ("heavier", "steeper", "double gravity") for settings without a number ---
     for (const d of defs) {
-      if (done.has(d.key) || d.key in out.set) continue;
+      if (done.has(d.key) || d.key in out.set || (d.not && has(d.not))) continue;
       const cur = avail.get(d.key)!;
       if (!Number.isFinite(cur.value)) continue;
       const isNamed = named.includes(d);
