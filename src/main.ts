@@ -305,7 +305,7 @@ async function run(file: Blob, example?: string) {
       const pending = askGemini(annotated, vision.contours);
       await nextFrame();
       if (stale()) return;
-      const guess = offlineAnalysis(annotated, vision.contours);
+      const guess = offlineAnalysis(annotated, vision.contours, vision.ink);
       console.log(`[ai] quick guess ${guess.diagram} ready in ${Math.round(performance.now() - t1)}ms, waiting for Gemini`);
       const ai = await pending.catch(() => null);
       if (stale()) {
@@ -327,11 +327,11 @@ async function run(file: Blob, example?: string) {
       analysis = example
         ? await cachedAnalysis(example, vision.contours).catch((err) => {
             console.warn(err);
-            return offlineAnalysis(annotated, vision.contours);
+            return offlineAnalysis(annotated, vision.contours, vision.ink);
           })
         : blank
-          ? offlineAnalysis(annotated, vision.contours)
-          : await analyze(annotated, vision.contours);
+          ? offlineAnalysis(annotated, vision.contours, vision.ink)
+          : await analyze(annotated, vision.contours, vision.ink);
       if (stale()) return;
     }
     timing('wa:guess', t1);

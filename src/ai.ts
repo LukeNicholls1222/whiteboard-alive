@@ -109,11 +109,12 @@ export function aiPlan(): AIPlan {
   return { kind: 'gemini' };
 }
 
-export async function analyze(annotated: HTMLCanvasElement, contours: Contour[]): Promise<Analysis> {
+/** `ink` = vision's ink mask (VisionResult.ink) for the shape-based guess; without it the ink is read back from `annotated`. */
+export async function analyze(annotated: HTMLCanvasElement, contours: Contour[], ink?: Uint8Array): Promise<Analysis> {
   const plan = aiPlan();
-  if (plan.kind === 'forced') return heuristic(contours, annotated, plan.diagram);
-  if (plan.kind === 'offline') return heuristic(contours, annotated);
-  return (await askGemini(annotated, contours)) ?? heuristic(contours, annotated);
+  if (plan.kind === 'forced') return heuristic(contours, annotated, plan.diagram, ink);
+  if (plan.kind === 'offline') return heuristic(contours, annotated, undefined, ink);
+  return (await askGemini(annotated, contours)) ?? heuristic(contours, annotated, undefined, ink);
 }
 
 /** Gemini's reading of the drawing, or null if every model failed or the time ran out (never throws). */
@@ -282,18 +283,22 @@ export function sanitize(raw: any, contours: Contour[]): Analysis {
  * Shape-based guess without calling Gemini (~0.2 s): what runs while Gemini thinks, and the answer if it fails
  * or a built-in example's saved answer cannot be read.
  */
-export const offlineAnalysis = (annotated: HTMLCanvasElement, contours: Contour[]) => heuristic(contours, annotated);
+export const offlineAnalysis = (annotated: HTMLCanvasElement, contours: Contour[], ink?: Uint8Array) =>
+  heuristic(contours, annotated, undefined, ink);
 
 /**
  * Offline analysis (no key, AI quota used up, AI busy, or ?diagram=... forced). The diagram type comes from
  * shape features (src/guess.ts) unless forced; roles stay empty so scene builders use their geometric guesses.
+ * `ink` = vision's own ink mask: used as it is (inside the contours' boxes), so no id box cuts a drawn line.
  */
-function heuristic(contours: Contour[], annotated: HTMLCanvasElement, forced?: DiagramType): Analysis {
+function heuristic(contours: Contour[], annotated: HTMLCanvasElement, forced?: DiagramType, ink?: Uint8Array): Analysis {
   let diagram: DiagramType = forced ?? 'fallback';
   let confidence = 0;
   if (!forced) {
     try {
-      const g = guessDiagram({ width: annotated.width, height: annotated.height, ink: inkFromAnnotated(annotated, contours), contours });
+      const W = annotated.width, H = annotated.height;
+      const shapeInk = ink && ink.length === W * H ? inkInBoxes(ink, W, H, contours) : inkFromAnnotated(annotated, contours);
+      const g = guessDiagram({ width: W, height: H, ink: shapeInk, contours });
       console.log(`[ai] offline guess: ${g.diagram} (${g.confidence}) ${g.why}`);
       diagram = g.diagram;
       confidence = g.confidence;
@@ -312,8 +317,23 @@ function heuristic(contours: Contour[], annotated: HTMLCanvasElement, forced?: D
   };
 }
 
+/** Vision's ink mask kept only inside the contours' boxes (the same area inkFromAnnotated reads), as 255 = ink. */
+export function inkInBoxes(ink: Uint8Array, W: number, H: number, contours: Contour[]): Uint8Array {
+  const out = new Uint8Array(W * H);
+  for (const c of contours) {
+    const x0 = Math.max(0, c.bbox.x), x1 = Math.min(W, c.bbox.x + c.bbox.w);
+    const y0 = Math.max(0, c.bbox.y), y1 = Math.min(H, c.bbox.y + c.bbox.h);
+    for (let y = y0; y < y1; y++)
+      for (let x = x0; x < x1; x++) {
+        const i = y * W + x;
+        if (ink[i]) out[i] = 255;
+      }
+  }
+  return out;
+}
+
 /**
- * Recover the ink mask from the annotated image: the cleaned paper is exactly PAPER_COLOR wherever there is no ink,
+ * Fallback when vision's ink is not at hand: recover the ink mask from the annotated image. The cleaned paper is exactly PAPER_COLOR wherever there is no ink,
  * so non-paper pixels inside a contour's bbox are ink - except the id boxes and "#N" labels (see annotate() in
  * vision.ts), which can land inside a neighbour's bbox. Those are redrawn on a scratch canvas and masked out.
  */
