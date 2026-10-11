@@ -105,6 +105,92 @@ export function inkLine(
   return { deg: lineDeg({ x: Math.cos(angle), y: Math.sin(angle) }), elong: Math.sqrt(l1 / l2), n, center: { x: mx, y: my } };
 }
 
+/** A drawn straight stroke: its centre line from `a` to `b` (a left of b), angle, centre and thickness. */
+export interface InkSegment {
+  a: Point;
+  b: Point;
+  /** Degrees from horizontal, -90..90 (screen: positive = going down to the right). */
+  deg: number;
+  center: Point;
+  /** Stroke width (px), wobble included. */
+  thick: number;
+  /** Ink pixels on the line. */
+  n: number;
+}
+
+/**
+ * The straight stroke the ink `keep` selects inside `box` makes: the principal axis, fitted again twice on the ink close
+ * to it (a wheel resting on a ground line, a wall meeting it, a tick across it do not tilt it). Null with too little ink.
+ */
+export function inkSegment(
+  ink: Uint8Array,
+  W: number,
+  H: number,
+  box: { x0: number; y0: number; x1: number; y1: number },
+  keep: (i: number) => boolean = () => true,
+): InkSegment | null {
+  const x0 = Math.max(0, Math.floor(box.x0)), x1 = Math.min(W - 1, Math.ceil(box.x1));
+  const y0 = Math.max(0, Math.floor(box.y0)), y1 = Math.min(H - 1, Math.ceil(box.y1));
+  const xs: number[] = [], ys: number[] = [];
+  for (let y = y0; y <= y1; y++)
+    for (let x = x0; x <= x1; x++) {
+      const i = y * W + x;
+      if (ink[i] && keep(i)) {
+        xs.push(x);
+        ys.push(y);
+      }
+    }
+  if (xs.length < 20) return null;
+  let use = xs.map(() => true);
+  let fit: { c: Point; u: Point } | null = null;
+  let dist: number[] = [];
+  for (let pass = 0; pass < 3; pass++) {
+    let n = 0, sx = 0, sy = 0;
+    for (let k = 0; k < xs.length; k++) if (use[k]) { n++; sx += xs[k]; sy += ys[k]; }
+    if (n < 20) break;
+    const mx = sx / n, my = sy / n;
+    let cxx = 0, cyy = 0, cxy = 0;
+    for (let k = 0; k < xs.length; k++) {
+      if (!use[k]) continue;
+      const dx = xs[k] - mx, dy = ys[k] - my;
+      cxx += dx * dx;
+      cyy += dy * dy;
+      cxy += dx * dy;
+    }
+    const angle = 0.5 * Math.atan2(2 * cxy, cxx - cyy);
+    fit = { c: { x: mx, y: my }, u: { x: Math.cos(angle), y: Math.sin(angle) } };
+    dist = xs.map((x, k) => Math.abs(-(x - mx) * fit!.u.y + (ys[k] - my) * fit!.u.x));
+    // Close to the line: within ~2.5× the typical distance of the ink that is on it.
+    const on = dist.filter((_, k) => use[k]).sort((a, b) => a - b);
+    const tol = Math.max(3, 2.5 * on[Math.floor(on.length / 2)]);
+    use = dist.map((d) => d <= tol);
+  }
+  if (!fit) return null;
+  const { c, u } = fit;
+  let tMin = Infinity, tMax = -Infinity, n = 0;
+  const on: number[] = [];
+  for (let k = 0; k < xs.length; k++) {
+    if (!use[k]) continue;
+    n++;
+    on.push(dist[k]);
+    const t = (xs[k] - c.x) * u.x + (ys[k] - c.y) * u.y;
+    if (t < tMin) tMin = t;
+    if (t > tMax) tMax = t;
+  }
+  if (n < 20) return null;
+  on.sort((a, b) => a - b);
+  let a = { x: c.x + u.x * tMin, y: c.y + u.y * tMin }, b = { x: c.x + u.x * tMax, y: c.y + u.y * tMax };
+  if (a.x > b.x) [a, b] = [b, a];
+  // Distances across a stroke of width t are spread evenly over 0..t/2: their median is t/4.
+  return { a, b, deg: lineDeg(u), center: c, thick: Math.max(2, 4 * on[Math.floor(on.length / 2)]), n };
+}
+
+/** y of the (non-vertical) line through `s` at x. */
+export function segmentY(s: InkSegment, x: number): number {
+  const dx = s.b.x - s.a.x;
+  return Math.abs(dx) < 1e-9 ? s.center.y : s.a.y + ((x - s.a.x) * (s.b.y - s.a.y)) / dx;
+}
+
 /**
  * A fixed support (ceiling, wall, floor) as drawn near `at`, meant to run along `axis`: the measured ink angle, and the
  * angle the clean figure uses (0 / 90 when it is within TIDY_MAX_DEG of the axis, else as drawn). A blob that is not

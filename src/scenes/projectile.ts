@@ -13,6 +13,8 @@ import { contourMask, cutSprite, eraseFromPaper, maskBounds, roleOf } from './co
 import { MAX_VIEW_ASPECT, MIN_VIEW_ASPECT, STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, EARTH_G, mps, noteFor, pxPerStep, scaleFor } from '../units';
 import { dragConstant, roundFactor } from '../air';
+import { fmt, inkSegment, segmentY, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters, untidyTurn } from './tidy';
+import type { InkSegment } from './tidy';
 
 const RELAUNCH_MS = 1500;
 /** Wait before firing again after a long shot was stopped at the picture's edge (short: it never landed). */
@@ -651,6 +653,171 @@ function groundLine(ink: Uint8Array, W: number, H: number, belowY: number): numb
   return null;
 }
 
+// ---- Ground for the tidy-up --------------------------------------------------------------------
+
+/** The longest level line counts as the ground when it runs along at least this share of the picture's width... */
+const GROUND_MIN = 0.2;
+/** ...and a further piece of it (a ground drawn in two strokes) along at least this. */
+const GROUND_PIECE_MIN = 0.1;
+/** x resolution (px) of the line sweep. */
+const SWEEP_X = 8;
+
+/** A levelled piece of the drawn ground: level at `y` from x0 to x1; drawn = this turned by `turn` (rad) about `pivot`. */
+interface LevelPiece {
+  drawn: InkSegment;
+  y: number;
+  x0: number;
+  x1: number;
+  pivot: Point;
+  turn: number;
+}
+
+/** How far (px) from a drawn ground's centre line its ink reaches (stroke, wobble, a little more). */
+const groundTol = (s: InkSegment, H: number) => s.thick / 2 + Math.max(4, 0.008 * H);
+
+/** Drawn ground pieces per photo (the scene is rebuilt on every slider change; the ink does not change). */
+const groundCache = new WeakMap<Uint8Array, Map<string, InkSegment[]>>();
+
+/**
+ * The drawn ground line(s), for the tidy-up: long strokes within TIDY_MAX_DEG of level under the launch point. Lines at
+ * every angle up to that are swept over the ink `keep` selects, counting how much of the picture's width each runs
+ * along ink; the longest (the lowest of the nearly longest) is the ground. Then pieces of the same ground beside it (a
+ * ground drawn in two strokes, with a gap or a step): outside what is found so far, at about the same height where they
+ * meet. Each piece is fitted on its own ink (tidy.ts inkSegment); pieces that turn out to be one line are joined.
+ * Sorted left to right. Empty when there is no such line (the scene then keeps the ground as drawn).
+ */
+function groundStrokes(ink: Uint8Array, W: number, H: number, keep: (i: number) => boolean, start: Point, r: number, key: string): InkSegment[] {
+  const cached = groundCache.get(ink)?.get(key);
+  if (cached) return cached;
+  const pts: number[] = [];
+  for (let i = 0; i < W * H; i++) if (ink[i] && keep(i)) pts.push(i);
+  const used = new Uint8Array(W * H);
+  const nx = Math.ceil(W / SWEEP_X);
+  /** Height of a sweep band (px): a hand-drawn line wobbles a little. Two grids, half a band apart. */
+  const band = 3 * Math.max(3, Math.round(H / 250));
+  const tMax = Math.tan((TIDY_MAX_DEG * Math.PI) / 180);
+  const shift = (W / 2) * tMax + band;
+  const nb = Math.ceil((H + 2 * shift) / band) + 2;
+  const cov = new Uint8Array(nb * nx);
+  const below = start.y + 0.5 * r;
+  const lineY = (c: { t: number; b: number }, x: number) => c.b + c.t * (x - W / 2);
+
+  /** Lines (slope t, height b at the middle) and how many x columns of ink they run along, `allowed` ink only. */
+  const sweep = (allowed: (x: number) => boolean, minCols: number) => {
+    const out: { n: number; t: number; b: number }[] = [];
+    for (let deg = -TIDY_MAX_DEG; deg <= TIDY_MAX_DEG + 1e-9; deg += 0.5) {
+      const t = Math.tan((deg * Math.PI) / 180);
+      for (const phase of [0, band / 2]) {
+        cov.fill(0);
+        const count = new Uint16Array(nb);
+        for (const i of pts) {
+          if (used[i]) continue;
+          const x = i % W;
+          if (!allowed(x)) continue;
+          const y = (i - x) / W;
+          const k = Math.floor((y - t * (x - W / 2) + shift + phase) / band);
+          const j = k * nx + ((x / SWEEP_X) | 0);
+          if (!cov[j]) {
+            cov[j] = 1;
+            count[k]++;
+          }
+        }
+        for (let k = 0; k < nb; k++)
+          if (count[k] >= minCols) {
+            const c = { n: count[k], t, b: (k + 0.5) * band - shift - phase };
+            if (lineY(c, start.x) >= below) out.push(c);
+          }
+      }
+    }
+    return out.sort((p, q) => q.n - p.n);
+  };
+
+  /** The pieces of ink along a swept line, split where it stops for a while, each fitted on its own. */
+  const piecesOf = (c: { t: number; b: number }, allowed: (x: number) => boolean, minLen: number): InkSegment[] => {
+    const near = (i: number) => {
+      const x = i % W;
+      return !used[i] && allowed(x) && keep(i) && Math.abs((i - x) / W - lineY(c, x)) <= band;
+    };
+    const hit = new Uint8Array(nx);
+    for (const i of pts) if (near(i)) hit[((i % W) / SWEEP_X) | 0] = 1;
+    const gap = Math.max(3, Math.ceil((0.02 * W) / SWEEP_X));
+    const out: InkSegment[] = [];
+    for (let j = 0; j < nx; ) {
+      if (!hit[j]) { j++; continue; }
+      let end = j, off = 0;
+      for (let q = j; q < nx && off <= gap; q++) {
+        if (hit[q]) { end = q; off = 0; } else off++;
+      }
+      const xa = j * SWEEP_X, xb = Math.min(W, (end + 1) * SWEEP_X);
+      j = end + 1;
+      if (xb - xa < minLen) continue;
+      const ya = lineY(c, xa), yb = lineY(c, xb);
+      const seg = inkSegment(ink, W, H, { x0: xa, x1: xb, y0: Math.min(ya, yb) - band - 2, y1: Math.max(ya, yb) + band + 2 }, near);
+      if (seg && Math.abs(seg.deg) <= TIDY_MAX_DEG && seg.b.x - seg.a.x >= minLen) out.push(seg);
+    }
+    return out;
+  };
+  const take = (s: InkSegment) => {
+    const tol = s.thick / 2 + Math.max(3, 0.005 * H);
+    for (const i of pts) {
+      const x = i % W;
+      if (x >= s.a.x - tol && x <= s.b.x + tol && Math.abs((i - x) / W - segmentY(s, x)) <= tol) used[i] = 1;
+    }
+  };
+
+  let pieces: InkSegment[] = [];
+  const first = sweep(() => true, Math.ceil((GROUND_MIN * W) / SWEEP_X));
+  if (first.length) {
+    // A clearly lower line nearly as long (a long table top above the ground) gives way to it.
+    let lowest = first[0];
+    for (const c of first)
+      if (c.n >= 0.8 * first[0].n && lineY(c, W / 2) > lineY(lowest, W / 2) + 3 * band) lowest = c;
+    pieces = piecesOf(lowest, () => true, GROUND_PIECE_MIN * W);
+    if (DEBUG) console.log('[projectile] ground sweep', first.slice(0, 5).map((c) => `${c.n} ${((Math.atan(c.t) * 180) / Math.PI).toFixed(1)}° ${c.b.toFixed(0)}`).join(' | '), '→', `${lowest.n} ${((Math.atan(lowest.t) * 180) / Math.PI).toFixed(1)}° ${lowest.b.toFixed(0)}`);
+    pieces.forEach(take);
+  }
+  // Pieces beside it, at the same height where they meet (not the top of a cliff, not a barrel).
+  for (let more = 0; more < 2 && pieces.length; more++) {
+    const outside = (x: number) => pieces.every((s) => x < s.a.x - 4 || x > s.b.x + 4);
+    let added = false;
+    for (const c of sweep(outside, Math.ceil((GROUND_PIECE_MIN * W) / SWEEP_X)).slice(0, 12)) {
+      for (const s of piecesOf(c, outside, GROUND_PIECE_MIN * W)) {
+        const next = pieces.reduce((p, q) => (Math.min(Math.abs(q.a.x - s.b.x), Math.abs(q.b.x - s.a.x)) < Math.min(Math.abs(p.a.x - s.b.x), Math.abs(p.b.x - s.a.x)) ? q : p));
+        const xj = s.center.x < next.center.x ? (s.b.x + next.a.x) / 2 : (next.b.x + s.a.x) / 2;
+        if (Math.abs(segmentY(s, xj) - segmentY(next, xj)) > Math.max(0.05 * H, 3 * Math.max(s.thick, next.thick))) continue;
+        pieces.push(s);
+        take(s);
+        added = true;
+      }
+      if (added) break;
+    }
+    if (!added) break;
+  }
+  pieces.sort((p, q) => p.a.x - q.a.x);
+  // Two pieces that are one line (a pen lift): joined.
+  for (let k = 0; k + 1 < pieces.length; ) {
+    const p = pieces[k], q = pieces[k + 1];
+    const thick = Math.max(p.thick, q.thick), xj = (p.b.x + q.a.x) / 2;
+    if (q.a.x - p.b.x < Math.max(4 * thick, 0.03 * W) && Math.abs(p.deg - q.deg) < 3 && Math.abs(segmentY(p, xj) - segmentY(q, xj)) < 2 * thick) {
+      const tol = thick / 2 + Math.max(3, 0.005 * H);
+      const onEither = (i: number) => {
+        const x = i % W, y = (i - x) / W;
+        return keep(i) && [p, q].some((s) => x >= s.a.x - tol && x <= s.b.x + tol && Math.abs(y - segmentY(s, x)) <= tol);
+      };
+      const joined = inkSegment(ink, W, H, { x0: p.a.x - tol, x1: q.b.x + tol, y0: Math.min(p.a.y, p.b.y, q.a.y, q.b.y) - tol, y1: Math.max(p.a.y, p.b.y, q.a.y, q.b.y) + tol }, onEither);
+      if (joined && Math.abs(joined.deg) <= TIDY_MAX_DEG) {
+        pieces.splice(k, 2, joined);
+        continue;
+      }
+    }
+    k++;
+  }
+  if (DEBUG) console.log('[projectile] ground pieces', pieces.map((s) => `${Math.round(s.a.x)},${Math.round(s.a.y)}→${Math.round(s.b.x)},${Math.round(s.b.y)} ${s.deg.toFixed(2)}° t=${s.thick.toFixed(1)}`).join(' | '));
+  if (!groundCache.has(ink)) groundCache.set(ink, new Map());
+  groundCache.get(ink)!.set(key, pieces);
+  return pieces;
+}
+
 // ---- Scene ------------------------------------------------------------------------------------
 
 export const buildProjectile: SceneBuilder = (input) => {
@@ -740,19 +907,85 @@ export const buildProjectile: SceneBuilder = (input) => {
   if (!dir) dir = { x: start.x < W / 2 ? 1 : -1, y: -1 }; // nothing to aim with: 45° towards the open side
 
   // --- Ground: the drawn line (AI role, else the lowest long horizontal ink band), else the photo's bottom ---
+  // Tidy-up (tidy.ts): a drawn ground within TIDY_MAX_DEG of level is made level, each piece of it when it was drawn in
+  // two: the floor the ball lands on, the collision cells (its ink is left out of them), the clean figure and the view
+  // all use the levelled ground. Each piece turns about where the launcher stands on it (the cannon, the cliff, or the
+  // ball itself), or, for a further piece, about its end next to that one. The cliff, the cannon and its barrel (the
+  // launch angle) are never touched. A ground steeper than that, or none found this way, stays as before.
+  const tidyNotes: string[] = [];
+  const level: LevelPiece[] = [];
+  /** Ink of the levelled ground (left out of the collision cells and the scenery image). */
+  const levelInk = new Uint8Array(W * H);
+  if (TIDY) {
+    const roleMask = grounds.length ? contourMask(input, grounds, 3) : null;
+    const key = `${grounds.map((c) => c.id).join(',')}|${Math.round(start.x)},${Math.round(start.y)},${Math.round(r)}`;
+    let pieces = groundStrokes(ink, W, H, (i) => !exclude[i] && (!roleMask || roleMask[i] === 1), start, r, key);
+    // A line right under the ball that stops at the launch point is the top of the cliff it sits on, not the ground.
+    const dist = (s: InkSegment) => (start.x < s.a.x ? s.a.x - start.x : start.x > s.b.x ? start.x - s.b.x : 0);
+    const under = pieces.length ? pieces.reduce((p, q) => (dist(q) < dist(p) ? q : p)) : null;
+    const onward = dir.x >= 0 ? Math.max(...pieces.map((s) => s.b.x)) - start.x : start.x - Math.min(...pieces.map((s) => s.a.x));
+    if (under && onward < 0.1 * W && segmentY(under, start.x) - (start.y + r) < 3 * r) {
+      tidyNotes.push('ground ends at the launch point (kept as drawn)');
+      pieces = [];
+    }
+    if (pieces.length) {
+      // Where the launcher stands on the ground: the ink just above it near the launch point (wheels, cliff walls).
+      // The piece with the most of that is the one it stands on (else the one under the launch point).
+      const contacts = pieces.map((s) => {
+        const tol = groundTol(s, H);
+        let sx = 0, n = 0;
+        for (let x = Math.max(0, Math.ceil(s.a.x)); x <= Math.min(W - 1, s.b.x); x++) {
+          if (Math.abs(x - start.x) > 0.35 * W) continue;
+          const yl = segmentY(s, x);
+          for (let y = Math.max(0, Math.floor(yl - tol - 8)); y < yl - tol; y++)
+            if (ink[y * W + x] && !exclude[y * W + x]) {
+              sx += x;
+              n++;
+            }
+        }
+        return { sx, n };
+      });
+      const most = contacts.reduce((k, c, j) => (c.n > contacts[k].n ? j : k), 0);
+      const home = contacts[most].n >= 15 ? pieces[most] : under!;
+      const homeX = home === pieces[most] && contacts[most].n >= 15 ? contacts[most].sx / contacts[most].n : Math.min(home.b.x, Math.max(home.a.x, start.x));
+      for (const s of pieces) {
+        const px = s === home ? homeX : s.center.x < home.center.x ? s.b.x : s.a.x;
+        const pivot = { x: px, y: segmentY(s, px) };
+        const turn = Math.atan2(s.b.y - s.a.y, s.b.x - s.a.x);
+        const along = (p: Point) => (p.x - pivot.x) * Math.cos(turn) + (p.y - pivot.y) * Math.sin(turn);
+        level.push({ drawn: s, y: pivot.y, x0: pivot.x + along(s.a), x1: pivot.x + along(s.b), pivot, turn });
+        const t = groundTol(s, H);
+        for (let y = Math.max(0, Math.floor(Math.min(s.a.y, s.b.y) - t)); y <= Math.min(H - 1, Math.ceil(Math.max(s.a.y, s.b.y) + t)); y++)
+          for (let x = Math.max(0, Math.floor(s.a.x - t)); x <= Math.min(W - 1, Math.ceil(s.b.x + t)); x++)
+            if (Math.abs(y - segmentY(s, x)) <= t) levelInk[y * W + x] = 1;
+        tidyNotes.push(`ground${pieces.length > 1 ? ` ${level.length}` : ''} ${fmt(s.deg)} → 0°`);
+      }
+    } else if (!tidyNotes.length) tidyNotes.push('no level ground line found (kept as drawn)');
+  }
+
   let floorY = H;
-  if (grounds.length) {
+  if (level.length) {
+    // The floor the ball comes down on: the piece the shot flies towards.
+    floorY = (dir.x >= 0 ? level[level.length - 1] : level[0]).y;
+  } else if (grounds.length) {
     const g = grounds.reduce((a, b) => (b.bbox.w > a.bbox.w ? b : a));
     floorY = g.bbox.h < g.bbox.w * 0.3 ? g.bbox.y + g.bbox.h / 2 : g.bbox.y;
   } else {
     const gy = groundLine(ink, W, H, start.y + r * 0.5);
     if (gy !== null) floorY = gy;
   }
-  if (floorY < start.y + r) floorY = H;
+  if (!level.length && floorY < start.y + r) floorY = H;
+  /** The levelled ground under x (the nearest piece), else the floor. */
+  const groundAt = (x: number) => {
+    if (!level.length) return floorY;
+    const d = (p: LevelPiece) => (x < p.x0 ? p.x0 - x : x > p.x1 ? x - p.x1 : 0);
+    return level.reduce((p, q) => (d(q) < d(p) ? q : p)).y;
+  };
 
   // Drawn ground length (an entered ground length sets the scale): the AI's ground stroke, else the ink on the line.
   let span: { x0: number; x1: number } | null = null;
-  if (floorY < H) {
+  if (level.length) span = { x0: Math.min(...level.map((p) => p.x0)), x1: Math.max(...level.map((p) => p.x1)) };
+  else if (floorY < H) {
     const g = grounds.length ? grounds.reduce((a, b) => (b.bbox.w > a.bbox.w ? b : a)) : null;
     span = g && g.bbox.h < g.bbox.w * 0.3 ? { x0: g.bbox.x, x1: g.bbox.x + g.bbox.w } : groundSpan(ink, exclude, W, H, floorY);
   }
@@ -773,9 +1006,22 @@ export const buildProjectile: SceneBuilder = (input) => {
       for (let x = Math.max(0, Math.floor(c.x - near)); x <= Math.min(W - 1, Math.ceil(c.x + near)); x++)
         if ((x - c.x) ** 2 + (y - c.y) ** 2 <= near * near) exclude[y * W + x] = 1;
   }
+  // The levelled ground is a floor of its own, not cells along the drawn (leaning) ink.
+  for (let i = 0; i < levelInk.length; i++) if (levelInk[i]) exclude[i] = 1;
   const scenery = sceneryBodies(ink, exclude, W, H);
-  const floor = Matter.Bodies.rectangle(W / 2, floorY + 50, W * 4, 100, { isStatic: true, friction: 0.9 });
-  const statics = [...scenery, floor];
+  const floorOpts = { isStatic: true, friction: 0.9 };
+  const floor = Matter.Bodies.rectangle(W / 2, floorY + 50, W * 4, 100, floorOpts);
+  /**
+   * A ground drawn in pieces at different heights: one floor per piece, the outer ones running on `far` px past their
+   * outer end (as the single floor does). Otherwise the one wide floor.
+   */
+  const pieceFloors = (far: number) =>
+    level.map((p, k) => {
+      const x0 = k === 0 ? p.x0 - far : p.x0, x1 = k === level.length - 1 ? p.x1 + far : p.x1;
+      return Matter.Bodies.rectangle((x0 + x1) / 2, p.y + 50, x1 - x0, 100, floorOpts);
+    });
+  const floors = level.length > 1 ? pieceFloors(2 * W) : [floor];
+  const statics = [...scenery, ...floors];
 
   const bodyR = ball ? Math.max(5, r - ball.stroke * 0.5) : r;
   const body = Matter.Bodies.circle(start.x, start.y, bodyR, {
@@ -891,7 +1137,9 @@ export const buildProjectile: SceneBuilder = (input) => {
   /** Leftmost / rightmost the ball has been (the picture never cuts off where it really went). */
   let seenX0 = start.x, seenX1 = start.x;
   const reach = Math.abs(v0.x) * (longSteps + rollSteps) + W;
-  if (2 * reach > W * 4) Matter.Body.scale(floor, (2 * reach) / (W * 4), 1);
+  if (level.length > 1) {
+    if (reach > 2 * W) statics.splice(scenery.length, floors.length, ...pieceFloors(reach));
+  } else if (2 * reach > W * 4) Matter.Body.scale(floor, (2 * reach) / (W * 4), 1);
   // The drawing (scenery ink, ball, arrow, ground line) and the launcher: the drawn part right at the launch point
   // (cannon, ball, arrow). A zoomed-out picture keeps the launcher at least LAUNCHER_SHARE of its width.
   const groundBand = Math.max(8, Math.round(H * 0.04));
@@ -899,7 +1147,8 @@ export const buildProjectile: SceneBuilder = (input) => {
   const notScenery = new Uint8Array(W * H);
   for (let i = 0; i < notScenery.length; i++) {
     const y = (i / W) | 0;
-    if (arrowInk[i] || (ballInk && ballInk[i]) || (floorY < H && y >= floorY - groundBand && y <= floorY + groundBand / 2)) notScenery[i] = 1;
+    const onGround = level.length ? levelInk[i] === 1 : floorY < H && y >= floorY - groundBand && y <= floorY + groundBand / 2;
+    if (arrowInk[i] || (ballInk && ballInk[i]) || onGround) notScenery[i] = 1;
   }
   const sceneryComps = inkComponents(ink, notScenery, W, H, Math.max(30, Math.round(0.0015 * W * H)));
   const drawing = { x0: start.x - r, y0: start.y - r, x1: start.x + r, y1: start.y + r };
@@ -930,7 +1179,8 @@ export const buildProjectile: SceneBuilder = (input) => {
   }
   // Nothing drawn at the launch point but the ball: the ball is the launcher.
   if (launcher.x1 < launcher.x0) add(launcher, start.x - r, start.y - r, start.x + r, start.y + r);
-  if (span) add(drawing, span.x0, floorY, span.x1, floorY);
+  if (level.length) for (const p of level) add(drawing, p.x0, p.y, p.x1, p.y);
+  else if (span) add(drawing, span.x0, floorY, span.x1, floorY);
   const launcherSize = Math.max(launcher.x1 - launcher.x0, launcher.y1 - launcher.y0, 4 * r);
   /** The drawing is never cut more than the photo cuts it. */
   const drawnW = Math.min(W, drawing.x1 - drawing.x0 + 6 * r);
@@ -1156,7 +1406,7 @@ export const buildProjectile: SceneBuilder = (input) => {
     ball: { at: () => body.position, clear: r, body, kg: kg ?? DEFAULT_KG, kgFrom: kg ? 'input' : 'assumed' },
   };
   const ground = span;
-  if (ground) parts.ground = { at: () => ({ x: (ground.x0 + ground.x1) / 2, y: floorY }), side: 'below' };
+  if (ground) parts.ground = { at: () => ({ x: (ground.x0 + ground.x1) / 2, y: groundAt((ground.x0 + ground.x1) / 2) }), side: 'below' };
 
   // Clean figure. The drawn scenery the ball can hit (cannon, cliff, target) stays as its own ink, recoloured to the
   // scenery grey (minus specks); the drawn ground becomes a straight line at the floor; the launch arrow a straight
@@ -1166,7 +1416,21 @@ export const buildProjectile: SceneBuilder = (input) => {
   for (const comp of sceneryComps) for (const p of comp) keep[p.y * W + p.x] = 1;
   const sceneryInk = inkImage(input, (i) => keep[i] === 1);
   if (sceneryInk) clean.push({ kind: 'image', ...sceneryInk });
-  clean.push({ kind: 'ground', y: floorY });
+  if (level.length) {
+    // The levelled ground, one line per piece (the outer ones run on to the picture's edge); the morph traces each
+    // where it was drawn and turns it level.
+    level.forEach((p, k) => {
+      const part: CleanPart = { kind: 'ground', y: p.y };
+      if (level.length > 1) {
+        if (k > 0) part.x0 = p.x0;
+        if (k < level.length - 1) part.x1 = p.x1;
+      }
+      const turn = untidyTurn(p.pivot, p.turn);
+      if (untidyMatters(turn, (p.x1 - p.x0) / 2)) part.untidy = turn;
+      clean.push(part);
+    });
+  } else clean.push({ kind: 'ground', y: floorY });
+  tidyLog('Projectile', tidyNotes);
   if (arrowSeg) clean.push({ kind: 'arrow', ...arrowSeg });
   clean.push({ kind: 'ball', body, radius: bodyR, tone: 'mass', minCss: MIN_BALL_CSS });
 
