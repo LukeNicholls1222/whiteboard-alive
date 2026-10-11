@@ -69,5 +69,17 @@
   "pulley-gen-03": {
     "count": 1,
     "boxes": {}
+  },
+  "roll-gen-02": {
+    "count": 1,
+    "boxes": {}
+  },
+  "collision-gen-01": {
+    "count": 3,
+    "boxes": {}
+  },
+  "lever-gen-01": {
+    "count": 1,
+    "boxes": {}
   }
 }

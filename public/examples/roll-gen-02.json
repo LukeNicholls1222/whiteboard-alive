@@ -1,0 +1,11 @@
+{
+  "diagram": "incline",
+  "confidence": 0.7,
+  "bodies": [],
+  "constraints": [],
+  "params": {
+    "gravity": 9.8
+  },
+  "explanation": "A ball rolls down the ramp and keeps rolling along the floor.",
+  "source": "cached"
+}
