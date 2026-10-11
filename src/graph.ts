@@ -21,7 +21,6 @@ import {
   massesOf,
   meters,
   mps,
-  OMEGA2_PER_STIFFNESS,
   physSeconds,
   scaleOf,
   springK,
@@ -218,11 +217,10 @@ export class LiveGraph {
       const T = g > 0 && amp !== null ? (2 * Math.PI * Math.sqrt(L / g)) * amplitudeFactor(amp) : 0;
       text = amp === null || !(T > 0) ? 'Theory 2π√(L/g) = --' : `Theory (θ₀=${Math.round((amp * 180) / Math.PI)}°) = ${formatSeconds(T)}`;
     } else if (sim && this.diagram === 'spring' && sim.scene.label === 'Spring and mass') {
-      const c = sim.scene.constraints[0];
+      const k = sim.scene.physics?.springK?.value;
       const block = sim.scene.parts?.block;
-      if (c && block) {
+      if (k && block) {
         const m = block.kg ?? DEFAULT_KG;
-        const k = springK(c.stiffness, m, this.scale);
         text = `Theory 2π√(m/k) = ${formatSeconds(2 * Math.PI * Math.sqrt(m / k))}`;
       }
     } else if (sim && sim.scene.label === 'Incline' && sim.scene.physics?.rolling) {
@@ -326,7 +324,7 @@ export class LiveGraph {
       const baseY = ref.kind === 'pendulum' ? ref.bottomY : sim.worldH;
       pe += kg * g * Math.max(0, meters(baseY - b.position.y, this.scale));
     }
-    pe += ref.kind === 'spring' ? springEnergyFromRest(engine, this.scale, this.kg) : springEnergy(engine, this.scale, this.kg);
+    pe += ref.kind === 'spring' ? springEnergyFromRest(sim, this.scale) : springEnergy(engine, this.scale, this.kg);
     this.samples.push({ ke, pe });
     if (this.samples.length > MAX_SAMPLES) this.samples.shift();
 
@@ -715,37 +713,21 @@ function peRefOf(sim: Simulation, diagram: DiagramType): PeRef {
     const L = scene.measures?.string;
     if (swing?.kind === 'swing' && L) return { kind: 'pendulum', bottomY: swing.pivot.y + L };
   }
-  if (diagram === 'spring' && scene.label === 'Spring and mass' && scene.constraints.some((c) => c.stiffness < 0.1))
-    return { kind: 'spring' };
+  if (diagram === 'spring' && scene.label === 'Spring and mass' && scene.physics?.springK) return { kind: 'spring' };
   return { kind: 'window' };
 }
 
 /**
- * Potential energy of a mass on a drawn spring measured from its rest position, in joules: ½ k d², d = how far
- * the spring end is from where gravity and spring balance (rest length + g along the spring / ω²). Gravity's
- * share is inside this: m g h + ½ k x² is ½ k d² plus a constant.
+ * Potential energy of a mass on a drawn spring measured from its rest position, in joules: ½ k d², with the k the
+ * spring scene runs (scenes/spring-motion.ts) and d = how far the block is from where gravity and spring balance
+ * right now. Gravity's share is inside this: m g h + ½ k x² is ½ k d² plus a constant. The scene's motion keeps
+ * ½ m v² + ½ k d² exactly, so the Total stays flat.
  */
-function springEnergyFromRest(engine: Matter.Engine, scale: Scale, kg: Map<Matter.Body, number>): number {
-  const g = engine.gravity;
-  const toStep = g.scale * (STEP_S * 1000) ** 2;
-  let e = 0;
-  for (const c of Matter.Composite.allConstraints(engine.world)) {
-    if (c.stiffness >= 0.1) continue;
-    const ends = [c.bodyA, c.bodyB].filter((b): b is Matter.Body => !!b && !b.isStatic);
-    if (!ends.length) continue;
-    const ms = ends.map((b) => kg.get(b) ?? DEFAULT_KG);
-    const m = ms.length === 2 ? (ms[0] * ms[1]) / (ms[0] + ms[1]) : ms[0];
-    const a = Matter.Constraint.pointAWorld(c);
-    const b = Matter.Constraint.pointBWorld(c);
-    const len = Math.hypot(b.x - a.x, b.y - a.y);
-    if (len < 1e-6) continue;
-    // Gravity along the spring (towards the moving end), px per step², over ω² per step² = the sag in px.
-    const ga = ((g.x * (b.x - a.x) + g.y * (b.y - a.y)) / len) * toStep;
-    const rest = c.length + ga / (OMEGA2_PER_STIFFNESS * c.stiffness);
-    const d = meters(len - rest, scale);
-    e += 0.5 * springK(c.stiffness, m, scale) * d * d;
-  }
-  return e;
+function springEnergyFromRest(sim: Simulation, scale: Scale): number {
+  const spring = sim.scene.physics?.springK;
+  if (!spring) return 0;
+  const d = meters(spring.stretch(), scale);
+  return 0.5 * spring.value * d * d;
 }
 
 /**
