@@ -16,8 +16,8 @@ import type { CleanPart, Contour, PartInfo, PartName, Point, SceneBuilder, Scene
 import { DRAWN_STYLE, inkImage } from '../clean';
 import { contourMask, cutSprite, eraseFromPaper, maskBounds, roleOf } from './common';
 import { MAX_VIEW_ASPECT, MIN_VIEW_ASPECT, STEP_ACCEL, STEP_MS } from '../sim';
-import { DEFAULT_KG, EARTH_G, STEP_S, mps, noteFor, pxPerStep, scaleFor } from '../units';
-import { flightSteps as drawnFlightSteps, pxPerMeterForSteps } from '../defaults';
+import { DEFAULT_KG, EARTH_G, PAPER_M, STEP_S, mps, noteFor, pxPerStep, scaleFor } from '../units';
+import { flightSteps as drawnFlightSteps, launchPxPerMeter, pxPerMeterForSteps } from '../defaults';
 import { dragConstant, roundFactor } from '../air';
 import { FlightMeter, defaultRange, flightTheory, steppedLaunch, type FlightNumbers, type FlightTrack } from '../flight';
 import type { FlightInfo, LaunchBarrel, LaunchInfo, LaunchPlatform } from '../types';
@@ -73,6 +73,8 @@ const ABOVE_ARC = 0.14;
 const AIR_DRAG_TARGET = 0.6;
 /** A launch point this close (× the ball's radius) above the ground counts as fired from the ground (height 0 drawn). */
 const ON_GROUND_R = 2.5;
+/** Collision category of the launcher's cells and platform: the ball's mask leaves it out. */
+const LAUNCHER_CAT = 0x0002;
 /** Largest launch angle that can be entered (a straight-up shot would land on the cannon). */
 export const MAX_LAUNCH_DEG = 89;
 const DEBUG = typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug');
@@ -1108,7 +1110,8 @@ export const buildProjectile: SceneBuilder = (input) => {
   // Still inside something (e.g. drawn inside the barrel): fly through until clear.
   let ghostAtStart = overlapping();
   const setGhost = (on: boolean) => {
-    body.collisionFilter = { ...body.collisionFilter, mask: on ? 0 : 0xffffffff };
+    // Never the launcher (LAUNCHER_CAT): see below.
+    body.collisionFilter = { ...body.collisionFilter, mask: on ? 0 : 0xffffffff ^ LAUNCHER_CAT };
   };
   // Pass through the scenery until the ball has left its drawn spot: hand-drawn lines are bumpy, and a
   // ball resting on one would otherwise catch on the first bump (or the muzzle) and stop dead.
@@ -1139,7 +1142,28 @@ export const buildProjectile: SceneBuilder = (input) => {
   // Default size (defaults.ts): the drawing is as big as it takes for this fitted shot to fly about 3 s (the same
   // flight under Earth gravity: the same arc at √(g_E / g) times the speed). An entered ground length sets it instead.
   const defaultPpm = pxPerMeterForSteps(drawnFlightSteps(speed * Math.sqrt(STEP_ACCEL / g), -drawnUnit.y, fall));
-  const scale = scaleFor(input, measures, 1, defaultPpm);
+  // An entered launch speed, height or angle: the shot the user asked for, at about real size (paper PAPER_M, pulled
+  // back only as far as that shot needs to fit the default shot's room; defaults.ts launchPxPerMeter). A 3 s default
+  // scale would make the cannon tens of metres tall. An entered ground length still sets the scale (scaleFor).
+  const enteredSpeed = noteFor(input.analysis, 'speed') ? input.analysis.params.speed : undefined;
+  const enteredAngle = noteFor(input.analysis, 'angle', ['launcher']);
+  const enteredHeight = noteFor(input.analysis, 'length', ['launcher']);
+  let basePpm = defaultPpm;
+  if ((typeof enteredSpeed === 'number' && enteredSpeed > 0) || enteredAngle || enteredHeight) {
+    const fitUp = speed * Math.sqrt(STEP_ACCEL / g);
+    const vy = fitUp * -drawnUnit.y;
+    basePpm = launchPxPerMeter({
+      paperPpm: Math.max(W, H) / PAPER_M,
+      speedMps: typeof enteredSpeed === 'number' && enteredSpeed > 0 ? enteredSpeed : undefined,
+      fitPx: fitUp,
+      elevDeg: enteredAngle ? enteredAngle.value : drawnElevDeg,
+      heightM: enteredHeight && enteredHeight.value >= 0 ? enteredHeight.value : undefined,
+      heightPx: fall,
+      rangePx: range,
+      topPx: Math.max(fall + (vy > 0 ? (vy * vy) / (2 * STEP_ACCEL) : 0), floorY - r),
+    });
+  }
+  const scale = scaleFor(input, measures, 1, basePpm);
   // An entered launch speed or the slider (params.speed, m/s) replaces the fitted one, converted to px per step.
   const fit = speed;
   const userSpeed = input.analysis.params.speed;
@@ -1209,6 +1233,8 @@ export const buildProjectile: SceneBuilder = (input) => {
   /** The elevation the barrel (or arrow) is shown at right now. */
   const aimDeg = () => aimShown(aim, screenNow());
 
+  /** Collision cells (and the platform) of the launcher: see LAUNCHER_CAT. */
+  let launcherCells: Matter.Body[] = [];
   let shiftY = 0;
   /** An entered height lower than the launcher allows (a cannon standing on the ground cannot sink into it). */
   let heightAdjusted = false;
@@ -1242,7 +1268,8 @@ export const buildProjectile: SceneBuilder = (input) => {
       .map((q) => ({ x: q.x, y: q.y + shiftY }))
       .filter((q) => !(nearBall && q.y < moved.y + r * 0.5 && (q.x - moved.x) ** 2 + (q.y - moved.y) ** 2 <= nearBall * nearBall));
     const old = scenery.length;
-    scenery = [...sceneryBodies(ink, exclude, W, H), ...cellsOfPixels(movedPx)];
+    launcherCells = cellsOfPixels(movedPx);
+    scenery = [...sceneryBodies(ink, exclude, W, H), ...launcherCells];
     // Raised: a platform from under the launcher down to the ground, its front edge at the ball.
     const base = Math.max(lb ? lb.y1 : -Infinity, start.y + r) + shiftY;
     if (base < floorY - 2) {
@@ -1255,7 +1282,9 @@ export const buildProjectile: SceneBuilder = (input) => {
         else x1 = x0 + 3 * r;
       }
       platform = { x0, x1, top: base, bottom: floorY };
-      scenery.push(Matter.Bodies.rectangle((x0 + x1) / 2, (base + floorY) / 2, x1 - x0, floorY - base, { isStatic: true, friction: 0.9 }));
+      const pillar = Matter.Bodies.rectangle((x0 + x1) / 2, (base + floorY) / 2, x1 - x0, floorY - base, { isStatic: true, friction: 0.9 });
+      scenery.push(pillar);
+      launcherCells.push(pillar);
     }
     statics.splice(0, old, ...scenery);
     if (arrowSeg) arrowSeg = { from: { x: arrowSeg.from.x, y: arrowSeg.from.y + shiftY }, to: { x: arrowSeg.to.x, y: arrowSeg.to.y + shiftY } };
@@ -1264,6 +1293,18 @@ export const buildProjectile: SceneBuilder = (input) => {
     ghostAtStart = overlapping();
     fall = Math.max(0, floorY - bodyR - start.y);
   }
+
+  // The launcher (cannon, its platform, the cliff the ball is fired from) never stops the ball: a short, steep or
+  // air-slowed shot that comes back down onto it falls on to the ground, so every flight is measured there.
+  if (!shiftY) {
+    launcherCells = scenery.filter((b) => {
+      const { min, max } = b.bounds;
+      for (let y = Math.max(0, Math.floor(min.y)); y < Math.min(H, Math.ceil(max.y)); y++)
+        for (let x = Math.max(0, Math.floor(min.x)); x < Math.min(W, Math.ceil(max.x)); x++) if (launcherMask[y * W + x]) return true;
+      return false;
+    });
+  }
+  for (const b of launcherCells) b.collisionFilter = { ...b.collisionFilter, category: LAUNCHER_CAT };
 
   // --- The barrel turned to an entered angle: the ball starts in its mouth there (the pivot stays put) ---
   const down = (q: Point) => ({ x: q.x, y: q.y + shiftY });
@@ -1476,13 +1517,18 @@ export const buildProjectile: SceneBuilder = (input) => {
   meter.launch(start, launchVelocity(g), g);
   /** The last flight that came down on the ground (null until then). */
   let lastFlight: FlightTrack | null = null;
+  /** The air resistance factor that flight flew in (the switch is live: a flight from before it says nothing now). */
+  let lastAir = 0;
+  const airNow = () => Math.max(0, Number(input.analysis.params.airDrag) || 0);
+  /** The air resistance factor the current shot was fired in. */
+  let flightAir = airNow();
   /** Height of the ball's centre when it rests on the ground at x. */
   const restY = (x: number) => groundAt(x) - bodyR;
   /** Launch height above the level the shot comes down on (m): the textbook h. */
   const heightM = (floorY - bodyR - start.y) / ppm;
   const vM = mps(speed, scale);
   const flightNow = (): FlightTrack | null =>
-    lastFlight && Math.abs(lastFlight.gStep - gNow) <= 1e-9 * Math.max(1, gNow) ? lastFlight : null;
+    lastFlight && Math.abs(lastFlight.gStep - gNow) <= 1e-9 * Math.max(1, gNow) && lastAir === airNow() ? lastFlight : null;
   const toNumbers = (t: FlightTrack): FlightNumbers => ({
     range: t.range / ppm,
     maxHeight: t.rise / ppm,
@@ -1518,6 +1564,7 @@ export const buildProjectile: SceneBuilder = (input) => {
     Matter.Body.setVelocity(body, vSet);
     meter.launch(start, vSet, gNow);
     launchG = gNow;
+    flightAir = airNow();
     ghost = true;
     setGhost(true);
   };
@@ -1563,8 +1610,9 @@ export const buildProjectile: SceneBuilder = (input) => {
     if (landedSteps < 0) {
       airDrag();
       const down = meter.step(body.position, body.velocity, gNow, restY);
-      if (down) {
+      if (down && airNow() === flightAir) {
         lastFlight = down;
+        lastAir = flightAir;
         if (DEBUG) {
           const n = toNumbers(down), t = flightTheory(vM, elevDeg, heightM, (gNow / STEP_ACCEL) * EARTH_G);
           console.log(`[projectile] landed: range ${n.range.toFixed(3)} m (theory ${t?.range.toFixed(3)}), top ${n.maxHeight.toFixed(3)} m (${t?.maxHeight.toFixed(3)}), time ${n.time.toFixed(3)} s (${t?.time.toFixed(3)})`);
@@ -1867,7 +1915,7 @@ export const buildProjectile: SceneBuilder = (input) => {
     onStep,
     onDraw,
     measures,
-    defaultPxPerMeter: defaultPpm,
+    defaultPxPerMeter: basePpm,
     parts,
     physics: { launchSpeed: { value: mps(speed, scale), fit: mps(fit, scale), from: speedFrom }, airDrag: airFactor, launch: launchInfo, flight },
     // The larger of the launch speed and the landing speed: v² = v₀² + 2g·(drop to the ground).

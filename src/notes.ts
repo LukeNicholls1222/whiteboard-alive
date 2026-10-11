@@ -612,10 +612,9 @@ function pillsFor(scene: BuiltScene, analysis: Analysis): Pill[] {
       if (ls) add('arrow', () => `v₀ = ${formatSpeed(ls.value)}`);
       length('ground');
       mass('ball', false);
-      // An entered launch height or angle ("(lowest)": the most the drawn launcher can be lowered).
+      // An entered launch height or angle (a height below what the launcher allows shows the height it fires from).
       const launch = scene.physics?.launch;
-      if (launch && launch.heightFrom !== 'drawn')
-        add('launcher', () => `h = ${formatLength(launch.heightM)}${launch.heightFrom === 'adjusted' ? ' (lowest)' : ''}`);
+      if (launch && launch.heightFrom !== 'drawn') add('launcher', () => `h = ${formatLength(launch.heightM)}`);
       if (launch && launch.angleFrom === 'input') add('launcher', () => `θ = ${Math.round(launch.angleDeg)}°`);
       // How far the last shot flew (the scene draws its dimension line along the ground).
       const flight = scene.physics?.flight;

@@ -144,6 +144,53 @@ export function flightSteps(speed: number, up: number, fall: number): number {
   return (vUp + Math.sqrt(Math.max(0, vUp * vUp + 2 * g * Math.max(0, fall)))) / g;
 }
 
+/** What launchPxPerMeter fits: the shot the user asked for, and the room the default shot takes in the picture. */
+export interface EnteredShot {
+  /** px per metre of a paper PAPER_M long (the most: the paper is never smaller than that). */
+  paperPpm: number;
+  /** Entered launch speed, m/s (undefined: the fitted speed `fitPx`, px per step, stays). */
+  speedMps?: number;
+  fitPx: number;
+  /** Elevation, degrees above level. */
+  elevDeg: number;
+  /** Entered launch height, m (undefined: the drawn `heightPx` above the ground stays). */
+  heightM?: number;
+  heightPx: number;
+  /** The default shot's range and highest point above the ground, px: the room the entered shot may take. */
+  rangePx: number;
+  topPx: number;
+}
+
+/**
+ * px per metre when the user entered a launch speed, height or angle (and no ground length): the paper is PAPER_M
+ * (about real size: a cannon of tens of cm), pulled back only as far as the entered shot needs to fit the room the
+ * default shot takes (its range and the top of its arc, Earth gravity, so the Moon still flies farther). What does
+ * not depend on the scale (the fitted speed at a steeper angle) is taken as it is.
+ */
+export function launchPxPerMeter(s: EnteredShot): number {
+  const th = (Math.min(89, Math.max(0, s.elevDeg)) * Math.PI) / 180;
+  const g = STEP_ACCEL;
+  /** Range and top of the arc in px over the room, at `ppm`. */
+  const size = (ppm: number) => {
+    const v = s.speedMps !== undefined ? s.speedMps * Math.sqrt((A_SCREEN * ppm) / EARTH_G) * STEP_S : s.fitPx;
+    const h = s.heightM !== undefined ? s.heightM * ppm : s.heightPx;
+    const vx = v * Math.cos(th), vy = v * Math.sin(th);
+    const t = (vy + Math.sqrt(vy * vy + 2 * g * Math.max(0, h))) / g;
+    return Math.max((vx * t) / Math.max(1, s.rangePx), (h + (vy * vy) / (2 * g)) / Math.max(1, s.topPx));
+  };
+  const hi = s.paperPpm;
+  const lo = hi * 1e-5;
+  const want = Math.max(1, 1.25 * size(lo));
+  if (size(hi) <= want) return hi;
+  let a = Math.log(lo), b = Math.log(hi);
+  for (let k = 0; k < 50; k++) {
+    const m = (a + b) / 2;
+    if (size(Math.exp(m)) <= want) a = m;
+    else b = m;
+  }
+  return Math.exp(a);
+}
+
 // ---- Pulley -------------------------------------------------------------------------------------------------------
 
 /**

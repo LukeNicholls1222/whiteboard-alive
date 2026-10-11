@@ -122,3 +122,19 @@ test('falling objects: the run takes TARGET_S, the fall itself at least 1 s', ()
   const s = paper(fallPxPerMeter(400, 60));
   assert.ok(Math.abs(real(60, s) - 1) < 1e-9 && real(400, s) > TARGET_S);
 });
+
+test('Launch: an entered speed, height or angle sizes the paper about real size, pulled back only for a big shot', async () => {
+  const { launchPxPerMeter } = await import('../src/defaults.ts');
+  const room = { paperPpm: 960, fitPx: 5, heightPx: 100, rangePx: 400, topPx: 500 };
+  // 2 m/s at 75° from the ground: a paper of 1 m (a cannon of tens of cm), not the 3 s default of over 100 m.
+  assert.equal(launchPxPerMeter({ ...room, speedMps: 2, elevDeg: 75, heightM: 0 }), 960);
+  // 18 m/s flies about 33 m: the paper grows until the arc fits the room (range ≤ 400 px, top ≤ 500 px).
+  const big = launchPxPerMeter({ ...room, speedMps: 18, elevDeg: 45, heightM: 0 });
+  const rangeM = (18 * 18) / 9.8;
+  assert.ok(big < 960 && rangeM * big <= 400 * 1.001 && rangeM * big > 300, `ppm ${big}`);
+  // A tall entered height alone: the pillar fits the room.
+  const tall = launchPxPerMeter({ ...room, elevDeg: 60, heightM: 50 });
+  assert.ok(tall * 50 <= 500, `ppm ${tall}`);
+  // Only an angle (the fitted speed, the drawn height): nothing depends on the scale, the paper is 1 m.
+  assert.equal(launchPxPerMeter({ ...room, elevDeg: 80 }), 960);
+});
