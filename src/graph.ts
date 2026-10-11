@@ -282,7 +282,7 @@ export class LiveGraph {
   private showPeriod() {
     const p = this.period.value();
     const T = p ? physSeconds(p.period, this.scale) : 0;
-    this.metricValue.textContent = !p ? '--' : p.provisional ? `~${T.toFixed(T < 1 ? 2 : 1)} s` : formatSeconds(T);
+    setText(this.metricValue, !p ? '--' : p.provisional ? `~${T.toFixed(T < 1 ? 2 : 1)} s` : formatSeconds(T));
   }
 
   private onStep(sim: Simulation, engine: Matter.Engine) {
@@ -303,8 +303,8 @@ export class LiveGraph {
       const s = { p1: m1 * v1, p2: m2 * v2, ke: 0.5 * m1 * v1 * v1 + 0.5 * m2 * v2 * v2 };
       this.mSamples.push(s);
       if (this.mSamples.length > MAX_SAMPLES) this.mSamples.shift();
-      this.metricValue.textContent = formatMomentum(s.p1 + s.p2);
-      this.theoryLabel.textContent = `Kinetic energy ${formatEnergy(s.ke)}`;
+      setText(this.metricValue, formatMomentum(s.p1 + s.p2));
+      setText(this.theoryLabel, `Kinetic energy ${formatEnergy(s.ke)}`);
       this.theoryLabel.hidden = false;
       this.drawMomentum();
       return;
@@ -341,7 +341,7 @@ export class LiveGraph {
       if (this.liveTheory()) this.showTheory();
       // Same tracker, same body, same conversion and formatter as the velocity arrow's number.
       const f = sim.motion.fastest();
-      this.metricValue.textContent = f ? formatSpeed(mps(Math.hypot(f.track.vx, f.track.vy), this.scale)) : '--';
+      setText(this.metricValue, f ? formatSpeed(mps(Math.hypot(f.track.vx, f.track.vy), this.scale)) : '--');
     }
     this.draw();
   }
@@ -812,6 +812,14 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.arcTo(x, y + h, x, y, rr);
   ctx.arcTo(x, y, x + w, y, rr);
   ctx.closePath();
+}
+
+/**
+ * Text written every physics step: only touched when it changes, so an unchanged readout does not make the browser
+ * redo style, layout and paint of the card on every frame.
+ */
+function setText(el: HTMLElement, text: string) {
+  if (el.textContent !== text) el.textContent = text;
 }
 
 function line(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number) {
