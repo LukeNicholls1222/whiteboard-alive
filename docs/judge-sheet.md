@@ -2,15 +2,18 @@
 
 Draw a physics diagram with the **thick black marker**, we take a photo, and **it turns into a live simulation**.
 
-## 1. Pick one of these five
+## 1. Pick one of these
 
 | Diagram | Draw this | It will... |
 |---|---|---|
 | **Pendulum** | A ceiling line, a string hanging from it, a circle at the end | swing |
 | **Spring** | A ceiling (or wall) line, a zig-zag, a box at the end | bounce |
 | **Incline** | A triangle, with a box sitting on the slope | slide down |
+| **Rolling ball** | A triangle, with a circle sitting on the slope | roll down |
 | **Projectile** | A ground line, a ball, and an arrow (or a cannon) pointing where it goes | fly in an arc |
 | **Pulley** | A circle near the top, a line down each side, a box on each line (make one bigger) | the heavier side drops |
+| **Collision** | A floor line, two circles on it, and an arrow above each one showing which way it moves | crash and bounce |
+| **Seesaw** | A small triangle, a long plank on top of it, a box on each end (make one bigger) | tip toward the heavier side |
 
 Anything else? Draw it anyway. If we can't tell what it is, it still falls.
 

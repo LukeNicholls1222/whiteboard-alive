@@ -46,7 +46,7 @@ If voice doesn't respond within ~3 seconds (noisy room, mic permission), don't r
 
 *Hand a judge the judge sheet, paper and a black marker.*
 
-> "Don't trust us. You draw one. A pendulum, a spring, a block on a ramp, a cannon, a pulley. Use the black marker, and draw it big."
+> "Don't trust us. You draw one. A pendulum, a spring, a block or a ball on a ramp, a cannon, a pulley, two balls about to crash, or a seesaw. Use the black marker, and draw it big."
 
 *While they draw (~25s), keep talking:*
 
@@ -68,12 +68,12 @@ If recognition misses:
 > So computer vision runs on the phone, finds every stroke, gives it a number, and measures it to the pixel.
 > Gemini only answers: number 2 is the string, number 3 is the weight.
 > All the positions come from the photo. Then Matter.js runs the physics on clean shapes built exactly where you drew.
-> And if the AI is down, it guesses from the shapes alone. That got 32 of our 33 test drawings right.
+> And if the AI is down, it guesses from the shapes alone. That got all 42 of our test drawings right.
 > No server, it's just a web page. It runs on your phone right now."
 
 ## 7. What's next (2:45–3:00, 15s)
 
-> "Next: point a camera at a real classroom whiteboard, add more topics like collisions and circuits, and let teachers share a drawing as a link.
+> "Next: point a camera at a real classroom whiteboard, add more topics like circuits and optics, and let teachers share a drawing as a link.
 > Whiteboard Alive. Draw it, snap it, watch it move. Thank you!"
 
 ---
@@ -94,7 +94,7 @@ If recognition misses:
 **If the AI is slow** (the progress line sits on the AI step for more than ~10 seconds):
 1. Don't wait it out. Say: "Venue Wi-Fi. Let me show you it works even without the AI."
 2. Switch to the backup tab (https://lukenicholls1222.github.io/whiteboard-alive/?offline) and take the same photo again.
-3. Say: "With no AI at all, it guesses from the shapes alone: triangles, circles, zig-zags. That got 32 out of 33 of our test drawings right."
+3. Say: "With no AI at all, it guesses from the shapes alone: triangles, circles, zig-zags. That got 42 out of 42 of our test drawings right."
 4. The transformation, "Show what AI saw", Your numbers and the sliders still work in this mode.
 
 **If the Wi-Fi is dead** (the page won't load or nothing responds):

@@ -10,7 +10,7 @@ Built at OCCHacks 2026 (Education track).
 
 ## How to use it
 
-1. Draw one of the five diagrams below on white paper with a **thick black marker**.
+1. Draw one of the eight diagrams below on white paper with a **thick black marker**.
 2. Open the live site on your phone and take a photo (or pick one from your gallery).
 3. A single progress line shows each step as it happens. Nothing moves until the drawing has been understood.
 4. The transformation:
@@ -20,13 +20,17 @@ Built at OCCHacks 2026 (Education track).
    - The fixed parts of your drawing stay faintly in the background. The hand-drawn moving parts fade out after a few seconds.
    - Tap **Show what AI saw** to bring the colour overlay back at any time.
 5. Change the physics while it runs:
-   - **Your numbers**: type in the real values. String length, mass, spring constant, ramp angle, launch speed, ground length, and the left and right pulley masses (whichever the diagram uses).
-   - **Sliders**: Gravity (every diagram), Friction (incline), Launch speed (projectile).
+   - **Your numbers**: type in the real values. String length, mass, spring constant, ramp angle, launch speed, ground length, the left and right pulley masses, each ball's mass and speed in a collision, and each seesaw weight's mass and distance (whichever the diagram uses).
+   - **Sliders**: Gravity (every diagram), Friction (incline), Launch speed (projectile), Bounciness e from 0 to 1 (collision).
    - **Gravity presets**: Earth, Moon and Jupiter. Moon mode makes a pendulum swing slowly enough to see the longer period.
    - **Voice**: tap **Talk** and say something like "make the string 1 meter" or "make gravity weaker". Voice can change every setting.
    - **Air resistance**: a switch. The label is honest about the scale: real air, or real air ×N when it is exaggerated so you can see the effect.
    - **Velocity arrows**: arrow length is proportional to speed, with a scale bar.
-6. Below the simulation there is a live energy graph (potential energy measured from the lowest point) and the period, shown next to the theory value (2π√(L/g) for the pendulum).
+6. Below the simulation there is a live graph card that shows the theory next to what was measured:
+   - Pendulum and spring: energy graph (potential energy measured from the lowest point) and the period next to the theory value (2π√(L/g) for the pendulum).
+   - Rolling ball: the measured acceleration next to a = 5/7 g sinθ.
+   - Collision: the momentum of each ball and the total, plus the kinetic energy.
+   - Seesaw: a Torque balance card comparing m·g·d on each side (Left wins / Right wins / Balanced! / Nearly balanced).
 
 ## Supported diagrams
 
@@ -34,9 +38,12 @@ Built at OCCHacks 2026 (Education track).
 |---|---|---|
 | Pendulum | Ceiling line, string, round bob | Swings |
 | Spring and mass | Ceiling or wall, zig-zag, box | Oscillates |
-| Incline | Triangle with a box on the slope | Slides down; friction can stop it |
+| Incline (block) | Triangle with a box on the slope | Slides down; friction can stop it |
+| Incline (ball) | Triangle with a circle on the slope | Rolls down, turning as it goes (a = 5/7 g sinθ), or slides while turning if friction can't hold it |
 | Projectile | Cannon or arrow, ball, ground | Flies in a parabola |
 | Pulley | Wheel, rope over it, two weights | The heavier side drops |
+| Collision | Floor line, two circles, an arrow showing which way each one moves | The balls hit and bounce; total momentum is kept |
+| Seesaw / lever | Triangle pivot, a plank on top, boxes on the plank | Tips toward the side with the larger moment m·g·d |
 
 If a drawing matches none of these, every drawn object becomes a rigid body and falls onto the ground. Something always moves.
 
@@ -53,7 +60,7 @@ photo ─► OpenCV.js (on the phone) ─► numbered contours ─► Gemini lab
 5. **The transformation.** Each scene describes its own clean figure. A light traces the matching strokes part by part, the clean shape snaps in over them, and from then on the clean figure is what moves.
 6. **Voice.** The Web Speech API turns speech into text. A keyword parser handles it first, instantly. Only if nothing matches does Gemini turn the text into a small diff such as `{"set": {"gravity": 1.6}}`.
 
-**Test results.** On 33 test drawings in `samples/generated/` (clean, faint pencil, ruled paper, dim light, broken lines, and drawings that match no diagram), with no AI on the live site: the shape-based guess picked the right diagram for 32 of 33, and 32 of 33 moved.
+**Test results.** On 42 test drawings in `samples/generated/` (clean, faint pencil, ruled paper, dim light, broken lines, the three newer diagrams, and drawings that match no diagram), with no AI on the live site: the shape-based guess picked the right diagram for 42 of 42, and 42 of 42 moved.
 
 ## Run it locally
 
@@ -78,10 +85,10 @@ TypeScript · Vite · HTML5 Canvas · OpenCV.js · Matter.js · poly-decomp · G
 All code in this repository was written during OCCHacks 2026 (Oct 10–11, 2026):
 
 - The full photo → contours → roles → physics pipeline
-- Five diagram scenes plus the always-moving fallback
+- Seven diagram scenes (the incline handles both a block and a rolling ball) plus the always-moving fallback
 - The transformation from hand drawing to clean figure (colour overlay, tracing light, snap-in shapes)
 - Black-ink detection and clean-up for messy phone photos
-- Your numbers, gravity presets (Moon mode), air resistance, velocity arrows and voice control
-- Live energy graph with period and theory value
+- Your numbers, gravity presets (Moon mode), bounciness, air resistance, velocity arrows and voice control
+- Live graph card with theory next to measurement: period, rolling acceleration, momentum, torque balance
 - The shape-based guess for when the AI is unavailable
-- 33 test drawings in `samples/generated/`, made with an image model
+- 42 test drawings in `samples/generated/`, made with an image model

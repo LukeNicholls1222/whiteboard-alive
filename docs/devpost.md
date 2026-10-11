@@ -8,7 +8,7 @@
 
 ## Short version (paste into "About the project")
 
-Physics teachers draw a pendulum or a block on a ramp and ask the class to "imagine it moving", and simulation apps make students rebuild the problem from menus, so we made the drawing itself the input. Whiteboard Alive is a web app: you draw a pendulum, spring, incline, projectile or pulley on paper and take a photo with your phone, and your drawing transforms into a clean physics simulation in the same place. The app colours each stroke by what it understood, a light traces your drawing part by part, and each part snaps into a clean shape before it starts to move. You can then type in real values such as string length or ramp angle, change gravity (including a Moon switch) or speak commands like "make the string 1 meter", and compare the measured period with the theory value 2π√(L/g). OpenCV.js finds and numbers every stroke on the phone, Gemini only labels what each numbered stroke is (string, weight, spring...), and Matter.js runs the physics. All positions come from computer vision rather than the AI. If the AI is unavailable, a guess from the shapes alone still picked the right diagram for 32 of our 33 test drawings.
+Physics teachers draw a pendulum or a block on a ramp and ask the class to "imagine it moving", and simulation apps make students rebuild the problem from menus, so we made the drawing itself the input. Whiteboard Alive is a web app: you draw a pendulum, spring, ramp (with a block or a rolling ball), projectile, pulley, two colliding balls or a seesaw on paper and take a photo with your phone, and your drawing transforms into a clean physics simulation in the same place. The app colours each stroke by what it understood, a light traces your drawing part by part, and each part snaps into a clean shape before it starts to move. You can then type in real values such as string length or ramp angle, change gravity (including a Moon switch) or speak commands like "make the string 1 meter", and compare what was measured with the theory: the period against 2π√(L/g), a rolling ball against a = 5/7 g sinθ, total momentum before and after a collision, and the moments m·g·d on a seesaw. OpenCV.js finds and numbers every stroke on the phone, Gemini only labels what each numbered stroke is (string, weight, spring...), and Matter.js runs the physics. All positions come from computer vision rather than the AI. If the AI is unavailable, a guess from the shapes alone still picked the right diagram for all 42 of our test drawings.
 
 ---
 
@@ -34,11 +34,15 @@ Simulation apps exist, but they make you rebuild the problem with their sliders 
 While it runs you can change the physics:
 
 - **Your numbers**: type in real values. String length, mass, spring constant, ramp angle, launch speed, ground length, and the left and right masses on a pulley. Sizes come from these numbers, not from the paper.
-- **Sliders and presets**: gravity (every diagram), friction (incline), launch speed (projectile), and Earth / Moon / Jupiter. In Moon mode a pendulum visibly slows down.
+- **Sliders and presets**: gravity (every diagram), friction (incline), launch speed (projectile), Bounciness e from 0 to 1 (collision: 1 is elastic, 0 sticks), and Earth / Moon / Jupiter. In Moon mode a pendulum visibly slows down.
 - **Voice**: tap Talk and say "make the string 1 meter" or "make gravity weaker". Voice can change every setting.
 - **Air resistance**: a switch that is honest about the scale. It shows real air, or "real air ×N" when the effect is exaggerated so you can see it.
 - **Velocity arrows**: arrow length is proportional to speed, with a scale bar.
-- **Live graph**: kinetic and potential energy (potential measured from the lowest point), plus the measured period next to the theory value, 2π√(L/g) for the pendulum.
+- **Live graph card**, always theory next to measurement:
+  - Pendulum and spring: kinetic and potential energy (potential measured from the lowest point), plus the measured period next to the theory value, 2π√(L/g) for the pendulum.
+  - Rolling ball: measured acceleration next to a = 5/7 g sinθ.
+  - Collision: momentum of each ball and the total, plus kinetic energy.
+  - Seesaw: Torque balance, the moment m·g·d on each side and a verdict (Left wins / Right wins / Balanced! / Nearly balanced).
 - **Show what AI saw**: brings the colour-coded overlay back with one tap.
 
 A single progress line shows each step so the screen never looks frozen. If it can't recognise the drawing, it still makes something fall. It never just sits there.
@@ -49,9 +53,12 @@ A single progress line shows each step so the screen never looks frozen. If it c
 |---|---|
 | Pendulum (pivot, string, bob → swings) | Working |
 | Spring and mass (zig-zag + box → oscillates) | Working |
-| Incline (triangle + box → slides, friction stops it) | Working |
+| Incline with a block (triangle + box → slides, friction stops it) | Working |
+| Incline with a ball (triangle + circle → rolls, a = 5/7 g sinθ) | Working |
 | Projectile (cannon or arrow → parabola) | Working |
 | Pulley (wheel + rope + two weights → heavier one drops) | Working |
+| Collision (floor + two circles + arrows → they hit and bounce, momentum kept) | Working |
+| Seesaw / lever (triangle pivot + plank + boxes → tips toward the larger moment) | Working |
 | "Anything else" fallback (object + ground → it falls) | Working |
 
 **Works offline too**
@@ -73,10 +80,15 @@ Language models are bad at pixel-exact positions but good at "that circle is the
 **2b. A guess from the shapes alone (no AI)**
 The app waits for the AI before anything moves. When Gemini is unavailable (free-tier quota, a slow venue network, no connection), it still has to pick the right scene. The fallback guess works on the ink itself. It finds closed triangles, circles and boxes by how much of their bounding rectangle they fill, picks out filled-in blobs, and finds zig-zag bands where scan lines cross the ink at regular spacing. Adding `?offline` to the URL forces this mode.
 
-We tested it on 33 generated drawings: clean ones, faint pencil, ruled paper, dim light, broken lines, and drawings that match no diagram. With no AI, on the live site, it picked the right diagram for 32 of 33, and 32 of 33 moved.
+We tested it on 42 generated drawings: clean ones, faint pencil, ruled paper, dim light, broken lines, the rolling ball, collision and seesaw, and drawings that match no diagram. With no AI, on the live site, it picked the right diagram for 42 of 42, and 42 of 42 moved.
 
 **3. Physics (Matter.js)**
 Each diagram type has its own scene builder that turns roles into rigid bodies and constraints. Stiffness and damping for each constraint are fixed constants per diagram type, chosen by us and not by the AI, so the simulation behaves the same way every time. Matter.js friction at low speeds behaves more like drag, so the incline applies its own Coulomb friction step after every physics update.
+
+Where a textbook formula exists, we compute the motion ourselves so the numbers match it:
+- **Rolling ball**: a circle on the slope rolls at a = 5/7 g sinθ (a solid ball) and turns by distance / radius. If friction can't hold it, it slides while turning.
+- **Collision**: exact one-dimensional motion from event to event. Momentum is kept through every hit, Bounciness e = 1 keeps the kinetic energy, and e = 0 makes the balls stick.
+- **Seesaw**: the plank tips toward the side with the larger moment m·g·d, and the weights ride on it. It only shows "Balanced!" when the typed values make m₁d₁ = m₂d₂. If the drawn sizes are within 12%, it shows "Nearly balanced" and tilts only slightly.
 
 **4. From hand drawing to clean figure**
 Each scene describes its own clean figure. After the colour overlay, a light traces the matching strokes part by part, the clean shape snaps in over them with a ring, and from then on the clean figure is what moves. The fixed parts of the original drawing stay faintly behind it, so you can still see where it came from.
@@ -89,7 +101,7 @@ Vite + TypeScript with a plain Canvas (no framework). GitHub Actions builds on e
 
 ## Challenges we ran into
 
-- **Real photos are messy.** Shadows, faint pencil, ruled paper, stains and the desk at the edge of the shot. Picking up black ink only, normalising against the background and joining broken strokes got 32 of our 33 test drawings moving.
+- **Real photos are messy.** Shadows, faint pencil, ruled paper, stains and the desk at the edge of the shot. Picking up black ink only, normalising against the background and joining broken strokes got all 42 of our test drawings moving.
 - **Getting the AI to stop inventing coordinates.** Early on it's tempting to ask the model "where is the pivot?" The answers were close but never exact. Giving it numbered contours and only asking for roles fixed this.
 - **"Nothing happens" is the worst outcome.** We built the fallback scene first, so even a drawing we don't understand still drops something.
 - **Free-tier AI quotas and slow responses.** The app falls through a chain of Flash models. The first one gets 9 seconds and the whole chain is capped at 20. If all of them fail, the shape-based guess still picks a scene.
@@ -98,10 +110,10 @@ Vite + TypeScript with a plain Canvas (no framework). GitHub Actions builds on e
 
 ## Accomplishments that we're proud of
 
-- A photo of a hand-drawn pendulum turns into a clean, swinging pendulum in the same place, and its period matches 2π√(L/g).
+- A photo of a hand-drawn pendulum turns into a clean, swinging pendulum in the same place, and its period matches 2π√(L/g). A drawn ball rolls at the measured 5/7 g sinθ, matching the theory.
 - The split between CV and AI: the model labels, the computer vision measures. It's simple, and it means the simulation never puts things where you didn't draw them.
 - It runs on a phone browser from a static site, with no backend.
-- All five diagram types work. With no AI at all, 32 of 33 test drawings were recognised and moved.
+- Eight kinds of drawing work: pendulum, spring, ramp with a block, ramp with a rolling ball, projectile, pulley, collision and seesaw, plus the fallback. With no AI at all, 42 of 42 test drawings were recognised and moved.
 
 ## What we learned
 
@@ -113,7 +125,7 @@ Vite + TypeScript with a plain Canvas (no framework). GitHub Actions builds on e
 ## What's next for Whiteboard Alive
 
 - Point a live camera at a classroom whiteboard instead of taking a single photo.
-- More topics: collisions, circuits, simple optics.
+- More topics: circuits, simple optics, 2-D collisions.
 - A teacher mode: save a drawing and its simulation, share it as a link with the class.
 
 ## Built With
