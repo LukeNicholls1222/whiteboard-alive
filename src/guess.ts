@@ -13,10 +13,13 @@
 //                      wheels crosses ink as often and as regularly as a spring does); with one in the picture a
 //                      spring needs twice the zigzag score
 // Notebook rules (five or more long thin parallel lines, each its own contour) are taken out of the ink first.
-// Decision order: zigzag -> spring, triangle with a long level plank on its tip -> lever, big triangle -> incline,
-// wheel with a weight on each side below -> pulley, round thing hanging under ink with nothing below -> pendulum, two
-// balls on one level floor with a level arrow -> collision, any other ball-sized round thing -> projectile (one big
-// closed curve, e.g. a cloud, is not a ball: fallback).
+// Decision order: zigzag -> spring, triangle with a long level plank on its tip -> lever, big triangle (also one whose
+// far corner runs off the photo, closed by the frame) -> incline, ball resting on the slope of a smaller triangle ->
+// incline, wheel with a weight on each side below -> pulley, two weights hanging side by side from ropes that join
+// above (wheel cut off or open) -> pulley, round thing hanging under ink with nothing below -> pendulum, two balls on
+// one level floor with a level arrow -> collision, any other ball-sized round thing -> projectile (one big closed
+// curve, e.g. a cloud, is not a ball: fallback).
+// Closed shapes are found after healCuts() (thin straight cuts from the id boxes masked out of the ink are refilled).
 
 import type { Contour, DiagramType } from './types';
 import { findLever } from './scenes/lever-plan';
@@ -53,6 +56,8 @@ interface Shape {
   rectFill: number;
   /** Long side / short side of the min-area rectangle. */
   elong: number;
+  /** Pixels of a closed shape (enclosed paper region), when found from the ink. */
+  pix?: Int32Array;
 }
 
 // Tunables (sizes are ratios of the shorter image side unless noted).
@@ -79,9 +84,11 @@ export function guessDiagram(input: GuessInput): Guess {
   const stroke = strokeWidth(ink, W, H);
   const wheels = spokedWheels(ink, W, H, minSide, stroke);
   const inWheel = (x: number, y: number, pad = 0) => wheels.some((w) => Math.hypot(x - w.cx, y - w.cy) <= w.r + pad);
+  // Closed shapes are found on cut-healed ink (see healCuts); everything else reads the ink as it is.
+  const healed = healCuts(ink, W, H);
   const shapes = [
     // Pie slices between the spokes are part of their wheel, not shapes of their own.
-    ...holes(ink, W, H, minSide).filter((s) => !inWheel(s.cx, s.cy)),
+    ...holes(healed, W, H, minSide).filter((s) => !inWheel(s.cx, s.cy)),
     ...solids(ink, W, H, minSide, stroke).filter((s) => !inWheel(s.cx, s.cy)),
     ...wheels.map((w): Shape => ({
       kind: 'round', solid: false, cx: w.cx, cy: w.cy, x0: w.cx - w.r, y0: w.cy - w.r, x1: w.cx + w.r, y1: w.cy + w.r,
@@ -95,10 +102,12 @@ export function guessDiagram(input: GuessInput): Guess {
   }
   const zig = zigzag(zigInk, W, H, minSide, stroke);
   const round = shapes.filter((s) => s.kind === 'round');
-  const tri = shapes
+  // A ramp whose far corner runs off the photo: its inside is closed by the photo frame instead of ink.
+  const cutTris = frameTriangles(healed, W, H, minSide);
+  const tri = [...shapes, ...cutTris]
     .filter((s) => s.kind === 'triangle' && s.area >= TRI_MIN_AREA * minSide * minSide)
     .sort((a, b) => b.area - a.area)[0];
-  const desc = `stroke=${stroke.toFixed(1)} zig=${zig.toFixed(2)}${rules ? ` rules=${rules}` : ''}${wheels.length ? ` wheels=${wheels.length}` : ''} shapes=${shapes
+  const desc = `stroke=${stroke.toFixed(1)} zig=${zig.toFixed(2)}${rules ? ` rules=${rules}` : ''}${wheels.length ? ` wheels=${wheels.length}` : ''}${cutTris.length ? ` cut-triangles=${cutTris.length}` : ''} shapes=${shapes
     .map((s) => `${s.solid ? 'solid-' : ''}${s.kind}@${Math.round(s.cx)},${Math.round(s.cy)}(${s.rectFill.toFixed(2)})/${Math.round(Math.max(s.x1 - s.x0, s.y1 - s.y0))}`)
     .join(' ')}`;
 
@@ -106,7 +115,10 @@ export function guessDiagram(input: GuessInput): Guess {
   // spoke crossings, so only a clearly deep zigzag counts as a spring there.
   if (zig >= ZIG_DEPTH * (wheels.length ? 2 : 1)) return { diagram: 'spring', confidence: Math.round(Math.min(0.9, 0.5 + zig / 10) * 100) / 100, why: `zigzag; ${desc}` };
   const lever = leverGuess(ink, W, H, desc); if (lever) return lever;
-  if (tri) return { diagram: 'incline', confidence: 0.7, why: `triangle; ${desc}` };
+  if (tri) return { diagram: 'incline', confidence: 0.7, why: `${shapes.includes(tri) ? 'triangle' : 'triangle cut by the photo edge'}; ${desc}` };
+  // A ball resting on the slope of a smaller ramp (a small drawing in a corner of the sheet).
+  const rolling = ballOnRamp(ink, W, H, shapes, stroke, minSide);
+  if (rolling) return { diagram: 'incline', confidence: 0.6, why: `${rolling}; ${desc}` };
 
   // Pulley: a wheel with closed shapes hanging lower on both its left and right.
   for (const w of round) {
@@ -118,6 +130,10 @@ export function guessDiagram(input: GuessInput): Guess {
 
   // Pendulum: a closed shape with ink just above it (the string) and nothing underneath it.
   const hanging = shapes.filter((s) => hangs(ink, W, H, s, stroke, minSide));
+  // Pulley whose wheel is not a closed shape (cut off by the photo edge, drawn open): two weights hanging side by
+  // side from ropes that meet above them.
+  const pair = hungPair(ink, W, H, shapes, stroke, minSide);
+  if (pair) return { diagram: 'pulley', confidence: 0.6, why: `${pair}; ${desc}` };
   const hangingRound = hanging.filter((s) => s.kind === 'round');
   if (hangingRound.length && round.length === hangingRound.length && shapes.length <= 2)
     return { diagram: 'pendulum', confidence: 0.65, why: `hanging bob; ${desc}` };
@@ -172,6 +188,37 @@ function withoutRules(input: GuessInput): { ink: Uint8Array; rules: number } {
     if (inside(pix)) for (const i of pix) ink[i] = 0;
   });
   return { ink, rules: rules.length };
+}
+
+/** Longest straight gap (px) across a stroke that healCuts() fills. */
+const CUT_MAX = 6;
+
+/**
+ * Fill thin straight cuts through strokes: a run of paper at most CUT_MAX long, along a row or a column, with ink at
+ * both ends. The ink handed to the guess is read back from the annotated photo, where the id boxes and labels (4 px
+ * lines along each contour's box) are masked out; a box edge running across a neighbour's ring opens it, and the
+ * ball is no longer a closed shape. Used for finding closed shapes only (it would also fill a spring's narrow tooth
+ * tips).
+ */
+function healCuts(ink: Uint8Array, W: number, H: number): Uint8Array {
+  const out = ink.slice();
+  for (let y = 0; y < H; y++) {
+    let last = -1;
+    for (let x = 0; x < W; x++) {
+      if (!ink[y * W + x]) continue;
+      if (last >= 0 && x - last > 1 && x - last - 1 <= CUT_MAX) for (let k = last + 1; k < x; k++) out[y * W + k] = 255;
+      last = x;
+    }
+  }
+  for (let x = 0; x < W; x++) {
+    let last = -1;
+    for (let y = 0; y < H; y++) {
+      if (!ink[y * W + x]) continue;
+      if (last >= 0 && y - last > 1 && y - last - 1 <= CUT_MAX) for (let k = last + 1; k < y; k++) out[k * W + x] = 255;
+      last = y;
+    }
+  }
+  return out;
 }
 
 interface Wheel {
@@ -336,7 +383,7 @@ function holes(ink: Uint8Array, W: number, H: number, minSide: number): Shape[] 
   const minA = (HOLE_MIN * minSide) ** 2;
   components(W, H, (i) => !ink[i], (pix, n, border) => {
     if (border || n < minA || n > W * H * 0.5) return;
-    out.push(describe(pix, W, false));
+    out.push({ ...describe(pix, W, false), pix });
   });
   return out;
 }
@@ -567,6 +614,116 @@ function hangs(ink: Uint8Array, W: number, H: number, s: Shape, stroke: number, 
       if (ex * ex + ey * ey > 1) below++;
     }
   return below < stroke * 3;
+}
+
+/** Paper regions closed by the photo frame (touching one photo side) that are triangles: a ramp cut off by the frame. */
+function frameTriangles(ink: Uint8Array, W: number, H: number, minSide: number): Shape[] {
+  const out: Shape[] = [];
+  const minA = TRI_MIN_AREA * minSide * minSide;
+  components(W, H, (i) => !ink[i], (pix, n, border) => {
+    if (!border || n < minA || n > W * H * 0.35) return;
+    const sides = [false, false, false, false];
+    for (const i of pix) {
+      const x = i % W, y = (i - x) / W;
+      if (x === 0) sides[0] = true;
+      if (y === 0) sides[1] = true;
+      if (x === W - 1) sides[2] = true;
+      if (y === H - 1) sides[3] = true;
+    }
+    if (sides.filter(Boolean).length !== 1) return;
+    const s = describe(pix, W, false);
+    if (s.kind === 'triangle') out.push(s);
+  });
+  return out;
+}
+
+/** Smallest ramp a ball can roll on (fraction of minSide², triangle inside); the plain incline rule needs TRI_MIN_AREA. */
+const RAMP_MIN_AREA = 0.008;
+
+/**
+ * A round shape resting on the top edge of a triangle: from the ball's centre, some ray pointing downwards (the slope
+ * may be steep, so the contact is not straight below) crosses the ring, at most a short gap, one stroke (the slope)
+ * and then enters the triangle's inside. Returns a reason, or null.
+ */
+function ballOnRamp(ink: Uint8Array, W: number, H: number, shapes: Shape[], stroke: number, minSide: number): string | null {
+  const tris = shapes.filter((s) => s.kind === 'triangle' && s.pix && s.area >= RAMP_MIN_AREA * minSide * minSide);
+  const balls = shapes.filter((s) => s.kind === 'round' && Math.max(s.x1 - s.x0, s.y1 - s.y0) <= BALL_MAX * minSide);
+  const inkAt = (x: number, y: number) => {
+    const xi = Math.round(x), yi = Math.round(y);
+    return xi >= 0 && yi >= 0 && xi < W && yi < H && !!ink[yi * W + xi];
+  };
+  for (const t of tris) {
+    const inside = new Set<number>(t.pix);
+    for (const b of balls) {
+      const size = Math.max(b.x1 - b.x0, b.y1 - b.y0);
+      if (size >= t.x1 - t.x0 || b.cy >= t.cy || b.x1 < t.x0 || b.x0 > t.x1) continue;
+      for (let deg = 30; deg <= 150; deg += 5) {
+        const dx = Math.cos((deg * Math.PI) / 180), dy = Math.sin((deg * Math.PI) / 180);
+        let k = 0;
+        const limit = size + 12 * stroke;
+        while (k < limit && !inkAt(b.cx + dx * k, b.cy + dy * k)) k++; // inside the ring
+        let run = 0;
+        while (k < limit && inkAt(b.cx + dx * k, b.cy + dy * k)) { k++; run++; } // ring (and the slope, if touching)
+        if (run > 6 * stroke) continue;
+        let gap = 0;
+        while (k < limit && !inkAt(b.cx + dx * k, b.cy + dy * k) && gap <= 2 * stroke) { k++; gap++; }
+        if (gap > 2 * stroke) continue;
+        if (gap) {
+          run = 0;
+          while (k < limit && inkAt(b.cx + dx * k, b.cy + dy * k)) { k++; run++; } // the slope
+          if (run > 4 * stroke) continue;
+          while (k < limit && !inkAt(b.cx + dx * k, b.cy + dy * k) && !inside.has(Math.round(b.cy + dy * k) * W + Math.round(b.cx + dx * k)) && gap <= 3 * stroke) { k++; gap++; }
+        }
+        const x = Math.round(b.cx + dx * k), y = Math.round(b.cy + dy * k);
+        if (x >= 0 && y >= 0 && x < W && y < H && inside.has(y * W + x))
+          return `ball on a ramp (ball@${Math.round(b.cx)},${Math.round(b.cy)}, ramp@${Math.round(t.cx)},${Math.round(t.cy)}, ${deg}°)`;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Two weights side by side, both a real size, each hanging (a rope just above it, no ink anywhere below its box), whose
+ * ropes join in the ink above them (one connected stroke group): an Atwood machine whose wheel is not a closed shape.
+ * (hangs() leaves out the shape's own outline by an ellipse, which the corners of a big thick-lined box poke out of;
+ * here everything below the box's outer edge counts.) Returns a reason, or null.
+ */
+function hungPair(ink: Uint8Array, W: number, H: number, shapes: Shape[], stroke: number, minSide: number): string | null {
+  const free = (s: Shape) => {
+    const w = s.x1 - s.x0;
+    const x0 = Math.max(0, Math.floor(s.x0 - 0.6 * w)), x1 = Math.min(W - 1, Math.ceil(s.x1 + 0.6 * w));
+    let below = 0;
+    for (let y = Math.min(H, Math.ceil(s.y1 + 3 * stroke)); y < H; y++) for (let x = x0; x <= x1; x++) if (ink[y * W + x]) below++;
+    return below < 3 * stroke;
+  };
+  const weights = shapes.filter((s) => !s.solid && (s.kind === 'box' || s.kind === 'round') && Math.min(s.x1 - s.x0, s.y1 - s.y0) >= 0.05 * minSide && free(s));
+  if (weights.length < 2) return null;
+  const label = new Int32Array(W * H);
+  let n = 0;
+  components(W, H, (i) => !!ink[i], (pix) => {
+    n++;
+    for (const i of pix) label[i] = n;
+  });
+  /** Label of the ink right above a shape's top edge. */
+  const above = (s: Shape) => {
+    const x0 = Math.max(0, Math.floor(s.x0)), x1 = Math.min(W - 1, Math.ceil(s.x1));
+    for (let y = Math.max(0, Math.floor(s.y0) - 1); y >= Math.max(0, Math.floor(s.y0) - 0.05 * minSide); y--)
+      for (let x = x0; x <= x1; x++) if (label[y * W + x]) return label[y * W + x];
+    return 0;
+  };
+  for (const a of weights)
+    for (const b of weights) {
+      if (a === b || a.cx >= b.cx || b.x0 <= a.x1) continue; // side by side, not overlapping
+      const la = above(a);
+      if (!la || la !== above(b)) continue;
+      // The joined ink reaches above both weights (ropes up to a wheel or a ceiling), not just a shared ground line.
+      let top = H;
+      for (let i = 0; i < label.length; i++) if (label[i] === la) { top = Math.floor(i / W); break; }
+      if (top < Math.min(a.y0, b.y0) - 0.1 * minSide)
+        return `two hanging weights joined above (${Math.round(a.cx)},${Math.round(a.cy)} and ${Math.round(b.cx)},${Math.round(b.cy)})`;
+    }
+  return null;
 }
 
 // ---- Ball collision ------------------------------------------------------------------------------------

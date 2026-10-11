@@ -31,7 +31,8 @@
 //   6. Gap joining on the skeleton (spurs pruned): endpoint -> endpoint at a corner or on the same broken line,
 //      endpoint -> stroke just ahead. Distances are small so separate objects stay separate. Blobs touching the
 //      photo border (desk, paper-edge shadow) are never joined, so the drawing cannot get glued to them.
-//   7. Small close, contours, then filters: specks; desk / paper-edge slivers (incl. thin lines that run along
+//   7. Small close, contours, then filters: specks; desk / paper-edge slivers - big things touching the photo border,
+//      unless they are a drawing cut off by the frame on one side (see cutByFrame) - (incl. thin lines that run along
 //      the paper / photo border for their whole length, and small bits pressed into a band along the photo border);
 //      binder holes; long printed lines
 //      (margin) that are much fainter in max(R,G,B) than the drawing; handwriting (rows of small letters, or a
@@ -455,6 +456,12 @@ function findInkAt(cv: any, src: any, mode: InkMode, stage: Stage): InkResult {
           ((rect.y <= 1 || rect.y + rect.height >= H - 1) && rect.width > rect.height * 4) ||
           ((rect.x <= 1 || rect.x + rect.width >= W - 1) && rect.height > rect.width * 4);
         let edgeJunk = touchesEdge && (huge || long > minSide * 0.5 || along);
+        // ...unless it is a drawing cut off by the photo frame (a wheel or a ramp corner past the edge): it meets the
+        // frame along only a short stretch of its outline, touches one photo side, and reaches well into the photo. Desk objects (a laptop, a tumbler, the desk strip) lie along the frame.
+        if (edgeJunk && !huge && !along && cutByFrame(c.data32S as Int32Array, rect, W, H, minSide, cv.arcLength(c, true))) {
+          debugLog(`contour [${rect.x},${rect.y} ${rect.width}x${rect.height}] touches the photo edge but runs into the photo -> kept`);
+          edgeJunk = false;
+        }
         if (!tiny && !edgeJunk) {
           // Desk peeking inside the paper hull (curled / rotated paper): outline mostly on desk, hugging the paper edge.
           const pts = c.data32S as Int32Array;
@@ -475,6 +482,8 @@ function findInkAt(cv: any, src: any, mode: InkMode, stage: Stage): InkResult {
           if (across <= minSide * 0.04 && long >= across * 4 && farEdge < minSide * EDGE_LINE) edgeJunk = true;
         }
         c.delete();
+        if (edgeJunk && long > minSide * 0.1)
+          debugLog(`contour [${rect.x},${rect.y} ${rect.width}x${rect.height}] desk / paper edge${touchesEdge ? ' (touches the photo edge)' : ''} -> dropped`);
         if (tiny || edgeJunk) continue;
         const cand = { idx: i, rect, area, hasHole: hier[i * 4 + 2] !== -1 };
         // Desk / paper-corner leftovers: something pressed against a photo border and lying wholly in a narrow band
@@ -982,6 +991,34 @@ function boundarySharpness(b: Uint8Array, bin: Uint8Array, sw: number, sh: numbe
   if (!steps.length || contrast <= 0) return Infinity;
   steps.sort((p, q) => p - q);
   return steps[steps.length >> 1] / contrast;
+}
+
+/** Share of a contour's outline lying on the photo frame (within this many px of a photo side) at most... */
+const FRAME_HUG = 0.25;
+/** ...and the contour reaches at least this far (ratio of minSide) into the photo from every side it touches. */
+const FRAME_REACH = 0.2;
+
+/**
+ * A drawing cut off by the photo frame, not desk: its outline (pts = x, y pairs, straight runs compressed) lies on the
+ * frame for at most FRAME_HUG of its length, it touches one photo side (desk, shadows and objects come in at a
+ * corner and touch two or three), and it reaches FRAME_REACH into the photo from it.
+ */
+function cutByFrame(pts: Int32Array, rect: { x: number; y: number; width: number; height: number }, W: number, H: number, minSide: number, perimeter: number): boolean {
+  const sides = [rect.x <= 1, rect.y <= 1, rect.x + rect.width >= W - 1, rect.y + rect.height >= H - 1];
+  const nSides = sides.filter(Boolean).length;
+  if (nSides !== 1 || perimeter <= 0) return false;
+  const reach = minSide * FRAME_REACH;
+  if ((sides[0] || sides[2]) && rect.width < reach) return false;
+  if ((sides[1] || sides[3]) && rect.height < reach) return false;
+  const on = (x: number, y: number) => [x <= 2, y <= 2, x >= W - 3, y >= H - 3];
+  let hug = 0;
+  const n = pts.length / 2;
+  for (let k = 0; k < n; k++) {
+    const ax = pts[2 * k], ay = pts[2 * k + 1], bx = pts[(2 * ((k + 1) % n))], by = pts[2 * ((k + 1) % n) + 1];
+    const a = on(ax, ay), b = on(bx, by);
+    if (a.some((v, s) => v && b[s])) hug += Math.hypot(bx - ax, by - ay);
+  }
+  return hug <= FRAME_HUG * perimeter;
 }
 
 function segDist(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
