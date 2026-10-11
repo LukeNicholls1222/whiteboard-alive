@@ -61,11 +61,15 @@ function filter2(src: Uint8Array, W: number, H: number, r: number, max: boolean)
   return out;
 }
 
-/** Value at the given fraction of the sorted values (every `step`-th pixel). */
-function percentile(a: Uint8Array, p: number, step = 3): number {
+/**
+ * Value at the given fraction of the sorted values, over the middle of the photo (20-80 % each way: mostly paper, so a
+ * textured desk around the sheet does not raise the noise level over faint pencil), every 3rd pixel.
+ */
+function percentile(a: Uint8Array, W: number, H: number, p: number): number {
   const hist = new Uint32Array(256);
   let n = 0;
-  for (let i = 0; i < a.length; i += step) { hist[a[i]]++; n++; }
+  for (let y = Math.floor(H * 0.2); y < H * 0.8; y++)
+    for (let i = y * W + Math.floor(W * 0.2) + (y % 3), end = y * W + W * 0.8; i < end; i += 3) { hist[a[i]]++; n++; }
   for (let t = 0, acc = 0; t < 256; t++) if ((acc += hist[t]) >= n * p) return t;
   return 255;
 }
@@ -80,8 +84,8 @@ export function linePatch(luma: Uint8Array, W: number, H: number, log?: (msg: st
   const bg = filter2(filter2(luma, W, H, r, true), W, H, r, false);
   const mark = new Uint8Array(N);
   for (let i = 0; i < N; i++) mark[i] = bg[i] > luma[i] ? bg[i] - luma[i] : 0;
-  const thr = Math.max(MIN_DEPTH, percentile(mark, 0.9) * OVER_NOISE);
-  const paperL = percentile(luma, 0.9);
+  const thr = Math.max(MIN_DEPTH, percentile(mark, W, H, 0.9) * OVER_NOISE);
+  const paperL = percentile(luma, W, H, 0.9);
   const shadowL = paperL * (1 - RING_DEPTH);
 
   // 2. Pieces (8-connected), each judged on length, thickness and its ring.
