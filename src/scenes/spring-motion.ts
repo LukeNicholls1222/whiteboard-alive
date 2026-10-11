@@ -12,7 +12,7 @@
 // This module has no imports besides units.ts (a leaf), so the node tests run it directly.
 
 import { DEFAULT_KG, STEP_S } from '../units';
-import type { Scale, ValueSource } from '../types';
+import type { Scale, ValueSource, ViewRect } from '../types';
 
 /** ω² per step² of the tuned default (1 kg on the default spring): about a 1 s swing on screen, as before. */
 export const DEFAULT_OMEGA2 = 0.01;
@@ -90,4 +90,85 @@ export class SpringOscillator {
   stretch(): number {
     return this.u - this.rest;
   }
+
+  /** Middle of the swing (u_eq), px, under the gravity of the last step (0 before the first step). */
+  get eq(): number {
+    return this.rest;
+  }
+
+  /** Half the swing, px: how far from u_eq the block turns round. Stays the same until gravity changes. */
+  amplitude(): number {
+    return Math.hypot(this.u - this.rest, this.v / this.omega);
+  }
+}
+
+// ---- View: the picture shows the whole swing ----------------------------------------------------------------
+// A block near the photo's edge used to swing (and point its velocity arrow) past the picture. The scene's view
+// (sim.ts) is worked out from the whole swing, never from where the block is now, so the picture holds still.
+
+/** Room around the block at its turning points, as a share of the picture's width (a few CSS px). */
+export const BLOCK_PAD = 0.012;
+/** Room past the velocity arrow's tip, share of the picture's width: vectors.ts stops an arrow 10.5 CSS px from the edge. */
+export const ARROW_PAD = 0.045;
+
+export interface SpringSwing {
+  /** Photo size, world px: the picture always shows all of it. */
+  photoW: number;
+  photoH: number;
+  /** The block's bounding box at u = 0 (where it was drawn), world px. */
+  block: ViewRect;
+  /** Unit direction of +u (exactly along x or y). */
+  axis: { x: number; y: number };
+  /** Middle of the swing, u (px). */
+  eq: number;
+  /** Half the swing, px. */
+  amp: number;
+}
+
+export interface ViewLimits {
+  /** Longest velocity arrow as a share of the picture's short side (vectors.ts LMAX_FRACTION). */
+  arrowFraction: number;
+  /** Picture height / width limits (sim.ts MIN_VIEW_ASPECT, MAX_VIEW_ASPECT). */
+  minAspect: number;
+  maxAspect: number;
+}
+
+/**
+ * What the picture must show so the block (at both turning points) and its velocity arrow (as long as it gets, at any
+ * point of the swing) stay inside, with a few px to spare; null = the photo already holds it all. Never smaller than
+ * `prev` (a view shown before for the same photo), and never lower (height / width) than the photo: a wider view gets
+ * paper above and below, so the picture's CSS height does not shrink when a value changes.
+ */
+export function springView(s: SpringSwing, lim: ViewLimits, prev: ViewRect | null = null): ViewRect | null {
+  const { photoW: W, photoH: H, block: b, axis, eq, amp } = s;
+  const lowest = Math.min(Math.max(H / W, lim.minAspect), lim.maxAspect);
+  let x0 = Math.min(0, prev ? prev.x : 0), y0 = Math.min(0, prev ? prev.y : 0);
+  let x1 = Math.max(W, prev ? prev.x + prev.w : W), y1 = Math.max(H, prev ? prev.y + prev.h : H);
+  const ax = Math.abs(axis.x), ay = Math.abs(axis.y);
+  const cx = b.x + b.w / 2 + axis.x * eq, cy = b.y + b.h / 2 + axis.y * eq;
+  // The arrow grows with the picture (a share of its short side), so the box is grown until it settles.
+  for (let i = 0; i < 24; i++) {
+    const w = x1 - x0, h = y1 - y0;
+    const lmax = lim.arrowFraction * Math.min(w, h);
+    const pad = BLOCK_PAD * w;
+    // Along the swing: the block's far face at each turning point, and the arrow's tip (the block at u_eq + A cos θ,
+    // the arrow at most lmax · |sin θ| ahead of it: never past √(A² + lmax²) from the middle).
+    const arrow = Math.hypot(amp, lmax) + ARROW_PAD * w;
+    const nx0 = Math.min(x0, b.x + axis.x * eq - ax * amp - pad, cx - ax * arrow);
+    const nx1 = Math.max(x1, b.x + b.w + axis.x * eq + ax * amp + pad, cx + ax * arrow);
+    const ny0 = Math.min(y0, b.y + axis.y * eq - ay * amp - pad, cy - ay * arrow);
+    const ny1 = Math.max(y1, b.y + b.h + axis.y * eq + ay * amp + pad, cy + ay * arrow);
+    let gx = 0, gy = 0;
+    const nw = nx1 - nx0, nh = ny1 - ny0;
+    if (nh < lowest * nw) gy = (lowest * nw - nh) / 2;
+    else if (nh > lim.maxAspect * nw) gx = (nh / lim.maxAspect - nw) / 2;
+    const grown = nx0 - gx < x0 - 0.01 || nx1 + gx > x1 + 0.01 || ny0 - gy < y0 - 0.01 || ny1 + gy > y1 + 0.01;
+    x0 = nx0 - gx;
+    x1 = nx1 + gx;
+    y0 = ny0 - gy;
+    y1 = ny1 + gy;
+    if (!grown) break;
+  }
+  if (x0 > -0.5 && y0 > -0.5 && x1 < W + 0.5 && y1 < H + 0.5) return null;
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }

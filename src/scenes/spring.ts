@@ -5,14 +5,15 @@
 // constraint is kept only as the spring's two ends for the drawing (stiffness 0: it pulls on nothing).
 
 import Matter from 'matter-js';
-import type { BBox, CleanPart, Contour, Point, SceneBuilder, Sprite, Untidy } from '../types';
+import type { BBox, CleanPart, Contour, Point, SceneBuilder, Sprite, Untidy, ViewRect } from '../types';
 import { bodyOutline, supportAcross } from '../clean';
 import { drawnSupport, fmt, rayExit, snapDir, TIDY, tidyLog, untidyMatters, untidyMove, untidySegment } from './tidy';
 import { contourMask, cutSprite, eraseFromPaper, maskBounds, roleOf } from './common';
 import { axisOf, centroidOf, count, looksLikeSpring, outlineZig, planSpring, spans, splitMerged, type SpringPlan } from './spring-plan';
-import { STEP_ACCEL, STEP_MS } from '../sim';
+import { MAX_VIEW_ASPECT, MIN_VIEW_ASPECT, STEP_ACCEL, STEP_MS } from '../sim';
 import { noteFor, scaleFor } from '../units';
-import { SpringOscillator, springSetup } from './spring-motion';
+import { LMAX_FRACTION } from '../vectors';
+import { SpringOscillator, springSetup, springView } from './spring-motion';
 
 /** Oscillation amplitude as a fraction of the drawn spring length (clamped below). */
 const KICK_FRACTION = 0.25;
@@ -24,6 +25,8 @@ const DEBUG = typeof location !== 'undefined' && new URLSearchParams(location.se
 
 /** One plan per photo (~0.1 s): rebuilds after a slider or a typed number reuse it. */
 const PLANS = new WeakMap<Uint8Array, SpringPlan>();
+/** The largest view shown for a photo: a rebuild (Mass / Spring pill, typed number) never shows less of the world. */
+const VIEWS = new WeakMap<Uint8Array, ViewRect>();
 
 const FIXED_ROLES = new Set(['pivot', 'ground', 'incline', 'wheel', 'cannon']);
 const MASS_ROLES = new Set(['mass', 'bob', 'projectile']);
@@ -322,7 +325,27 @@ export const buildSpring: SceneBuilder = (input) => {
   };
   place();
   const bb = body.bounds;
-  // Every step: the exact motion under the engine's gravity right now (slider, voice, Moon mode), then the block there.
+  // The picture shows the whole swing (spring-motion.ts springView): both turning points and the longest velocity
+  // arrow, from the middle of the swing and its amplitude, never from where the block is now. Those only change when
+  // gravity does (slider, voice, Moon), so the view holds still between changes, and it only ever grows for a photo.
+  const swingBox = { x: bb.min.x, y: bb.min.y, w: bb.max.x - bb.min.x, h: bb.max.y - bb.min.y };
+  const limits = { arrowFraction: LMAX_FRACTION, minAspect: MIN_VIEW_ASPECT, maxAspect: MAX_VIEW_ASPECT };
+  let shown = VIEWS.get(input.ink) ?? null;
+  let seen = { eq: NaN, amp: NaN };
+  const view = (): ViewRect | null => {
+    const eq = motion.eq, a = motion.amplitude();
+    if (Math.abs(eq - seen.eq) < 0.01 && Math.abs(a - seen.amp) < 0.01) return shown;
+    seen = { eq, amp: a };
+    const need = springView({ photoW: W, photoH: H, block: swingBox, axis, eq, amp: a }, limits, shown);
+    const inside = (o: ViewRect, n: ViewRect) => n.x >= o.x - 0.5 && n.y >= o.y - 0.5 && n.x + n.w <= o.x + o.w + 0.5 && n.y + n.h <= o.y + o.h + 0.5;
+    if (need && !(shown && inside(shown, need))) {
+      shown = need;
+      VIEWS.set(input.ink, need);
+    }
+    return shown;
+  };
+  view();
+  // Every step:the exact motion under the engine's gravity right now (slider, voice, Moon mode), then the block there.
   const onStep = (engine: Matter.Engine) => {
     const g = engine.gravity;
     motion.step((g.x * axis.x + g.y * axis.y) * g.scale * STEP_MS * STEP_MS);
@@ -410,6 +433,7 @@ export const buildSpring: SceneBuilder = (input) => {
     background: eraseFromPaper(input, masks),
     label: 'Spring and mass',
     onStep,
+    view,
     measures,
     parts: {
       spring: {

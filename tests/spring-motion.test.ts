@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultSpringK, SpringOscillator, springSetup } from '../src/scenes/spring-motion.ts';
+import { ARROW_PAD, BLOCK_PAD, defaultSpringK, SpringOscillator, springSetup, springView } from '../src/scenes/spring-motion.ts';
 import { meters, mps, scaleFor, STEP_ACCEL, STEP_S } from '../src/units.ts';
 
 /** A 960 px paper of 1 m (slow motion ≈ 0.33×), as most drawings. */
@@ -99,4 +99,76 @@ test('the default spring swings about once a second on screen, as the tuned Matt
   const setup = springSetup(undefined, undefined, SCALE);
   const screenPeriod = ((2 * Math.PI) / Math.sqrt(setup.omega2)) * STEP_S;
   assert.ok(screenPeriod > 0.95 && screenPeriod < 1.15, `screen period ${screenPeriod.toFixed(3)} s`);
+});
+
+// ---- The picture shows the whole swing (springView) -----------------------------------------------------------
+
+const LIMITS = { arrowFraction: 0.22, minAspect: 0.45, maxAspect: 1.6 };
+type Box = { x: number; y: number; w: number; h: number };
+const holds = (v: Box, x0: number, y0: number, x1: number, y1: number) => x0 >= v.x && y0 >= v.y && x1 <= v.x + v.w && y1 <= v.y + v.h;
+
+/** Every frame of the swing (block and longest arrow) inside the view, with the pads to spare. */
+function swingFits(v: Box, block: Box, axis: { x: number; y: number }, eq: number, amp: number) {
+  const lmax = LIMITS.arrowFraction * Math.min(v.w, v.h);
+  for (let i = 0; i < 360; i++) {
+    const th = (i * Math.PI) / 180;
+    const u = eq + amp * Math.cos(th);
+    const pad = BLOCK_PAD * v.w * 0.99;
+    const bx = block.x + axis.x * u, by = block.y + axis.y * u;
+    if (!holds(v, bx - pad, by - pad, bx + block.w + pad, by + block.h + pad)) return `block out at ${i}°`;
+    // Arrow from the centre, as long as it gets: lmax at the middle of the swing.
+    const len = lmax * Math.abs(Math.sin(th)), s = -Math.sign(Math.sin(th));
+    const tx = block.x + block.w / 2 + axis.x * (u + s * len), ty = block.y + block.h / 2 + axis.y * (u + s * len);
+    const ap = ARROW_PAD * v.w * 0.99;
+    if (!holds(v, tx - ap * Math.abs(axis.x), ty - ap * Math.abs(axis.y), tx + ap * Math.abs(axis.x), ty + ap * Math.abs(axis.y))) return `arrow out at ${i}°`;
+  }
+  return null;
+}
+
+test('springView: a block swinging past the photo is shown whole at both turning points, with its arrow', () => {
+  // Horizontal spring, the block drawn near the right edge of a 960 × 720 photo.
+  const block = { x: 820, y: 300, w: 120, h: 110 };
+  const axis = { x: 1, y: 0 };
+  const v = springView({ photoW: 960, photoH: 720, block, axis, eq: 0, amp: 80 }, LIMITS);
+  assert.ok(v, 'a view is needed');
+  assert.equal(swingFits(v, block, axis, 0, 80), null);
+  assert.ok(holds(v, 0, 0, 960, 720), 'the whole photo stays in the picture');
+  // Wider, never lower than the photo: the picture's CSS height does not shrink.
+  assert.ok(v.h / v.w >= 720 / 960 - 1e-9, `aspect ${v.h / v.w}`);
+  // A few px past the block, not a big zoom-out.
+  assert.ok(v.x + v.w - (block.x + block.w + 80) < 0.06 * v.w + LIMITS.arrowFraction * v.h, `right room ${v.x + v.w - (block.x + block.w + 80)}`);
+});
+
+test('springView: hanging spring under stronger gravity (rest moves down) and a block well inside the photo', () => {
+  const block = { x: 420, y: 560, w: 100, h: 90 };
+  const axis = { x: 0, y: 1 };
+  const v = springView({ photoW: 960, photoH: 720, block, axis, eq: 60, amp: 70 }, LIMITS);
+  assert.ok(v);
+  assert.equal(swingFits(v, block, axis, 60, 70), null);
+  assert.ok(v.h / v.w <= LIMITS.maxAspect + 1e-9);
+  // Small swing in the middle of the photo: the photo as it is.
+  assert.equal(springView({ photoW: 960, photoH: 720, block: { x: 430, y: 300, w: 100, h: 90 }, axis, eq: 0, amp: 30 }, LIMITS), null);
+});
+
+test('springView never shows less than before for the same photo, so a rebuild never shrinks the picture', () => {
+  const block = { x: 820, y: 300, w: 120, h: 110 };
+  const big = springView({ photoW: 960, photoH: 720, block, axis: { x: 1, y: 0 }, eq: 0, amp: 80 }, LIMITS)!;
+  const small = springView({ photoW: 960, photoH: 720, block, axis: { x: 1, y: 0 }, eq: 0, amp: 20 }, LIMITS, big)!;
+  assert.ok(holds(small, big.x, big.y, big.x + big.w, big.y + big.h));
+  // The same swing again gives the same view (it holds still).
+  const again = springView({ photoW: 960, photoH: 720, block, axis: { x: 1, y: 0 }, eq: 0, amp: 80 }, LIMITS, big)!;
+  assert.ok(Math.abs(again.w - big.w) < 0.5 && Math.abs(again.h - big.h) < 0.5 && Math.abs(again.x - big.x) < 0.5 && Math.abs(again.y - big.y) < 0.5);
+});
+
+test('amplitude and middle of the swing stay put between gravity changes', () => {
+  const setup = springSetup(undefined, undefined, SCALE);
+  const osc = new SpringOscillator(setup.omega2, STEP_ACCEL, 40 * Math.sqrt(setup.omega2));
+  const a0 = osc.amplitude();
+  assert.ok(Math.abs(a0 - 40) < 1e-9);
+  for (let i = 0; i < 2000; i++) {
+    osc.step(STEP_ACCEL);
+    assert.ok(Math.abs(osc.amplitude() - a0) < 1e-6 && Math.abs(osc.eq) < 1e-9);
+  }
+  osc.step(STEP_ACCEL * MOON);
+  assert.ok(osc.eq < 0, 'Moon: the middle of the swing moves up (towards the fixed end)');
 });
