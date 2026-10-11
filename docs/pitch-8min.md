@@ -15,7 +15,7 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 | 1:40 | 3. A learning moment: predict, then test | 60s |
 | 2:40 | 4. Demo 2: the collision (pre-drawn) | 50s |
 | 3:30 | 5. A judge draws | 80s |
-| 4:50 | 6. How it works: Slides 7–8 + the no-AI switch | 80s |
+| 4:50 | 6. How it works: Slides 8–9 + the no-AI switch | 80s |
 | 6:10 | 7. What was hard | 30s |
 | 6:40 | 8. What's next and close | 20s |
 | 7:00 | End (1 minute spare) | |
@@ -31,7 +31,7 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 > "Every physics class has this moment. The teacher draws a pendulum on the board and says: *now imagine it swinging.*
 > Half the room can't. And the ones who can, can't tell you what happens if the string gets longer, or if we're on the Moon.
 > Simulation apps exist, but they make you rebuild the problem with their menus and their clip-art. You stop thinking about physics and start thinking about the app.
-> So we asked a simple question: what if the drawing you already made could just come alive?"
+> **[Slide 3]** So we asked: why can't a quick sketch just move? Sketching takes seconds. Setting up a simulation takes minutes."
 
 *Finish the drawing as you say the last line.*
 
@@ -39,7 +39,7 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 
 ## 2. Demo 1: the pendulum transforms (0:40–1:40, 60s)
 
-**[Slide 3]** Draw → Snap → Transform. Then switch the screen to the phone.
+**[Slide 4]** Draw → Snap → Transform. Then switch the screen to the phone.
 
 *Hold the paper flat, phone straight above it, take the photo. Point at the progress line on the screen.*
 
@@ -64,7 +64,7 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 *Before you start: tap the **Length** pill under the swinging picture and set it to **0.25 m**. Point at the period readout (about 1.0 s).*
 
 > "This is where it becomes a lesson. Right now the string is 25 centimetres and the period is about one second.
-> Quick question for you." **[Slide 4]** *(Look at a judge.)* "If I make the string **four times longer**, what happens to the period? Twice as long? Four times? Have a guess."
+> Quick question for you." **[Slide 5]** *(Look at a judge.)* "If I make the string **four times longer**, what happens to the period? Twice as long? Four times? Have a guess."
 
 *Wait for an answer. Whatever they say, nod.*
 
@@ -76,7 +76,7 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 
 *The string grows. Point at the measured period next to the theory value.*
 
-**[Slide 5]** after the period appears (Theory next to measurement), or keep the phone on screen if it's mirrored on the same display.
+**[Slide 6]** after the period appears (Theory next to measurement), or keep the phone on screen if it's mirrored on the same display.
 
 > "Four times the length, and the period is about two seconds: only **twice** as long. And here's the theory next to it, 2π root L over g. Measured and predicted, side by side. Students don't just watch it, they check it."
 
@@ -92,7 +92,7 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 
 ## 4. Demo 2: the collision, pre-drawn (2:40–3:30, 50s)
 
-*Pick up the pre-drawn collision sheet: a floor line, two circles, an arrow above each.* Slide 5 stays up: its last box is the collision.
+*Pick up the pre-drawn collision sheet: a floor line, two circles, an arrow above each.* Slide 6 stays up: its last box is the collision.
 
 > "Pendulums are the classic. But it understands more than that. Here's one I drew earlier: two balls about to crash."
 
@@ -115,7 +115,7 @@ Only explain momentum on the **first** collision between the balls. When a ball 
 
 ## 5. A judge draws (3:30–4:50, 80s)
 
-**[Slide 6]** Your turn. Draw anything.
+**[Slide 7]** Your turn. Draw anything.
 
 *Hand a judge the printed judge sheet (`docs/judge-sheet.pdf`), a blank sheet and a black marker.*
 
@@ -134,16 +134,16 @@ Only explain momentum on the **first** collision between the balls. When a ball 
 - Recognition misses: "It didn't recognise that one, so it falls back to plain gravity. It never just freezes. Real handwriting is messy, and that's exactly the problem we spent most of our time on." Then go straight to section 6, which explains that.
 - The judge is still drawing at 4:30: say "Take your time, I'll show you how it works and we'll run yours at the end." Run it after section 8, inside the spare minute.
 
-## 6. How it works: Slides 7–8 and the no-AI switch (4:50–6:10, 80s)
+## 6. How it works: Slides 8–9 and the no-AI switch (4:50–6:10, 80s)
 
-**[Slide 7] Photo → OpenCV.js → Gemini → Matter.js**
+**[Slide 8] Photo → OpenCV.js → Gemini → Matter.js**
 
 > "Here's the trick. AI models are great at *what* something is, but bad at *exactly where* it is.
 > So computer vision runs on the phone. OpenCV finds every stroke, gives it a number, and measures it to the pixel.
 > Gemini only answers one question: what is each number? Number 2 is the string, number 3 is the weight. It never gives a coordinate.
 > Then Matter.js runs the physics on clean shapes built exactly where you drew. No server, it's just a web page."
 
-**[Slide 8] Messy photos, and no AI at all**
+**[Slide 9] Messy photos, and no AI at all**
 
 > "Real photos are messy: shadows, faint lines, ruled paper, the edge of the desk. So we only pick up black ink, flatten the lighting against the paper itself, and join broken strokes.
 > And if the AI is down, it guesses from the shapes alone: triangles, circles, boxes, zig-zags. On our 42 test drawings, with no AI at all, it got 42 out of 42 right, and all 42 moved.
@@ -159,7 +159,7 @@ Only explain momentum on the **first** collision between the balls. When a ball 
 
 ## 7. What was hard (6:10–6:40, 30s)
 
-**[Slide 9]** What was hard / What's next. It stays up through section 8.
+**[Slide 10]** What was hard / What's next. It stays up through section 8.
 
 > "Three things were hard.
 > One: getting the AI to stop inventing coordinates. Early on we asked it where the pivot was, and it was always close but never exact. Giving it numbered strokes and only asking for roles fixed that.
@@ -171,9 +171,9 @@ Only explain momentum on the **first** collision between the balls. When a ball 
 ## 8. What's next and close (6:40–7:00, 20s)
 
 > "Next: point a live camera at a real classroom whiteboard, add circuits and optics, and let a teacher share a drawing with the class as a link.
-> **[Slide 10]** Whiteboard Alive. Draw it, snap it, watch it move. The QR code opens it on your phone right now. Thank you!"
+> **[Slide 11]** Whiteboard Alive. Draw it, snap it, watch it move. The QR code opens it on your phone right now. Thank you!"
 
-*Spare minute (7:00–8:00): run the judge's drawing if it wasn't finished, or take a question. Leave Slide 10 (the QR code) on screen.*
+*Spare minute (7:00–8:00): run the judge's drawing if it wasn't finished, or take a question. Leave Slide 11 (the QR code) on screen.*
 
 ---
 
@@ -189,7 +189,7 @@ Only explain momentum on the **first** collision between the balls. When a ball 
 - [ ] Test Talk once in the venue (mic permission granted in the browser), e.g. "make the string 1 meter"
 - [ ] Rehearse section 3 once: set the Length pill to 0.25 m and check the period reads about 1 s, then 1 m reads about 2 s
 - [ ] Rehearse sections 3–5 once: at the end of section 3, tap Earth and set the speed badge to 0.11× (three taps: 1× → 0.5× → 0.33× → 0.11×), check the collision photo plays slowly, then one tap back to 1× before the judge draws. Reloading the page puts it back to 1×
-- [ ] Slides open on the laptop (https://lukenicholls1222.github.io/whiteboard-alive/slides/), on Slide 1, full screen (`f`), tested with the arrow keys. Scan the QR code on Slide 10 once with a phone
+- [ ] Slides open on the laptop (https://lukenicholls1222.github.io/whiteboard-alive/slides/), on Slide 1, full screen (`f`), tested with the arrow keys. Scan the QR code on Slide 11 once with a phone
 - [ ] Printed judge sheet (`docs/judge-sheet.pdf`) next to the paper
 - [ ] A timer the speaker can see. Checkpoints: 1:40 Learning moment, 3:30 Judge draws, 4:50 Slides, 6:40 Close
 
