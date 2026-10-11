@@ -65,6 +65,11 @@ const OBSERVED_MAX = 1500;
 const RETRY_FRAMES = 15;
 /** Buttons starting this close to the picture's top edge (CSS px) form the top row kept clear across the width. */
 const TOP_ROW_CSS = 40;
+/**
+ * Room a Seesaw card keeps from the buttons over the picture (CSS px; elsewhere LABEL_SPACE_CSS). Its weights' cards
+ * sit above them, so at the default size they would end up just under the top row of buttons.
+ */
+const SEESAW_FLOAT_SPACE_CSS = 14;
 
 interface Pill {
   part: PartName;
@@ -181,6 +186,7 @@ export class QuantityLabels {
     const font = `800 ${FONT_CSS * css}px Nunito, "Avenir Next", system-ui, sans-serif`;
     const placed: Box[] = [];
     const space = LABEL_SPACE_CSS * css;
+    const floatSpace = (scene.label === 'Seesaw' ? SEESAW_FLOAT_SPACE_CSS : LABEL_SPACE_CSS) * css;
     const lmax = LMAX_FRACTION * Math.min(worldW, worldH);
     if (!this.groups.length) {
       this.last = [];
@@ -203,6 +209,19 @@ export class QuantityLabels {
         keepBoxes.push({ x: b.min.x - m, y: b.min.y - m, w: b.max.x - b.min.x + 2 * m, h: b.max.y - b.min.y + 2 * m });
       } else if ((p.clear ?? 0) > 0) keepCircles.push({ c: { ...p.at() }, r: p.clear! });
     }
+    // Seesaw: also off the triangle under the plank (as built and as drawn) and the floor line, where a card pushed
+    // down from the top row would otherwise land.
+    if (scene.label === 'Seesaw')
+      for (const c of scene.clean ?? []) {
+        if (c.kind === 'solid') {
+          const pts = c.points.concat(c.drawnPoints ?? []);
+          const x0 = Math.min(...pts.map((q) => q.x)), y0 = Math.min(...pts.map((q) => q.y));
+          keepBoxes.push(grow({ x: x0, y: y0, w: Math.max(...pts.map((q) => q.x)) - x0, h: Math.max(...pts.map((q) => q.y)) - y0 }, m));
+        } else if (c.kind === 'ground') {
+          const x0 = c.x0 ?? vis.x, x1 = c.x1 ?? vis.x + worldW;
+          keepBoxes.push({ x: x0, y: c.y - 3 * css, w: x1 - x0, h: 6 * css });
+        }
+      }
     const bar = scaleBarZone(ctx, css, worldW, worldH, vis.x, vis.y);
     const floats = this.floatingBoxes(ctx.canvas, css, vis);
     const arrowGap = ARROW_SPACE_CSS * css;
@@ -224,7 +243,7 @@ export class QuantityLabels {
       const w = cols * cw + (cols - 1) * gap;
       const H = nRows * h + (nRows - 1) * gap;
       const boxAt = (c: Point): Box => ({ x: c.x - w / 2, y: c.y - H / 2, w, h: H });
-      /** On the picture, LABEL_SPACE_CSS off the other cards, the scale bar and the buttons over the picture. */
+      /** On the picture, LABEL_SPACE_CSS off the other cards and the scale bar, `floatSpace` off the buttons over the picture. */
       const fixedOk = (b: Box) =>
         b.x >= vis.x + 2 * css &&
         b.y >= vis.y + 2 * css &&
@@ -232,7 +251,7 @@ export class QuantityLabels {
         b.y + b.h <= vis.y + worldH - 2 * css &&
         !placed.some((o) => overlap(grow(o, space), b)) &&
         !overlap(grow(bar, space), b) &&
-        !floats.some((o) => overlap(grow(o, space), b));
+        !floats.some((o) => overlap(grow(o, floatSpace), b));
       // Always: that, off the drawing's parts, and off whatever moves right now (bodies and their arrows).
       const base = (b: Box) =>
         fixedOk(b) &&
