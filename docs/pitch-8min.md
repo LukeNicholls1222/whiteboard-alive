@@ -31,7 +31,7 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 > "Every physics class has this moment. The teacher draws a pendulum on the board and says: *now imagine it swinging.*
 > Half the room can't. And the ones who can, can't tell you what happens if the string gets longer, or if we're on the Moon.
 > Simulation apps exist, but they make you rebuild the problem with their menus and their clip-art. You stop thinking about physics and start thinking about the app.
-> **[Slide 3]** So we asked: why can't a quick sketch just move? Sketching takes seconds. Setting up a simulation takes minutes."
+> **[Slide 3]** So we asked: why can't a quick sketch just move? Sketching takes seconds. Setting up a simulation takes minutes. Whiteboard Alive makes your sketch move in seconds."
 
 *Finish the drawing as you say the last line.*
 
