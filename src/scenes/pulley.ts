@@ -67,6 +67,10 @@ const RING_SAMPLES = 72;
 const MIN_RING_COVER = 0.6;
 /** contourMask() margin: the filled disk is this much bigger than the drawn circle. */
 const JOIN_MARGIN = 4;
+/** The drawing reaches this close (px) to the top of the photo: its wheel may be cut off by the photo's edge. */
+const TOP_CUT_PX = 3;
+/** A wheel cut by the photo's edge: at least this share of its circle must be inside the photo. */
+const MIN_RING_IN_PHOTO = 0.4;
 
 interface Side {
   weight: Uint8Array;
@@ -127,13 +131,22 @@ function isCircleStroke(c: Contour) {
 /** Ring tolerance (px) used when matching a circle against the ink. */
 const ringTol = (r: number) => Math.max(4, r * 0.12);
 
-/** Fraction of the circle (c, r) that has ink on it (within ringTol), sampled at RING_SAMPLES angles. */
-function ringCoverage(ink: Uint8Array, W: number, H: number, c: Point, r: number): number {
+/**
+ * Fraction of the circle (c, r) that has ink on it (within ringTol), sampled at RING_SAMPLES angles. `inPhoto`: only
+ * the part of the circle inside the photo counts (a wheel cut by the photo's edge), 0 if less than MIN_RING_IN_PHOTO
+ * of it is inside.
+ */
+function ringCoverage(ink: Uint8Array, W: number, H: number, c: Point, r: number, inPhoto = false): number {
   const tol = Math.round(ringTol(r));
-  let hit = 0;
+  let hit = 0, seen = 0;
   for (let k = 0; k < RING_SAMPLES; k++) {
     const a = (k / RING_SAMPLES) * Math.PI * 2;
     const cos = Math.cos(a), sin = Math.sin(a);
+    if (inPhoto) {
+      const x = Math.round(c.x + r * cos), y = Math.round(c.y + r * sin);
+      if (x < 0 || y < 0 || x >= W || y >= H) continue;
+    }
+    seen++;
     for (let d = -tol; d <= tol; d++) {
       const x = Math.round(c.x + (r + d) * cos), y = Math.round(c.y + (r + d) * sin);
       if (x >= 0 && y >= 0 && x < W && y < H && ink[y * W + x]) {
@@ -142,15 +155,18 @@ function ringCoverage(ink: Uint8Array, W: number, H: number, c: Point, r: number
       }
     }
   }
-  return hit / RING_SAMPLES;
+  if (!inPhoto) return hit / RING_SAMPLES;
+  return seen >= RING_SAMPLES * MIN_RING_IN_PHOTO ? hit / seen : 0;
 }
 
 /**
  * The drawn wheel as a circle in the ink, even when it is open (pencil not closed, a gap where the rope leaves)
  * or joined to the ropes: a coarse circle Hough transform over the upper part of the drawing gives candidates,
  * each is scored by how much of its ring has ink, and the best one is refined with a least-squares fit.
+ * `cutTop`: the wheel may run off the top of the photo, so its centre may lie above the photo (up to the largest
+ * radius) and only the part of the ring inside the photo is scored.
  */
-function circleInInk(ink: Uint8Array, W: number, H: number, box: { x: number; y: number; w: number; h: number }) {
+function circleInInk(ink: Uint8Array, W: number, H: number, box: { x: number; y: number; w: number; h: number }, cutTop = false) {
   const f = Math.max(2, Math.round(Math.max(W, H) / 240)); // coarse grid cell, px
   const gw = Math.ceil(W / f), gh = Math.ceil(H / f);
   const y0 = Math.max(0, box.y), y1 = Math.min(H, Math.round(box.y + box.h * 0.6));
@@ -170,7 +186,10 @@ function circleInInk(ink: Uint8Array, W: number, H: number, box: { x: number; y:
   const size = Math.max(box.w, box.h);
   const rMin = Math.max(3, Math.round((size * 0.05) / f));
   const rMax = Math.max(rMin + 1, Math.round(Math.min(box.w * 0.45, box.h * 0.35) / f));
-  const acc = new Uint16Array(gw * gh);
+  // Grid rows above the photo, for centres of wheels cut by its top edge.
+  const pad = cutTop ? rMax : 0;
+  const ah = gh + pad;
+  const acc = new Uint16Array(gw * ah);
   const cands: { center: Point; r: number }[] = [];
   for (let r = rMin; r <= rMax; r++) {
     acc.fill(0);
@@ -184,8 +203,8 @@ function circleInInk(ink: Uint8Array, W: number, H: number, box: { x: number; y:
     for (const g of pts) {
       const gx = g % gw, gy = (g - gx) / gw;
       for (let k = 0; k < n; k++) {
-        const cx = gx - dx[k], cy = gy - dy[k];
-        if (cx < 0 || cy < 0 || cx >= gw || cy >= gh) continue;
+        const cx = gx - dx[k], cy = gy - dy[k] + pad;
+        if (cx < 0 || cy < 0 || cx >= gw || cy >= ah) continue;
         const i = cy * gw + cx;
         const v = ++acc[i];
         if (v > best) {
@@ -194,11 +213,11 @@ function circleInInk(ink: Uint8Array, W: number, H: number, box: { x: number; y:
         }
       }
     }
-    if (bi >= 0) cands.push({ center: { x: ((bi % gw) + 0.5) * f, y: (Math.floor(bi / gw) + 0.5) * f }, r: r * f });
+    if (bi >= 0) cands.push({ center: { x: ((bi % gw) + 0.5) * f, y: (Math.floor(bi / gw) - pad + 0.5) * f }, r: r * f });
   }
   let best: { center: Point; r: number; cover: number } | null = null;
   for (const c of cands) {
-    const cover = ringCoverage(ink, W, H, c.center, c.r);
+    const cover = ringCoverage(ink, W, H, c.center, c.r, cutTop);
     // Coverage ties (a thick stroke matches at several radii): the larger circle is the wheel's outer edge.
     if (!best || cover > best.cover + 0.03 || (cover > best.cover - 0.03 && c.r > best.r)) best = { ...c, cover };
   }
@@ -213,7 +232,7 @@ function circleInInk(ink: Uint8Array, W: number, H: number, box: { x: number; y:
       if (ink[y * W + x] && Math.abs(Math.hypot(x - best.center.x, y - best.center.y) - best.r) <= tol) near.push({ x, y });
   const fit = fitCircle(near);
   if (fit && Math.abs(fit.r - best.r) < tol * 2 && Math.hypot(fit.center.x - best.center.x, fit.center.y - best.center.y) < tol * 2) {
-    const cover = ringCoverage(ink, W, H, fit.center, fit.r);
+    const cover = ringCoverage(ink, W, H, fit.center, fit.r, cutTop);
     if (cover >= best.cover - 0.05) return { center: fit.center, r: fit.r, cover };
   }
   return best;
@@ -249,6 +268,13 @@ function findWheel(input: SceneInput, parts: Contour[], all: Uint8Array) {
   // (open circle, wheel drawn as an arc), look for the circle in the ink itself.
   const ink = new Uint8Array(W * H);
   for (let i = 0; i < ink.length; i++) ink[i] = input.ink[i] && all[i] ? 1 : 0;
+  // The drawing runs off the top of the photo (wheel and ceiling cut off): the wheel's inside is open to the edge, so
+  // it is no filled disk and the thickest point is only a rope joining the wheel. Look for the circle in the ink, its
+  // centre possibly above the photo, scoring only the arc inside the photo. Kept when bigger than that thick point.
+  if (b.y <= TOP_CUT_PX) {
+    const found = circleInInk(ink, W, H, b, true);
+    if (found && found.r + JOIN_MARGIN > radius) return { center: found.center, radius: found.r + JOIN_MARGIN, contour: null as Contour | null };
+  }
   const ringR = Math.max(4, radius - JOIN_MARGIN);
   if (ringCoverage(ink, W, H, point, ringR) < MIN_RING_COVER) {
     const found = circleInInk(ink, W, H, b);
