@@ -8,6 +8,7 @@ import { drawClean, drawnSnapshot, FAINT_ALPHA, usesClean } from './clean';
 import { drawMorph, ghostAlpha, type IntroLayer, morphHooks, morphLabelAlpha, morphProgress } from './morph';
 import type { BuiltScene, SimParams, Sprite, ViewRect } from './types';
 import { BASE_SCALE, STEP_MS } from './units';
+import { pictureHold } from './hold';
 
 // The step constants live in units.ts (a leaf module); re-exported here for the scene builders.
 export { STEP_ACCEL, STEP_MS } from './units';
@@ -38,13 +39,22 @@ export function viewOf(scene: BuiltScene): ViewRect | null {
 
 /** CSS height of the picture for a card `cssW` wide. */
 export function pictureCssHeight(view: ViewRect | null, photoW: number, photoH: number, cssW: number): number {
-  if (!view) return (cssW * photoH) / photoW;
-  return Math.min(Math.max((cssW * view.h) / view.w, MIN_VIEW_ASPECT * cssW), MAX_VIEW_ASPECT * cssW);
+  const h = !view ? (cssW * photoH) / photoW : Math.min(Math.max((cssW * view.h) / view.w, MIN_VIEW_ASPECT * cssW), MAX_VIEW_ASPECT * cssW);
+  // A number under the picture is being changed (hold.ts): never shorter than it has been meanwhile.
+  if (!pictureHold.on) return h;
+  pictureHold.px = Math.max(pictureHold.px, h);
+  return pictureHold.px;
 }
 
-/** Canvas transform for a canvas of the given device-pixel size: world (x, y) -> (S·x + tx, S·y + ty). */
-export function pictureTransform(view: ViewRect | null, photoW: number, canvasW: number, canvasH: number) {
-  if (!view) return { S: canvasW / photoW, tx: 0, ty: 0 };
+/**
+ * Canvas transform for a canvas of the given device-pixel size: world (x, y) -> (S·x + tx, S·y + ty). A canvas held
+ * taller than the picture needs (hold.ts) shows it centred, blank paper above and below.
+ */
+export function pictureTransform(view: ViewRect | null, photoW: number, canvasW: number, canvasH: number, photoH = 0) {
+  if (!view) {
+    const S = canvasW / photoW;
+    return { S, tx: 0, ty: Math.max(0, (canvasH - photoH * S) / 2) };
+  }
   const S = Math.min(canvasW / view.w, canvasH / view.h);
   return { S, tx: (canvasW - view.w * S) / 2 - view.x * S, ty: (canvasH - view.h * S) / 2 - view.y * S };
 }
@@ -174,9 +184,9 @@ export class Simulation {
       canvas.height = Math.round(cssH * dpr);
       canvas.style.height = `${cssH}px`;
     }
-    const { S: s, tx, ty } = pictureTransform(view, this.worldW, canvas.width, canvas.height);
+    const { S: s, tx, ty } = pictureTransform(view, this.worldW, canvas.width, canvas.height, this.photoH);
     const drawn = this.drawn;
-    if (view || drawn) {
+    if (view || drawn || ty > 0) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.fillStyle = PAPER_FILL;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
