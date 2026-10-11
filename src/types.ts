@@ -274,6 +274,11 @@ export interface BuiltScene {
   /** The scene integrates gravity × this (the pulley runs its own slower gravity). Default 1. */
   gravityScale?: number;
   /**
+   * px per metre when no length was entered (defaults.ts: one motion takes about 3 s of real time). Absent = the
+   * paper's long side is 1 m.
+   */
+  defaultPxPerMeter?: number;
+  /**
    * Top speed the motion is expected to reach, engine px per step, worked out from the scene's own physics at build
    * time (energy, amplitude × ω, ...). The velocity arrows are scaled to it from the very first frame, so an arrow
    * grows with the speed on the first run too; a faster motion than expected still rescales them.
@@ -431,7 +436,7 @@ export interface Scale {
   pxPerMeter: number;
   /** Physical seconds per screen second (< 1 = slow motion). */
   timeFactor: number;
-  /** The entered length that set the scale, if any (else the paper's long side is 1 m). */
+  /** The entered length that set the scale, if any (else the scene's default size, defaults.ts). */
   note?: Annotation;
 }
 

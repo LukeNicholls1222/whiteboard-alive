@@ -9,6 +9,7 @@ import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
 import { replayWhenStopped } from './replay';
 import { PAPER_FILL, STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, noteFor, scaleOf } from '../units';
+import { pxPerMeterForSteps, rollPxPerMeter, rollSteps, slideSteps } from '../defaults';
 import { fmt, lineDeg, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters, untidyTurn } from './tidy';
 import { ROUND_MAX_RESIDUAL, rollAccel, type RollPath, rollPath, rollPosition, rollStart, rollStep, rollTangent, roundness, SlopeAccelMeter, SOLID_BALL_K } from './roll';
 
@@ -944,6 +945,8 @@ export const buildIncline: SceneBuilder = (input) => {
   clean.unshift(groundPart, rampPart);
   const replay = replayWhenStopped(moving, () => scaleOf(scene).timeFactor);
   const rolling = balls.find((bl) => bl.body === block);
+  // Default size (defaults.ts): the first block's run on the ramp as drawn (drawn angle, μ = DEFAULT_FRICTION) takes ~3 s.
+  const defaultPpm = defaultPxPerMeter(blocks[0], drawnSlope, rampShape.tri, W);
   const gFactor = (input.analysis.params.gravity || 9.8) / 9.8;
   const scene: ReturnType<SceneBuilder> = {
     bodies,
@@ -963,6 +966,7 @@ export const buildIncline: SceneBuilder = (input) => {
         }
       : replay,
     measures: { ramp: slope.length, ground: x1 - x0 },
+    defaultPxPerMeter: defaultPpm,
     parts: {
       // Inside the triangle: blank paper, and never where the block slides.
       ramp: { at: () => inner, side: 'center' },
@@ -990,3 +994,28 @@ export const buildIncline: SceneBuilder = (input) => {
   };
   return scene;
 };
+
+/**
+ * px per metre without an entered length (defaults.ts): the drawn ramp (its drawn angle, never an entered one, and
+ * μ = DEFAULT_FRICTION) is as big as it takes for `blk` to run for about 3 s: a block down the slope and along the floor
+ * until friction or the wall stops it, a ball down the slope and along the floor to the picture's edge.
+ */
+function defaultPxPerMeter(blk: Block | undefined, slope: Slope, tri: Tri, W: number): number | undefined {
+  if (!blk) return undefined;
+  const floorY = Math.max(tri[0].y, tri[1].y, tri[2].y);
+  const shape = roundness(blk.outline);
+  if (shape?.round) {
+    const path = rollPath({ top: slope.top, dir: slope.dir, normal: slope.normal, floorY, start: shape.circle.c, r: shape.circle.r, width: W });
+    return rollPxPerMeter(rollSteps(path.slopeLen, rollAccel(STEP_ACCEL, slope.angle, DEFAULT_FRICTION).a, path.floorLen));
+  }
+  const b = boundsOf(blk.hull);
+  const half = Math.max(b.w, b.h) / 2;
+  const mu = DEFAULT_FRICTION;
+  // The starting push of a block on a gentle ramp, as buildIncline gives it.
+  const decel = STEP_ACCEL * (mu * Math.cos(slope.angle) - Math.sin(slope.angle));
+  const v0 = Math.max(MIN_START_SPEED, decel > 0 ? Math.sqrt(2 * decel * slope.length * MIN_SLIDE_FRACTION) : 0);
+  // From its centre's place to the foot (it slides on until its front reaches the floor or the wall), then the floor.
+  const left = (1 - Math.min(1, Math.max(0, along(blk.centroid, slope)))) * slope.length;
+  const room = Math.max(0, (slope.dir.x >= 0 ? W - slope.bottom.x : slope.bottom.x) - half);
+  return pxPerMeterForSteps(slideSteps(left, slope.angle, mu, v0, room));
+}

@@ -20,6 +20,7 @@ import type { CleanPart, Point, SceneBuilder } from '../types';
 import { contourMask, cutSprite, deepestPoint, eraseFromPaper, roleOf } from './common';
 import { MAX_VIEW_ASPECT, MIN_VIEW_ASPECT, STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, noteFor, scaleFor } from '../units';
+import { pendulumPxPerMeter } from '../defaults';
 import { dragConstant, roundFactor } from '../air';
 import { drawnSupport, fmt, TIDY, tidyLog, untidyMatters, untidySegment, untidyTurn } from './tidy';
 import { pendulumTarget, SmoothView, swingAmplitude, swingBox, unionRect } from './pendulum-view';
@@ -86,7 +87,9 @@ export const buildPendulum: SceneBuilder = (input) => {
   const params = input.analysis.params;
   const kg = noteFor(input.analysis, 'mass', ['bob', 'block', 'ball'])?.value;
   // Real air on this bob: k = c·L/m with the drawn radius and string length in metres (same scale buildScene sets).
-  const ppm = scaleFor(input, { string: length }).pxPerMeter;
+  // Without an entered length the string is PENDULUM_L_M long (defaults.ts: a period of about 3 s).
+  const defaultPpm = pendulumPxPerMeter(length);
+  const ppm = scaleFor(input, { string: length }, 1, defaultPpm).pxPerMeter;
   const kReal = (dragConstant(bobRadius / ppm) * (length / ppm)) / (kg ?? DEFAULT_KG);
   const airFactor = roundFactor(AIR_K_TARGET / Math.max(1e-12, kReal));
   // Gravity the swing runs under right now (px per step², downward), for the view; the engine's once it steps.
@@ -181,6 +184,7 @@ export const buildPendulum: SceneBuilder = (input) => {
     onStep,
     // L in 2π√(L/g) is pivot to bob centre.
     measures: { string: length },
+    defaultPxPerMeter: defaultPpm,
     parts: {
       string: { at: () => ({ x: (pivot.x + body.position.x) / 2, y: (pivot.y + body.position.y) / 2 }) },
       bob: { at: () => body.position, clear: bobRadius, body, kg: kg ?? DEFAULT_KG, kgFrom: kg ? 'input' : 'assumed' },

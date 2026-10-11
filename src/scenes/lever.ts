@@ -33,9 +33,11 @@ import {
   PLANK_MASS_SHARE,
   riding,
   rodInertia,
+  type LeverFind,
   type LeverItem,
   type LeverWeight,
 } from './lever-plan';
+import { leverPxPerMeter } from '../defaults';
 import { fmt, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters } from './tidy';
 
 /** Heavier : lighter drawn weight is capped at this (a drawn box 10× bigger would slam down). */
@@ -71,6 +73,7 @@ export const buildLever: SceneBuilder = (input) => {
     kgR = Math.min(MAX_MASS_RATIO, f.right.area / lo);
   } else if (f.left) kgL = 1;
   else if (f.right) kgR = 1;
+  const drawnKg = { left: kgL, right: kgR };
   const noteKgL = f.left ? noteFor(input.analysis, 'mass', ['left weight'])?.value : undefined;
   const noteKgR = f.right ? noteFor(input.analysis, 'mass', ['right weight'])?.value : undefined;
   let kgFromL: ValueSource = 'assumed', kgFromR: ValueSource = 'assumed';
@@ -95,7 +98,9 @@ export const buildLever: SceneBuilder = (input) => {
   if (f.left) drawnMeasures['left weight'] = drawnD.left;
   if (f.right) drawnMeasures['right weight'] = drawnD.right;
   // The scale (px per metre) follows the same rule as every scene: an entered distance sets it (that weight stays).
-  const scale0 = scaleFor(input, drawnMeasures);
+  // Default size (defaults.ts): the seesaw as drawn (drawn weights and places) takes about 3 s to tip and settle.
+  const defaultPpm = drawnTipPxPerMeter(f, drawnKg, drawnD, T, depth, theta0);
+  const scale0 = scaleFor(input, drawnMeasures, 1, defaultPpm);
   const pxPerM = scale0.pxPerMeter;
   const dPx = { ...drawnD };
   const dFrom: Record<'left' | 'right', ValueSource> = { left: scale0.note ? 'scaled' : 'assumed', right: scale0.note ? 'scaled' : 'assumed' };
@@ -290,6 +295,7 @@ export const buildLever: SceneBuilder = (input) => {
     onStep,
     clean: [ground, triangle, plankPart, ...weightParts],
     gravityScale: gScale,
+    defaultPxPerMeter: defaultPpm,
     speedHint: Math.max(1e-3, omegaMax * rMax),
     measures,
     parts,
@@ -297,3 +303,26 @@ export const buildLever: SceneBuilder = (input) => {
   };
   return scene;
 };
+
+/**
+ * px per metre without an entered length (defaults.ts): the seesaw as drawn (drawn weights at their drawn places,
+ * starting as buildLever starts it) takes about 3 s from tipping to resting on the floor. A drawing that is nearly
+ * balanced only settles a little and keeps the paper's scale.
+ */
+function drawnTipPxPerMeter(f: LeverFind, kg: { left: number; right: number }, d: { left: number; right: number }, T: number, depth: number, theta0: number): number | undefined {
+  const items: LeverItem[] = [];
+  for (const s of ['left', 'right'] as const) {
+    const w = s === 'left' ? f.left : f.right;
+    if (!w) continue;
+    const height = f.vTop - w.v0;
+    items.push({ m: kg[s], u: s === 'left' ? -d.left : d.right, v: TIDY ? -T - height / 2 : (w.v0 + f.vTop) / 2 });
+  }
+  const total = items.reduce((a, it) => a + it.m, 0) || 1;
+  const model = { items, plankI: rodInertia(PLANK_MASS_SHARE * total, f.uMin, f.uMax), ...floorLimits(f.uMin, f.uMax, depth) };
+  if (balanceOf(imbalance(model), false, items.length === 2).balanced) return undefined;
+  const sign = Math.sign(leverTorque(model, theta0, 1));
+  const room = (th: number) => (sign > 0 ? model.thetaMax - th : th - model.thetaMin);
+  const th = sign !== 0 && room(theta0) < rad(3) ? 0 : theta0;
+  const alpha = Math.abs(leverTorque(model, th, STEP_ACCEL)) / leverInertia(model);
+  return leverPxPerMeter(Math.max(rad(2), room(th)), alpha);
+}
