@@ -3,8 +3,9 @@
 // the zigzag cut-out stretches and squashes between its two ends.
 
 import Matter from 'matter-js';
-import type { BBox, CleanPart, Contour, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
-import { supportAcross } from '../clean';
+import type { BBox, CleanPart, Contour, Point, SceneBuilder, SceneInput, Sprite, Untidy, ValueSource } from '../types';
+import { bodyOutline, supportAcross } from '../clean';
+import { drawnSupport, fmt, rayExit, snapDir, TIDY, tidyLog, untidyMatters, untidyMove, untidySegment } from './tidy';
 import { contourMask, cutSprite, deepestPoint, eraseFromPaper, maskBounds, roleOf } from './common';
 import { STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, noteFor, scaleFor, stiffnessFor } from '../units';
@@ -308,6 +309,32 @@ export const buildSpring: SceneBuilder = (input) => {
   if (!body) body = Matter.Bodies.rectangle(mb.x + mb.w / 2, mb.y + mb.h / 2, Math.max(8, mb.w), Math.max(8, mb.h), bodyOpts);
   Matter.Body.setInertia(body, Infinity); // slides along the spring, never tumbles
 
+  // Tidy-up (tidy.ts): a spring drawn within 15° of vertical / horizontal is straightened and meets the middle of the
+  // block's face towards it. A hanging spring keeps its top on the ceiling and the block moves under it; a spring
+  // lying on a floor keeps the block on the floor and its end slides along the wall to the block's middle. The
+  // physics below (constraint, rails, rest length) is built from the tidied ends, so the block oscillates straight
+  // along the tidied spring. Steeper springs stay as drawn.
+  const tidyNotes: string[] = [];
+  const drawnAnchor = { ...anchor }, drawnAttach = { ...attach }, drawnCentre = { ...body.position };
+  let straight = false;
+  if (haveSpringSprite) {
+    const axisName = vertical ? 'vertical' : 'horizontal';
+    const snap = snapDir({ x: attach.x - anchor.x, y: attach.y - anchor.y }, vertical ? 'v' : 'h');
+    tidyNotes.push(`spring ${fmt(snap.off)} off ${axisName}${snap.snapped ? ` → ${axisName}` : TIDY ? ' (kept: slanted on purpose)' : ''}`);
+    if (snap.snapped) {
+      straight = true;
+      const u = snap.dir; // from the fixed end towards the block
+      const back = { x: -u.x, y: -u.y };
+      // How far the drawn spring missed the middle of the block's face (across the spring).
+      const face0 = rayExit(bodyOutline(body), body.position, back);
+      const miss = vertical ? drawnAttach.x - face0.x : drawnAttach.y - face0.y;
+      if (vertical) Matter.Body.translate(body, { x: anchor.x - body.position.x, y: 0 });
+      else anchor = { x: anchor.x, y: body.position.y };
+      attach = rayExit(bodyOutline(body), body.position, back);
+      tidyNotes.push(`attach offset ${Math.abs(miss).toFixed(1)}px → centre (${vertical ? 'block' : 'wall end'} moved ${Math.abs(miss).toFixed(1)}px)`);
+    }
+  }
+
   const L0 = Math.hypot(attach.x - anchor.x, attach.y - anchor.y);
   const dir = { x: (attach.x - anchor.x) / L0, y: (attach.y - anchor.y) / L0 };
 
@@ -378,6 +405,19 @@ export const buildSpring: SceneBuilder = (input) => {
     Matter.Body.setVelocity(body!, { x: vel.x + dir.x * va * (f - 1), y: vel.y + dir.y * va * (f - 1) });
   };
 
+  // A straightened spring: the block stays exactly on the spring's line (the rails leave it 1 px of play, so a
+  // block on a level spring would otherwise sink onto the lower rail and tilt the spring).
+  const line0 = { ...body.position };
+  const onStep = straight
+    ? () => {
+        const p = body!.position, v = Matter.Body.getVelocity(body!);
+        const off = (p.x - line0.x) * -dir.y + (p.y - line0.y) * dir.x;
+        const voff = v.x * -dir.y + v.y * dir.x;
+        if (Math.abs(off) > 1e-9) Matter.Body.setPosition(body!, { x: p.x + dir.y * off, y: p.y - dir.x * off });
+        if (Math.abs(voff) > 1e-9) Matter.Body.setVelocity(body!, { x: v.x + dir.y * voff, y: v.y - dir.x * voff });
+      }
+    : undefined;
+
   const sprites: Sprite[] = [];
   const masks: Uint8Array[] = [massMask];
   if (springMask && haveSpringSprite) {
@@ -400,11 +440,50 @@ export const buildSpring: SceneBuilder = (input) => {
     const x0 = Math.min(anchor.x, bb.min.x) - 4, x1 = Math.max(anchor.x, bb.max.x) + 2 * amp + 20;
     clean.push({ kind: 'ground', y: floorY, x0: dir.x > 0 ? x0 : Math.min(anchor.x, bb.min.x) - 2 * amp - 20, x1: dir.x > 0 ? x1 : Math.max(anchor.x, bb.max.x) + 4 });
   }
-  clean.push(
-    supportAcross(anchor, dir, Math.max(30, 0.8 * across)),
-    { kind: 'spring', from: () => anchor, to: () => Matter.Constraint.pointBWorld(spring), coils, width: zigWidth },
-    { kind: 'body', body: block, tone: 'mass' },
-  );
+  // The fixed end's support: across the (tidied) spring. A ceiling / wall drawn more than 15° off level / plumb stays
+  // at its drawn angle; within 15° it is level / plumb (it already is, across a straightened spring).
+  const half = Math.max(30, 0.8 * across);
+  const support = supportAcross(anchor, dir, half);
+  const drawnDir = { x: (drawnAttach.x - drawnAnchor.x) / (Math.hypot(drawnAttach.x - drawnAnchor.x, drawnAttach.y - drawnAnchor.y) || 1), y: (drawnAttach.y - drawnAnchor.y) / (Math.hypot(drawnAttach.x - drawnAnchor.x, drawnAttach.y - drawnAnchor.y) || 1) };
+  // The support as drawn: the measured ink line at the fixed end, else across the drawn spring.
+  let drawnSupportDeg = (Math.atan2(drawnDir.y, drawnDir.x) * 180) / Math.PI + 90;
+  if (haveSpringSprite) {
+    const keep = (i: number) => !massMask[i] && !(springMask && springMask[i]);
+    const fixedEnd = drawnSupport(input.ink, W, H, drawnAnchor, vertical ? 'h' : 'v', half, Math.max(8, 0.3 * zigWidth), keep);
+    if (fixedEnd) {
+      drawnSupportDeg = fixedEnd.drawn;
+      const name = vertical ? 'ceiling' : 'wall';
+      const axisDeg = vertical ? 0 : 90;
+      if (straight && fixedEnd.used !== axisDeg) {
+        // Slanted on purpose: keep the drawn angle, still through the spring's end.
+        const r = (fixedEnd.used * Math.PI) / 180, v = { x: Math.cos(r), y: Math.sin(r) };
+        const n = { x: -v.y, y: v.x };
+        const side = n.x * dir.x + n.y * dir.y > 0 ? { x: -n.x, y: -n.y } : n;
+        Object.assign(support, { from: { x: anchor.x - v.x * half, y: anchor.y - v.y * half }, to: { x: anchor.x + v.x * half, y: anchor.y + v.y * half }, side });
+        tidyNotes.push(`${name} ${fmt(fixedEnd.drawn)} (kept: slanted on purpose)`);
+      } else tidyNotes.push(`${name} ${fmt(fixedEnd.drawn)} → ${fmt(straight ? axisDeg : (Math.atan2(dir.y, dir.x) * 180) / Math.PI + 90)}`);
+    }
+  }
+  const springPart: CleanPart = { kind: 'spring', from: () => anchor, to: () => Matter.Constraint.pointBWorld(spring), coils, width: zigWidth };
+  const blockPart: CleanPart = { kind: 'body', body: block, tone: 'mass' };
+  if (TIDY && haveSpringSprite) {
+    // Where each part was drawn, for the morph to snap it from.
+    const sf = support.kind === 'support' ? support : null;
+    if (sf) {
+      const t = { x: sf.to.x - sf.from.x, y: sf.to.y - sf.from.y };
+      const r = (drawnSupportDeg * Math.PI) / 180;
+      let v = { x: Math.cos(r), y: Math.sin(r) };
+      if (v.x * t.x + v.y * t.y < 0) v = { x: -v.x, y: -v.y };
+      const u: Untidy = untidySegment(sf.from, sf.to, { x: drawnAnchor.x - v.x * half, y: drawnAnchor.y - v.y * half }, { x: drawnAnchor.x + v.x * half, y: drawnAnchor.y + v.y * half });
+      if (untidyMatters(u, half)) support.untidy = u;
+    }
+    const us = untidySegment(anchor, attach, drawnAnchor, drawnAttach);
+    if (untidyMatters(us, L0)) springPart.untidy = us;
+    const ub = untidyMove(drawnCentre, body.position);
+    if (untidyMatters(ub, 1)) blockPart.untidy = ub;
+  }
+  tidyLog('Spring', tidyNotes);
+  clean.push(support, springPart, blockPart);
 
   return {
     bodies: [body, ...rails],
@@ -414,6 +493,7 @@ export const buildSpring: SceneBuilder = (input) => {
     background: eraseFromPaper(input, masks),
     label: 'Spring and mass',
     step,
+    onStep,
     measures,
     parts: {
       spring: {

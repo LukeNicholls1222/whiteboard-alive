@@ -159,7 +159,28 @@ export type CleanTone = 'mass' | 'device';
  * Shapes and positions come only from the physics bodies and what the scene builder worked out (never from the AI).
  * Invisible helper bodies (walls, rails, collision cells) are simply not listed.
  */
-export type CleanPart =
+export type CleanPart = CleanShape & {
+  /**
+   * Tidy-up (scenes/tidy.ts): the part as it was drawn = this similarity applied to the part as built. The morph
+   * traces it there, then snaps it into place. Absent = drawn where it is.
+   */
+  untidy?: Untidy;
+};
+
+/**
+ * Where a tidied part was drawn: p_drawn = about + (dx, dy) + scale · R(angle) · (p − about), p = the tidy point.
+ * Only used by the morph; the physics and every later frame use the tidy part.
+ */
+export interface Untidy {
+  about: Point;
+  dx: number;
+  dy: number;
+  /** Radians, clockwise on screen. */
+  angle: number;
+  scale: number;
+}
+
+export type CleanShape =
   /** A rigid body drawn as its own convex outline, corners slightly rounded (blocks, weights, falling objects). */
   | { kind: 'body'; body: Matter.Body; tone: CleanTone }
   /** A round body (bob, ball) of radius `radius` world px; never smaller than `minCss` CSS px on screen. */
@@ -176,8 +197,8 @@ export type CleanPart =
   | { kind: 'support'; from: Point; to: Point; side: Point }
   /** Ground line at height `y`; without x0 / x1 it runs across the whole picture. */
   | { kind: 'ground'; y: number; x0?: number; x1?: number }
-  /** Fixed solid (ramp, ledge): outlined polygon with a light fill. */
-  | { kind: 'solid'; points: Point[] }
+  /** Fixed solid (ramp, ledge): outlined polygon with a light fill. `drawnPoints` = its corners as drawn (tidy-up). */
+  | { kind: 'solid'; points: Point[]; drawnPoints?: Point[] }
   /** Launch arrow (fixed): shaft from `from`, head at `to`. */
   | { kind: 'arrow'; from: Point; to: Point }
   /** Small dark dot (pivot, axle). */

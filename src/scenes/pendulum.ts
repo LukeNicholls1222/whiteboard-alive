@@ -18,6 +18,7 @@ import { contourMask, cutSprite, deepestPoint, eraseFromPaper, roleOf } from './
 import { STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, noteFor, scaleFor } from '../units';
 import { dragConstant, roundFactor } from '../air';
+import { drawnSupport, fmt, TIDY, tidyLog, untidyMatters, untidySegment, untidyTurn } from './tidy';
 
 const KICK_DEG = 20;
 /** Drag k the air switch aims for: about 10 % off a 20° swing per period, the swing visibly dies down in ~30 s. */
@@ -41,7 +42,7 @@ export const buildPendulum: SceneBuilder = (input) => {
   const { point: bob, radius: depth } = deepestPoint(movingMask, W, H);
   const bobRadius = Math.max(10, depth);
 
-  const pivot = traceString(all, W, H, bob, bobRadius);
+  const { pivot, entry } = traceString(all, W, H, bob, bobRadius);
 
   // The swinging part = bob disc + a band along the string. Everything else (ceiling) stays as background.
   const band = Math.max(12, bobRadius * 0.4);
@@ -109,12 +110,38 @@ export const buildPendulum: SceneBuilder = (input) => {
   // Clean figure: a hatched ceiling through the pivot, the string from the pivot to the bob's centre, the bob as the
   // physics circle.
   const ceilHalf = Math.max(2.2 * bobRadius, Math.min(0.3 * length, 0.2 * W), 30);
-  const clean: CleanPart[] = [
-    { kind: 'support', from: { x: pivot.x - ceilHalf, y: pivot.y }, to: { x: pivot.x + ceilHalf, y: pivot.y }, side: { x: 0, y: -1 } },
-    { kind: 'rope', from: () => pivot, to: () => body.position },
-    { kind: 'pin', at: () => pivot },
-    { kind: 'ball', body, radius: bobRadius, tone: 'mass' },
-  ];
+  // Tidy-up (tidy.ts): a ceiling drawn within 15° of level is level (steeper stays as drawn); the string meets the
+  // bob's centre (it always did in the physics; the drawn string may aim a little off it). The swing angle is the
+  // physics and is never changed.
+  const tidyNotes: string[] = [];
+  const ceiling = drawnSupport(input.ink, W, H, pivot, 'h', ceilHalf, Math.max(10, 0.6 * bobRadius), (i) => !swing[i]);
+  // ?tidy=0: level, as before the tidy-up.
+  const ceilDeg = TIDY && ceiling ? ceiling.used : 0;
+  const ceilRad = (ceilDeg * Math.PI) / 180;
+  const cu = { x: Math.cos(ceilRad), y: Math.sin(ceilRad) };
+  const support: CleanPart = {
+    kind: 'support',
+    from: { x: pivot.x - cu.x * ceilHalf, y: pivot.y - cu.y * ceilHalf },
+    to: { x: pivot.x + cu.x * ceilHalf, y: pivot.y + cu.y * ceilHalf },
+    side: { x: cu.y, y: -cu.x },
+  };
+  if (ceiling) {
+    tidyNotes.push(`ceiling ${fmt(ceiling.drawn)} → ${fmt(ceilDeg)}${ceilDeg !== 0 ? ' (kept: slanted on purpose)' : ''}`);
+    const turn = untidyTurn(pivot, ((ceiling.drawn - ceilDeg) * Math.PI) / 180);
+    if (TIDY && untidyMatters(turn, ceilHalf)) support.untidy = turn;
+  }
+  const rope: CleanPart = { kind: 'rope', from: () => pivot, to: () => body.position };
+  const entryLen = Math.hypot(entry.x - pivot.x, entry.y - pivot.y);
+  if (entryLen > 1) {
+    // The drawn string: from the pivot towards where it meets the bob's outline.
+    const off = Math.abs((entry.x - pivot.x) * (bob.y - pivot.y) - (entry.y - pivot.y) * (bob.x - pivot.x)) / entryLen;
+    tidyNotes.push(`string offset ${off.toFixed(1)}px → centre`);
+    const drawnEnd = { x: pivot.x + ((entry.x - pivot.x) / entryLen) * length, y: pivot.y + ((entry.y - pivot.y) / entryLen) * length };
+    const seg = untidySegment(pivot, { ...body.position }, pivot, drawnEnd);
+    if (TIDY && untidyMatters(seg, length)) rope.untidy = seg;
+  }
+  tidyLog('Pendulum', tidyNotes);
+  const clean: CleanPart[] = [support, rope, { kind: 'pin', at: () => pivot }, { kind: 'ball', body, radius: bobRadius, tone: 'mass' }];
 
   return {
     bodies: [body],
@@ -145,7 +172,7 @@ export const buildPendulum: SceneBuilder = (input) => {
  * Walk from the bob up along the string. Stops where the ink ends (free pivot point)
  * or where the line suddenly widens (it hit the ceiling). Returns the pivot.
  */
-function traceString(mask: Uint8Array, W: number, H: number, bob: Point, r: number): Point {
+function traceString(mask: Uint8Array, W: number, H: number, bob: Point, r: number): { pivot: Point; entry: Point } {
   const at = (x: number, y: number) => {
     const xi = Math.round(x), yi = Math.round(y);
     return xi >= 0 && yi >= 0 && xi < W && yi < H && mask[yi * W + xi] === 1;
@@ -165,6 +192,8 @@ function traceString(mask: Uint8Array, W: number, H: number, bob: Point, r: numb
   let dir = n ? normalize({ x: sx, y: sy }) : { x: 0, y: -1 };
 
   let p = { x: bob.x + dir.x * r * 1.3, y: bob.y + dir.y * r * 1.3 };
+  // Where the drawn string leaves the bob: the centre of its ink in the ring above the bob.
+  const entry = { ...p };
   let last = { ...p };
   const widths: number[] = [];
   const maxGap = Math.max(10, r * 0.6);
@@ -201,8 +230,8 @@ function traceString(mask: Uint8Array, W: number, H: number, bob: Point, r: numb
     dir = normalize({ x: dir.x * 0.8 + toP.x * 0.2, y: dir.y * 0.8 + toP.y * 0.2 });
     last = { ...p };
   }
-  if (Math.hypot(last.x - bob.x, last.y - bob.y) < r * 2) return { x: bob.x, y: Math.max(0, bob.y - 4 * r) };
-  return last;
+  if (Math.hypot(last.x - bob.x, last.y - bob.y) < r * 2) return { pivot: { x: bob.x, y: Math.max(0, bob.y - 4 * r) }, entry };
+  return { pivot: last, entry };
 }
 
 function normalize(v: Point): Point {

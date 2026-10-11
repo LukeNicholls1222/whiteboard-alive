@@ -13,6 +13,7 @@ import type { CleanPart, Contour, Point, SceneBuilder, Sprite } from '../types';
 import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
 import { replayWhenStopped } from './replay';
 import { STEP_ACCEL } from '../sim';
+import { fmt, offAxis, TIDY, TIDY_MAX_DEG, tidyLog } from './tidy';
 
 /** A body whose bottom is closer than this (× view height) to the floor hops first. */
 const MIN_DROP = 0.25;
@@ -106,6 +107,28 @@ export const buildFallback: SceneBuilder = (input) => {
   /** Static bodies made from the drawing (a drawn ground or ramp): shown in the clean figure, unlike the walls. */
   const drawnStatic: Matter.Body[] = [];
 
+  // Tidy-up (tidy.ts): a drawn ground line (a long thin static stroke) within 15° of level is made level, the body
+  // as well as the picture, so things land on a level floor. Steeper ones stay as drawn.
+  const tidyNotes: string[] = [];
+  const drawnPoints = new Map<Matter.Body, Point[]>();
+  const levelGround = (body: Matter.Body) => {
+    const vs = body.vertices.map((v) => ({ x: v.x, y: v.y }));
+    let a = vs[0], b = vs[0], far = -1;
+    for (const p of vs) for (const q of vs) {
+      const d = Math.hypot(p.x - q.x, p.y - q.y);
+      if (d > far) [far, a, b] = [d, p, q];
+    }
+    const long = { x: b.x - a.x, y: b.y - a.y };
+    const L = Math.hypot(long.x, long.y) || 1;
+    const across = Math.max(...vs.map((p) => Math.abs((p.x - a.x) * long.y - (p.y - a.y) * long.x) / L));
+    const { axis, off } = offAxis(long);
+    if (axis !== 'h' || L < 4 * Math.max(1, across)) return;
+    tidyNotes.push(`ground ${fmt(off)} → ${Math.abs(off) <= TIDY_MAX_DEG && TIDY ? '0°' : `${fmt(off)} (kept${TIDY ? ': slanted on purpose' : ''})`}`);
+    if (!TIDY || Math.abs(off) > TIDY_MAX_DEG || Math.abs(off) < 0.05) return;
+    drawnPoints.set(body, vs);
+    Matter.Body.rotate(body, (-off * Math.PI) / 180);
+  };
+
   const addBody = (hull: { x: number; y: number }[], bbox: { x: number; y: number }, isStatic: boolean, mask: Uint8Array | null) => {
     const body = Matter.Bodies.fromVertices(0, 0, [hull], { isStatic, friction: 0.4, restitution: 0.3 });
     if (!body) return;
@@ -113,7 +136,10 @@ export const buildFallback: SceneBuilder = (input) => {
     const hb = body.bounds;
     Matter.Body.translate(body, { x: bbox.x - hb.min.x, y: bbox.y - hb.min.y });
     bodies.push(body);
-    if (isStatic) drawnStatic.push(body);
+    if (isStatic) {
+      drawnStatic.push(body);
+      levelGround(body);
+    }
     if (isStatic || !mask) return;
     moving.push(body);
     masks.push(mask);
@@ -222,7 +248,8 @@ export const buildFallback: SceneBuilder = (input) => {
   // Clean figure: the floor line, drawn static parts as fixed solids, and every falling body as its own physics outline
   // (corners slightly rounded). With no lines found at all, the photo's patch itself keeps falling.
   const clean: CleanPart[] = [{ kind: 'ground', y: floorTop }];
-  for (const b of drawnStatic) clean.push({ kind: 'solid', points: b.vertices.map((v) => ({ x: v.x, y: v.y })) });
+  for (const b of drawnStatic) clean.push({ kind: 'solid', points: b.vertices.map((v) => ({ x: v.x, y: v.y })), drawnPoints: drawnPoints.get(b) });
+  tidyLog('Falling objects', tidyNotes);
   if (!input.contours.length) for (const sprite of sprites) clean.push({ kind: 'sprite', sprite });
   else for (const body of moving) clean.push({ kind: 'body', body, tone: 'mass' });
 
