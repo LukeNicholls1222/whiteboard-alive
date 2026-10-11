@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Whiteboard Alive: How it works</title>
+<title>Whiteboard Alive Slides</title>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@700;800;900&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -52,6 +52,27 @@
   .box ul { margin: 0; padding-left: 1.1em; font-size: min(2.8vw, 5.2vh); line-height: 1.45; }
   .score { font-size: min(11vw, 20vh); font-weight: 900; color: var(--green); line-height: 1; }
   .score-sub { font-size: min(2vw, 3.8vh); color: var(--muted); margin-top: 1vh; }
+  .title { font-size: min(10vw, 18vh); font-weight: 900; color: var(--green); line-height: 1; letter-spacing: -0.02em; }
+  .tagline { font-size: min(4vw, 7.5vh); font-weight: 900; color: var(--ink); }
+  .tagline span { color: var(--green-dark); }
+  .quote { font-style: italic; }
+  .opts { display: flex; gap: 3vw; justify-content: center; }
+  .opt {
+    border: 4px solid var(--line); border-radius: 26px; background: var(--card);
+    font-size: min(9vw, 16vh); font-weight: 900; color: var(--blue); padding: 2vh 4vw; min-width: 18vw;
+  }
+  .eq { font-size: min(2.6vw, 4.8vh); font-weight: 900; color: var(--blue); margin-top: 1vh; font-family: 'Nunito', 'Cambria Math', serif; }
+  .chips { display: flex; flex-wrap: wrap; gap: 1.6vh 1.6vw; justify-content: center; max-width: 86vw; }
+  .chip {
+    background: var(--card); border: 3px solid var(--line); border-radius: 999px;
+    font-size: min(3.2vw, 6vh); font-weight: 900; padding: 1.4vh 2.6vw;
+  }
+  .end { display: flex; gap: 5vw; align-items: center; justify-content: center; }
+  .qr { width: min(30vw, 46vh); height: min(30vw, 46vh); background: #fff; border: 3px solid var(--line); border-radius: 22px; padding: 1.4vh; }
+  .qr svg { width: 100%; height: 100%; display: block; }
+  .url { font-size: min(2.2vw, 4.2vh); color: var(--blue); }
+  .end-text { display: flex; flex-direction: column; gap: 3vh; text-align: left; }
+  .end-text .tagline { line-height: 1.15; }
   .count {
     position: fixed; right: 2vw; bottom: 2vh; font-size: clamp(12px, 1.6vw, 20px);
     color: var(--muted); font-weight: 800;
@@ -71,12 +92,89 @@
     .box ul { font-size: 6vw; }
     .score { font-size: 24vw; }
     .score-sub { font-size: 4.6vw; }
+    .title { font-size: 15vw; }
+    .tagline { font-size: 7vw; }
+    .opts { flex-direction: column; gap: 2vh; }
+    .opt { font-size: 14vw; width: 60vw; padding: 1.6vh 5vw; }
+    .eq { font-size: 5.6vw; }
+    .chip { font-size: 6vw; padding: 1.2vh 5vw; }
+    .end { flex-direction: column; gap: 4vh; }
+    .end-text { text-align: center; }
+    .qr { width: 62vw; height: 62vw; }
+    .url { font-size: 4.2vw; }
   }
 </style>
 </head>
 <body>
 
-<section class="slide on" data-n="1">
+<section class="slide on">
+  <div class="title">Whiteboard Alive</div>
+  <div class="tagline">Draw it. Snap it. <span>Watch it move.</span></div>
+</section>
+
+<section class="slide">
+  <h1 class="quote">&ldquo;Imagine it swinging.&rdquo;</h1>
+  <div class="two">
+    <div class="box">
+      <h2>In class</h2>
+      <ul>
+        <li>Teacher draws it</li>
+        <li>You imagine it</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h2>In simulation apps</h2>
+      <ul>
+        <li>Blank menus</li>
+        <li>Rebuild the problem</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <h1>Demo</h1>
+  <div class="flow">
+    <div class="step"><div class="name">Draw</div><div class="what">on paper</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="step"><div class="name">Snap</div><div class="what">one photo</div></div>
+    <div class="arrow">&rarr;</div>
+    <div class="step ai"><div class="name">Transform</div><div class="what">your drawing moves</div></div>
+  </div>
+</section>
+
+<section class="slide">
+  <h1>String 4&times; longer. Period?</h1>
+  <div class="opts">
+    <div class="opt">2&times;</div>
+    <div class="opt">4&times;</div>
+    <div class="opt">16&times;</div>
+  </div>
+</section>
+
+<section class="slide">
+  <h1>Theory next to measurement</h1>
+  <div class="flow">
+    <div class="step"><div class="name">Pendulum</div><div class="eq">T = 2&pi;&radic;(L/g)</div></div>
+    <div class="step"><div class="name">Rolling ball</div><div class="eq">a = 5/7 g sin&theta;</div></div>
+    <div class="step"><div class="name">Collision</div><div class="eq">total momentum conserved</div></div>
+  </div>
+</section>
+
+<section class="slide">
+  <h1>Your turn. Draw anything.</h1>
+  <div class="chips">
+    <div class="chip">Pendulum</div>
+    <div class="chip">Spring</div>
+    <div class="chip">Ramp</div>
+    <div class="chip">Launch</div>
+    <div class="chip">Pulley</div>
+    <div class="chip">Collision</div>
+    <div class="chip">Seesaw</div>
+  </div>
+</section>
+
+<section class="slide">
   <h1>The AI names it. The camera measures it.</h1>
   <div class="flow">
     <div class="step"><div class="name">Photo</div><div class="what">your drawing</div></div>
@@ -90,7 +188,7 @@
   <div class="key"><b>#2</b> is the string. <b>#3</b> is the weight.<span class="sep"></span>Every position comes from the photo, never from the AI.</div>
 </section>
 
-<section class="slide" data-n="2">
+<section class="slide">
   <h1>Messy photos. No AI needed.</h1>
   <div class="two">
     <div class="box">
@@ -109,7 +207,53 @@
   </div>
 </section>
 
+<section class="slide">
+  <div class="two">
+    <div class="box">
+      <h2>What was hard</h2>
+      <ul>
+        <li>AI guessing positions</li>
+        <li>Messy real photos</li>
+        <li>Honest physics</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h2>What's next</h2>
+      <ul>
+        <li>Live classroom camera</li>
+        <li>Circuits and optics</li>
+        <li>Share a drawing as a link</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="end">
+    <div class="end-text">
+      <div class="tagline">Draw it.<br>Snap it.<br><span>Watch it move.</span></div>
+      <div class="url">lukenicholls1222.github.io/<wbr>whiteboard-alive</div>
+    </div>
+    <div class="qr" id="qr"></div>
+  </div>
+</section>
+
 <div class="count" id="count"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script>
+  (function () {
+    var box = document.getElementById('qr');
+    try {
+      var qr = qrcode(0, 'M');
+      qr.addData('https://lukenicholls1222.github.io/whiteboard-alive/');
+      qr.make();
+      var n = qr.getModuleCount(), m = 2, d = '';
+      for (var r = 0; r < n; r++) for (var c = 0; c < n; c++) if (qr.isDark(r, c)) d += 'M' + (c + m) + ' ' + (r + m) + 'h1v1h-1z';
+      box.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + (n + 2 * m) + ' ' + (n + 2 * m) + '" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/><path d="' + d + '" fill="#000"/></svg>';
+    } catch (e) { box.style.display = 'none'; }
+  })();
+</script>
 
 <script>
   var slides = document.querySelectorAll('.slide');

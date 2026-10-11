@@ -2,7 +2,9 @@
 
 Slot: up to 8 minutes. This script ends at about **7:00**, which leaves 1 minute spare for a slow photo, a question or applause. The 3-minute version is still in `docs/pitch.md`.
 
-Props: paper, two thick black markers, the phone with the live site open (https://lukenicholls1222.github.io/whiteboard-alive/), a laptop showing the phone screen, the two slides (https://lukenicholls1222.github.io/whiteboard-alive/slides/), and **one pre-drawn collision sheet** (two circles on a floor line, an arrow above each). A pre-drawn seesaw sheet is the spare.
+Props: paper, two thick black markers, the phone with the live site open (https://lukenicholls1222.github.io/whiteboard-alive/), a laptop showing the phone screen, the 10 slides (https://lukenicholls1222.github.io/whiteboard-alive/slides/), and **one pre-drawn collision sheet** (two circles on a floor line, an arrow above each). A pre-drawn seesaw sheet is the spare.
+
+**Slides:** `[Slide N]` marks when to move the slide screen forward. Arrow keys, Space or a tap go forward (a tap on the left third goes back), `f` goes full screen, and adding `#7` to the URL opens slide 7. When the phone demo is on screen, leave the slide where it is.
 
 Every feature used below is live. Each section has a "**If it goes wrong**" line. If you lose more than 20 seconds anywhere, skip the next "optional" line to catch up.
 
@@ -13,7 +15,7 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 | 1:40 | 3. A learning moment: predict, then test | 60s |
 | 2:40 | 4. Demo 2: the collision (pre-drawn) | 50s |
 | 3:30 | 5. A judge draws | 80s |
-| 4:50 | 6. How it works: two slides + the no-AI switch | 80s |
+| 4:50 | 6. How it works: Slides 7–8 + the no-AI switch | 80s |
 | 6:10 | 7. What was hard | 30s |
 | 6:40 | 8. What's next and close | 20s |
 | 7:00 | End (1 minute spare) | |
@@ -21,6 +23,8 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 ---
 
 ## 1. The problem (0:00–0:40, 40s)
+
+**[Slide 1]** Title, on screen while you walk up. **[Slide 2]** as you start speaking.
 
 *Start drawing a pendulum on paper with the black marker while you talk: a ceiling line, a string, a circle at the end. Draw it big.*
 
@@ -34,6 +38,8 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 **If it goes wrong:** if the marker is dry or the drawing looks bad, take the spare marker and redraw. Don't apologise; keep talking.
 
 ## 2. Demo 1: the pendulum transforms (0:40–1:40, 60s)
+
+**[Slide 3]** Draw → Snap → Transform. Then switch the screen to the phone.
 
 *Hold the paper flat, phone straight above it, take the photo. Point at the progress line on the screen.*
 
@@ -58,7 +64,7 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 *Before you start: tap the **Length** pill under the swinging picture and set it to **0.25 m**. Point at the period readout (about 1.0 s).*
 
 > "This is where it becomes a lesson. Right now the string is 25 centimetres and the period is about one second.
-> Quick question for you." *(Look at a judge.)* "If I make the string **four times longer**, what happens to the period? Twice as long? Four times? Have a guess."
+> Quick question for you." **[Slide 4]** *(Look at a judge.)* "If I make the string **four times longer**, what happens to the period? Twice as long? Four times? Have a guess."
 
 *Wait for an answer. Whatever they say, nod.*
 
@@ -69,6 +75,8 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 > "Make the string 1 meter."
 
 *The string grows. Point at the measured period next to the theory value.*
+
+**[Slide 5]** after the period appears (Theory next to measurement), or keep the phone on screen if it's mirrored on the same display.
 
 > "Four times the length, and the period is about two seconds: only **twice** as long. And here's the theory next to it, 2π root L over g. Measured and predicted, side by side. Students don't just watch it, they check it."
 
@@ -84,7 +92,7 @@ Every feature used below is live. Each section has a "**If it goes wrong**" line
 
 ## 4. Demo 2: the collision, pre-drawn (2:40–3:30, 50s)
 
-*Pick up the pre-drawn collision sheet: a floor line, two circles, an arrow above each.*
+*Pick up the pre-drawn collision sheet: a floor line, two circles, an arrow above each.* Slide 5 stays up: its last box is the collision.
 
 > "Pendulums are the classic. But it understands more than that. Here's one I drew earlier: two balls about to crash."
 
@@ -107,6 +115,8 @@ Only explain momentum on the **first** collision between the balls. When a ball 
 
 ## 5. A judge draws (3:30–4:50, 80s)
 
+**[Slide 6]** Your turn. Draw anything.
+
 *Hand a judge the printed judge sheet (`docs/judge-sheet.pdf`), a blank sheet and a black marker.*
 
 > "Don't trust us. You draw one. Pick anything on that sheet: a pendulum, a spring, a block or a ball on a ramp, a cannon, a pulley, two balls about to crash, or a seesaw. Use the black marker, and draw it big."
@@ -124,20 +134,16 @@ Only explain momentum on the **first** collision between the balls. When a ball 
 - Recognition misses: "It didn't recognise that one, so it falls back to plain gravity. It never just freezes. Real handwriting is messy, and that's exactly the problem we spent most of our time on." Then go straight to section 6, which explains that.
 - The judge is still drawing at 4:30: say "Take your time, I'll show you how it works and we'll run yours at the end." Run it after section 8, inside the spare minute.
 
-## 6. How it works: two slides and the no-AI switch (4:50–6:10, 80s)
+## 6. How it works: Slides 7–8 and the no-AI switch (4:50–6:10, 80s)
 
-*Show slide 1 (https://lukenicholls1222.github.io/whiteboard-alive/slides/, press the right arrow or tap to go forward).*
-
-**Slide 1: Photo → OpenCV.js → Gemini → Matter.js**
+**[Slide 7] Photo → OpenCV.js → Gemini → Matter.js**
 
 > "Here's the trick. AI models are great at *what* something is, but bad at *exactly where* it is.
 > So computer vision runs on the phone. OpenCV finds every stroke, gives it a number, and measures it to the pixel.
 > Gemini only answers one question: what is each number? Number 2 is the string, number 3 is the weight. It never gives a coordinate.
 > Then Matter.js runs the physics on clean shapes built exactly where you drew. No server, it's just a web page."
 
-*Next slide.*
-
-**Slide 2: Messy photos, and no AI at all**
+**[Slide 8] Messy photos, and no AI at all**
 
 > "Real photos are messy: shadows, faint lines, ruled paper, the edge of the desk. So we only pick up black ink, flatten the lighting against the paper itself, and join broken strokes.
 > And if the AI is down, it guesses from the shapes alone: triangles, circles, boxes, zig-zags. On our 42 test drawings, with no AI at all, it got 42 out of 42 right, and all 42 moved.
@@ -153,6 +159,8 @@ Only explain momentum on the **first** collision between the balls. When a ball 
 
 ## 7. What was hard (6:10–6:40, 30s)
 
+**[Slide 9]** What was hard / What's next. It stays up through section 8.
+
 > "Three things were hard.
 > One: getting the AI to stop inventing coordinates. Early on we asked it where the pivot was, and it was always close but never exact. Giving it numbered strokes and only asking for roles fixed that.
 > Two: real photos. Most of our time went into shadows, faint pencil and broken lines.
@@ -163,9 +171,9 @@ Only explain momentum on the **first** collision between the balls. When a ball 
 ## 8. What's next and close (6:40–7:00, 20s)
 
 > "Next: point a live camera at a real classroom whiteboard, add circuits and optics, and let a teacher share a drawing with the class as a link.
-> Whiteboard Alive. Draw it, snap it, watch it move. Thank you!"
+> **[Slide 10]** Whiteboard Alive. Draw it, snap it, watch it move. The QR code opens it on your phone right now. Thank you!"
 
-*Spare minute (7:00–8:00): run the judge's drawing if it wasn't finished, or take a question.*
+*Spare minute (7:00–8:00): run the judge's drawing if it wasn't finished, or take a question. Leave Slide 10 (the QR code) on screen.*
 
 ---
 
@@ -181,7 +189,7 @@ Only explain momentum on the **first** collision between the balls. When a ball 
 - [ ] Test Talk once in the venue (mic permission granted in the browser), e.g. "make the string 1 meter"
 - [ ] Rehearse section 3 once: set the Length pill to 0.25 m and check the period reads about 1 s, then 1 m reads about 2 s
 - [ ] Rehearse sections 3–5 once: at the end of section 3, tap Earth and set the speed badge to 0.11× (three taps: 1× → 0.5× → 0.33× → 0.11×), check the collision photo plays slowly, then one tap back to 1× before the judge draws. Reloading the page puts it back to 1×
-- [ ] Slides open on the laptop (https://lukenicholls1222.github.io/whiteboard-alive/slides/) and tested with the arrow keys
+- [ ] Slides open on the laptop (https://lukenicholls1222.github.io/whiteboard-alive/slides/), on Slide 1, full screen (`f`), tested with the arrow keys. Scan the QR code on Slide 10 once with a phone
 - [ ] Printed judge sheet (`docs/judge-sheet.pdf`) next to the paper
 - [ ] A timer the speaker can see. Checkpoints: 1:40 Learning moment, 3:30 Judge draws, 4:50 Slides, 6:40 Close
 
