@@ -44,6 +44,7 @@ const PART_COLOR: Record<PartName, string> = {
   wheel: C.purple,
   'left ball': C.orange,
   'right ball': C.blue,
+  launcher: C.red,
 };
 
 /** Sizes in CSS px (converted to world px every frame, like the velocity arrows). One line: the value and unit. */
@@ -597,6 +598,18 @@ function pillsFor(scene: BuiltScene, analysis: Analysis): Pill[] {
       if (ls) add('arrow', () => `v₀ = ${formatSpeed(ls.value)}`);
       length('ground');
       mass('ball', false);
+      // An entered launch height or angle ("(lowest)": the most the drawn launcher can be lowered).
+      const launch = scene.physics?.launch;
+      if (launch && launch.heightFrom !== 'drawn')
+        add('launcher', () => `h = ${formatLength(launch.heightM)}${launch.heightFrom === 'adjusted' ? ' (lowest)' : ''}`);
+      if (launch && launch.angleFrom === 'input') add('launcher', () => `θ = ${Math.round(launch.angleDeg)}°`);
+      // How far the last shot flew (the scene draws its dimension line along the ground).
+      const flight = scene.physics?.flight;
+      if (flight)
+        add(parts.ground ? 'ground' : 'launcher', () => {
+          const m = flight.last();
+          return `Range = ${m ? formatLength(m.range) : '--'}`;
+        });
       break;
     }
     case 'Pulley':

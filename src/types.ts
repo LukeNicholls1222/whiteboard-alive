@@ -74,7 +74,9 @@ export type PartName =
   | 'wheel'
   /** Ball collision: the ball drawn on the left / on the right. */
   | 'left ball'
-  | 'right ball';
+  | 'right ball'
+  /** Projectile: the launch point and what holds it up (launch height and angle). */
+  | 'launcher';
 
 export type Quantity = 'length' | 'mass' | 'angle' | 'speed' | 'friction' | 'spring_constant';
 
@@ -299,9 +301,78 @@ export interface BuiltScene {
     airDrag?: number;
     /** Seesaw: each side's weight and distance from the pivot, and how the plank turns (for the torque card and labels). */
     lever?: LeverInfo;
+    /** Projectile: where and how it is fired (cannon, platform, launch height and angle), world px. */
+    launch?: LaunchInfo;
+    /** Projectile: range, highest point and flight time, measured and in theory (graph card). */
+    flight?: FlightInfo;
   };
   /** px per metre and the time factor; set by buildScene for every scene. */
   scale?: Scale;
+}
+
+/** Range (m, from right under the launch point to where it lands), highest point above the landing level (m), time (s). */
+export interface FlightNumbers {
+  range: number;
+  maxHeight: number;
+  time: number;
+}
+
+/** Projectile: the drawn barrel behind the ball (world px, where the scene now runs it). An estimate from the ink. */
+export interface LaunchBarrel {
+  /** Point the barrel turns about (35 % of the way from its back end to its mouth). */
+  pivot: Point;
+  /** Back end and mouth, along the drawn launch direction. */
+  breech: Point;
+  muzzle: Point;
+  length: number;
+  thickness: number;
+  /** Elevation it fires at now and as drawn: degrees above level, towards LaunchInfo.facing. */
+  angleDeg: number;
+  drawnAngleDeg: number;
+}
+
+/** Projectile: the platform (pillar) put under a launcher raised to an entered height, world px. */
+export interface LaunchPlatform {
+  x0: number;
+  x1: number;
+  /** Its top (where the launcher stands) and bottom (the ground). */
+  top: number;
+  bottom: number;
+}
+
+/** Projectile: where and how the ball is fired, world px unless named otherwise. */
+export interface LaunchInfo {
+  /** The ball's centre at launch. */
+  start: Point;
+  /** +1 = fires to the right, −1 = to the left. */
+  facing: 1 | -1;
+  /** Elevation (degrees above level) fired at, as drawn, and where it came from ('drawn' or 'input'). */
+  angleDeg: number;
+  drawnAngleDeg: number;
+  angleFrom: ValueSource;
+  /** Launch height above the landing level (m): now, as drawn (0 for a shot from the ground), where it came from. */
+  heightM: number;
+  heightDrawnM: number;
+  heightFrom: ValueSource;
+  /** How far (world px, + = down) the drawn launcher (cannon, arrow, cliff by the ball) was moved for the entered height. */
+  shiftY: number;
+  /** The launcher's ink (moved by shiftY), null when only the ball was drawn there. */
+  box: { x0: number; y0: number; x1: number; y1: number } | null;
+  barrel: LaunchBarrel | null;
+  /** The pillar under a raised launcher (null when the launcher stands as drawn or was lowered). */
+  platform: LaunchPlatform | null;
+  /** The ground line the ball lands on. */
+  groundY: number;
+}
+
+/** Projectile: the graph card's flight numbers. */
+export interface FlightInfo {
+  /** Textbook values (no air) for gravity g m/s², from the launch speed, angle and height the scene runs. */
+  theory: (g: number) => FlightNumbers | null;
+  /** The last flight that came down under the gravity now on (null before the first landing, after a gravity change). */
+  last: () => FlightNumbers | null;
+  /** Air resistance is on (the theory is the no-air one). */
+  air: () => boolean;
 }
 
 /** One side of a seesaw: mass (kg) and distance from the pivot along the plank (m), and where each came from. */
