@@ -272,8 +272,8 @@ async function run(file: Blob, example?: string) {
     const t0 = performance.now();
     const vision = extractContours(cv, photo);
     console.log(`[vision] ${vision.contours.length} contours in ${Math.round(performance.now() - t0)}ms`, vision.contours);
-    // No lines found: show the photo itself (the cleaned paper would be blank), skip the AI, and the fallback
-    // drops the photo's darkest patch, so something still moves.
+    // No lines found (vision already retried with lower thresholds): show the photo itself (the cleaned paper would be
+    // blank), skip the AI, and the fallback drops the photo's most line-like marks (never a shadow), so something moves.
     const blank = !vision.contours.length;
     if (blank) vision.paper = photo;
 
@@ -324,7 +324,7 @@ async function run(file: Blob, example?: string) {
           : await analyze(annotated, vision.contours);
       if (stale()) return;
     }
-    if (blank) analysis.explanation = 'We could not find clear lines, so here is a guess: the darkest part of the photo falls.';
+    if (blank) analysis.explanation = 'We could not find clear lines, so here is a guess: the clearest marks in the photo fall.';
     console.log(`[ai] ${analysis.source} ${Math.round(performance.now() - t1)}ms`, analysis);
     if (import.meta.env.DEV) (window as any).__wa.last = { analysis: structuredClone(analysis), fingerprint: fingerprint(vision.contours, analysis) };
 
