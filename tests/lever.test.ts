@@ -48,7 +48,7 @@ class Paper {
 }
 
 function fixture(name: string) {
-  const dir = name.startsWith('lever') ? './fixtures/lever/' : './fixtures/';
+  const dir = name.includes('lever') ? './fixtures/lever/' : './fixtures/';
   const d = JSON.parse(readFileSync(new URL(`${dir}${name}.ink.json`, import.meta.url), 'utf8'));
   const bits = inflateSync(Buffer.from(d.inkBitsDeflate, 'base64'));
   const ink = new Uint8Array(d.width * d.height);
@@ -87,6 +87,17 @@ test('lever-gen-03: two boxes of about the same size at about the same distance'
   assert.ok(f && f.left && f.right, 'two weights');
   const mdL = f.left.area * -(f.left.u0 + f.left.u1) / 2, mdR = f.right.area * (f.right.u0 + f.right.u1) / 2;
   assert.ok(Math.abs(mdL - mdR) / Math.max(mdL, mdR) < 0.12, `moments ${mdL} vs ${mdR}`);
+  assert.equal(guess(ink, W, H).diagram, 'lever');
+});
+
+test('judge-lever-02: thick marker triangle under a slightly tilted plank, hand shadow; guessed as a lever', () => {
+  // The triangle's sides bulge ~12% of its width near the tip (thick marker): still a pivot.
+  const { ink, W, H } = fixture('judge-lever-02');
+  const f = findLever(ink, W, H);
+  assert.ok(f, 'no lever found');
+  assert.ok(Math.abs(f.pivot.x - 506) < 12 && Math.abs(f.pivot.y - 338) < 12, `pivot ${JSON.stringify(f.pivot)}`);
+  assert.ok(f.left && f.right, 'two weights');
+  assert.ok(f.left.area > 3 * f.right.area, 'left box is much bigger');
   assert.equal(guess(ink, W, H).diagram, 'lever');
 });
 

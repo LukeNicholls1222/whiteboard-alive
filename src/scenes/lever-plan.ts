@@ -39,8 +39,11 @@ const LOOSE_SIDE = 0.1;
 /** The plank's line has ink over at least this share of its length (strict / relaxed). */
 const STRICT_COVER = 0.75;
 const LOOSE_COVER = 0.5;
-/** Pivot triangle: row widths stay within this share of its widest row of a straight line (straight sides). */
-const STRAIGHT_SIDES = 0.1;
+/**
+ * Pivot triangle: row widths stay within this share of its widest row of a straight line (straight sides). 0.13, not
+ * 0.1: a thick marker triangle under a slightly tilted plank (judge-lever-02) bulges ~12% near its tip.
+ */
+const STRAIGHT_SIDES = 0.13;
 /** A plank row: this share of the plank's length has ink. */
 const ROW_COVER = 0.45;
 /** Plank inertia: the plank weighs this much of the weights together. */
