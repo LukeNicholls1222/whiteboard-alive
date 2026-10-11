@@ -13,8 +13,9 @@ import type { CleanPart, Contour, Point, SceneBuilder, Sprite } from '../types';
 import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
 import { replayWhenStopped } from './replay';
 import { linePatch, type Patch } from './blank-patch';
-import { STEP_ACCEL } from '../sim';
-import { scaleOf } from '../units';
+import { STEP_ACCEL, STEP_MS } from '../sim';
+import { BASE_SCALE, DEFAULT_SCALE, scaleOf } from '../units';
+import { fallPxPerMeter } from '../defaults';
 import { fmt, inkSegment, offAxis, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters, untidyTurn } from './tidy';
 
 /** A body whose bottom is closer than this (× view height) to the floor hops first. */
@@ -266,6 +267,15 @@ export const buildFallback: SceneBuilder = (input) => {
     Matter.Body.setVelocity(body, { x: vx, y: vy });
     Matter.Body.setAngularVelocity(body, (i % 2 ? -1 : 1) * SPIN);
   });
+  // Default size (defaults.ts): how long the run lasts, from the start until everything has stopped (falling, tipping
+  // over and sliding depend on the shapes, so it is played once on a scratch engine), and how long the slowest body
+  // takes to come down (y = vy·t + g t²/2 to what it lands on).
+  const landSteps = Math.max(0, ...moving.map((b) => {
+    const gap = Math.max(0, supportAt((b.bounds.min.x + b.bounds.max.x) / 2, b.bounds.max.y) - b.bounds.max.y);
+    const vy = b.velocity.y;
+    return (-vy + Math.sqrt(vy * vy + 2 * STEP_ACCEL * gap)) / STEP_ACCEL;
+  }));
+  const runSteps = stepsUntilStopped(bodies, moving);
 
   // Clean figure: the floor line, drawn static parts as fixed solids, and every falling body as its own physics outline
   // (corners slightly rounded). With no lines found at all, the photo's patch itself keeps falling.
@@ -287,9 +297,62 @@ export const buildFallback: SceneBuilder = (input) => {
     clean,
     background: eraseFromPaper(input, masks),
     label: 'Falling objects',
+    defaultPxPerMeter: fallPxPerMeter(runSteps < MAX_PROBE_STEPS ? runSteps : null, landSteps),
     onStep: replayWhenStopped(moving, () => scaleOf(scene).timeFactor),
     // Fastest on hitting the floor: v² = v₀² + 2g·(drop height), the highest of all the falling bodies.
     speedHint: Math.max(0, ...moving.map((b) => Math.sqrt(b.velocity.x ** 2 + b.velocity.y ** 2 + 2 * STEP_ACCEL * ((input.analysis.params.gravity || 9.8) / 9.8) * Math.max(0, floorTop - b.bounds.max.y)))),
   };
   return scene;
 };
+
+/** Longest run the scratch engine plays (25 s of engine time). */
+const MAX_PROBE_STEPS = 1500;
+/** A body that moves less than this in a step (any point of it, px) is at rest. */
+const STILL_PX = 0.05;
+
+/**
+ * Steps from the start until every moving body has stopped (the last step anything moved before replay.ts holds the
+ * still picture), played on a scratch engine at Earth gravity; then every body is put back exactly as it was.
+ * MAX_PROBE_STEPS when it never stops.
+ */
+function stepsUntilStopped(bodies: Matter.Body[], moving: Matter.Body[]): number {
+  if (!moving.length) return 0;
+  const saved = moving.map((b) => ({ b, position: { ...b.position }, angle: b.angle, velocity: { ...b.velocity }, spin: b.angularVelocity }));
+  const engine = Matter.Engine.create();
+  engine.gravity.scale = BASE_SCALE;
+  Matter.Composite.add(engine.world, bodies);
+  // The scene's own replay hook decides when it is held still (its settling damps a body rocking in place).
+  const probe = replayWhenStopped(moving, () => DEFAULT_SCALE.timeFactor);
+  let steps = MAX_PROBE_STEPS;
+  /** Last step on which some point of a body still moved visibly. */
+  let lastMove = 0;
+  let prev = moving.map((b) => ({ x: b.position.x, y: b.position.y, a: b.angle }));
+  for (let i = 1; i <= MAX_PROBE_STEPS; i++) {
+    Matter.Engine.update(engine, STEP_MS);
+    probe(engine);
+    if (moving.every((b) => b.velocity.x === 0 && b.velocity.y === 0 && b.angularVelocity === 0)) {
+      // Held still by the replay: it had stopped when it last moved.
+      steps = Math.max(1, lastMove);
+      break;
+    }
+    const now = moving.map((b) => ({ x: b.position.x, y: b.position.y, a: b.angle }));
+    const moved = moving.some((b, k) => {
+      const size = Math.max(b.bounds.max.x - b.bounds.min.x, b.bounds.max.y - b.bounds.min.y);
+      return Math.hypot(now[k].x - prev[k].x, now[k].y - prev[k].y) + (Math.abs(now[k].a - prev[k].a) * size) / 2 > STILL_PX;
+    });
+    if (moved) lastMove = i;
+    prev = now;
+  }
+  Matter.Composite.clear(engine.world, false);
+  Matter.Engine.clear(engine);
+  for (const s of saved) {
+    Matter.Body.setPosition(s.b, s.position);
+    Matter.Body.setAngle(s.b, s.angle);
+    Matter.Body.setVelocity(s.b, s.velocity);
+    Matter.Body.setAngularVelocity(s.b, s.spin);
+    const cache = s.b as unknown as { positionImpulse: Matter.Vector; constraintImpulse: Matter.Vector & { angle: number } };
+    cache.positionImpulse.x = cache.positionImpulse.y = 0;
+    cache.constraintImpulse.x = cache.constraintImpulse.y = cache.constraintImpulse.angle = 0;
+  }
+  return steps;
+}

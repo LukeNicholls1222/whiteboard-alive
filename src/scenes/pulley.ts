@@ -20,6 +20,7 @@ import type { CleanPart, Contour, Point, SceneBuilder, SceneInput, Sprite, Value
 import { STEP_ACCEL, STEP_MS } from '../sim';
 import { noteFor, scaleOf } from '../units';
 import { ScreenWait } from '../playback';
+import { PULLEY_MASS_RATIO, pulleyMasses, pulleyPxPerMeter } from '../defaults';
 import { buildFallback } from './fallback';
 import { contourMask, cutSprite, deepestPoint, eraseFromPaper, maskBounds, roleOf } from './common';
 import { deg, drawnSupport, fmt, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters, untidyMove, untidySegment, untidyTurn } from './tidy';
@@ -477,6 +478,8 @@ export const buildPulley: SceneBuilder = (input) => {
   }
   if (mL > mR * MAX_MASS_RATIO) mL = mR * MAX_MASS_RATIO;
   if (mR > mL * MAX_MASS_RATIO) mR = mL * MAX_MASS_RATIO;
+  // Default weights (defaults.ts): the bigger drawing is PULLEY_MASS_RATIO times the other, so the fall can be watched.
+  [mL, mR] = pulleyMasses(mL, mR);
 
   // Entered kg replace the drawn ratio: both entered = as entered; one entered = the other keeps the drawn
   // ratio to it; none = the lighter weight is 1 kg. (The motion only depends on the ratio.) The pills and boxes enter
@@ -571,10 +574,12 @@ export const buildPulley: SceneBuilder = (input) => {
   };
   const leftFalls = even && mL === mR ? left.pixels > right.pixels : mL > mR;
   const maxDown = leftFalls ? travel(left, right) : travel(right, left);
+  // Default size (defaults.ts): the default weights take about 3 s to the end (an entered weight keeps this size).
+  const defaultPpm = pulleyPxPerMeter(maxDown, (PULLEY_MASS_RATIO - 1) / (PULLEY_MASS_RATIO + 1));
 
   // Slowdown of this scene's gravity (see TARGET_FALL_S): s = a t² / 2  =>  px/m = 2 * travel / (a * T²), at 9.8 m/s².
-  // Only the on-screen speed; the readouts use units.ts (paper = 1 m) with gravityScale = `scale`. Equal weights use
-  // the slowdown of a just-tipped pair, so the readouts keep their usual scale.
+  // Only the engine speed; the readouts use units.ts (the default size above) with gravityScale = `scale`. Equal
+  // weights use the slowdown of a just-tipped pair.
   const aRel = Math.abs(mL - mR) / (mL + mR);
   const aScale = even ? (TIE_BREAK_RATIO - 1) / (TIE_BREAK_RATIO + 1) : aRel;
   const pxPerM = Math.min(DEFAULT_PX_PER_M, (2 * maxDown) / (aScale * 9.8 * TARGET_FALL_S ** 2));
@@ -741,6 +746,7 @@ export const buildPulley: SceneBuilder = (input) => {
     drawnOnly,
     clean,
     gravityScale: scale,
+    defaultPxPerMeter: defaultPpm,
     // Fastest at the end of the fall: v² = 2·a·travel with a = g·scale·(m₁ − m₂)/(m₁ + m₂).
     speedHint: even ? Math.abs(drift) : Math.sqrt(2 * STEP_ACCEL * ((input.analysis.params.gravity || 9.8) / 9.8) * scale * aRel * maxDown),
     measures: { wheel: 2 * R },

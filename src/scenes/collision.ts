@@ -3,9 +3,10 @@
 //
 // The motion is the exact 1-D one of collision-physics.ts (not Matter's contacts, which do not conserve momentum
 // exactly): the Matter bodies only carry the balls' positions and velocities for the renderer, the arrows and the
-// graph. Starting speed = the arrow's length (ARROW_SPEED), a ball without an arrow waits; mass = the drawn area
+// graph. Starting speed = the arrow's length (ARROW_SPEED; both slowed alike so the first hit comes ~3 s in, and the
+// faster ball rolls at 0.5 m/s, see defaults.ts), a ball without an arrow waits; mass = the drawn area
 // (the smaller ball is 1 kg). Both can be typed into "Your numbers"; the bounciness e is a slider (params.bounciness,
-// read at every hit). When the balls have (nearly) stopped, or after MAX_RUN_MS, everything plays again.
+// read at every hit). When the balls have (nearly) stopped, or after MAX_RUN_S, everything plays again.
 //
 // Works without AI roles: the balls are round closed loops (or filled dots) side by side on one line, the arrows the
 // level strokes beside or above them, the floor the long level line under them (tidy: made level, the balls set on it).
@@ -14,7 +15,7 @@ import Matter from 'matter-js';
 import type { CleanPart, Contour, PartInfo, PartName, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
 import { inkImage } from '../clean';
 import { contourMask, cutSprite, eraseFromPaper, maskBounds, roleOf } from './common';
-import { DEFAULT_KG, mps, noteFor, pxPerStep, scaleFor } from '../units';
+import { DEFAULT_KG, STEP_S, mps, noteFor, pxPerStep, scaleFor } from '../units';
 import { STEP_MS } from '../sim';
 import { ScreenWait } from '../playback';
 import { fmt, inkSegment, segmentY, TIDY, tidyLog, untidyMatters, untidyMove, untidySegment, untidyTurn, type InkSegment } from './tidy';
@@ -32,6 +33,7 @@ import {
   type HoleCand,
 } from './projectile';
 import { advance, atRest, clampPair, kinetic, type Ball1D, type Walls } from './collision-physics';
+import { collisionPxPerMeter, collisionSpeedFactor } from '../defaults';
 
 /** Starting speed per px of drawn arrow: screen px per second (an arrow is where the ball gets in 1 / ARROW_SPEED s). */
 const ARROW_SPEED = 2;
@@ -43,8 +45,8 @@ const WALL_IN = 0.012;
 const WALL_TALL = 2.6;
 /** Once stopped, the still picture stays this long on screen (any playback speed), then it plays again. */
 const HOLD_S = 1.2;
-/** A run that never stops (elastic) plays again after this long, so the drawn start is seen again. */
-const MAX_RUN_MS = 30000;
+/** A run that never stops (elastic) plays again after this long (real seconds), so the drawn start is seen again. */
+const MAX_RUN_S = 12;
 const DEBUG = typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug');
 
 interface Drawn {
@@ -246,7 +248,6 @@ export const buildCollision: SceneBuilder = (input) => {
   }
 
   // --- Balls on the floor, masses, speeds ---
-  const scale = scaleFor(input, {});
   const bodyR = balls.map((b) => Math.max(5, b.r - b.stroke * 0.5));
   const rMin = Math.min(...bodyR);
   const sides: PartName[] = ['left ball', 'right ball'];
@@ -264,6 +265,13 @@ export const buildCollision: SceneBuilder = (input) => {
     drawnV[0] = 3 * bodyR[0] * stepSpeed;
     drawnFrom[0] = 'auto';
   }
+  // Default size and speeds (defaults.ts): the faster ball rolls at COLLISION_SPEED and the first hit comes about 3 s
+  // after the start; the arrows keep their ratio.
+  const hitSteps = firstHitSteps(balls.map((b) => b.center.x), drawnV, bodyR, W);
+  const defaultPpm = collisionPxPerMeter(Math.max(Math.abs(drawnV[0]), Math.abs(drawnV[1])), hitSteps);
+  const scale = scaleFor(input, {}, 1, defaultPpm);
+  const slow = collisionSpeedFactor(hitSteps, scale.timeFactor);
+  for (let k = 0; k < 2; k++) drawnV[k] *= slow;
   const speedFrom: ValueSource[] = [...drawnFrom];
   const v0 = drawnV.map((v, k) => {
     const note = noteFor(input.analysis, 'speed', [sides[k]]);
@@ -297,7 +305,7 @@ export const buildCollision: SceneBuilder = (input) => {
 
   // --- Run, stop, play again ---
   const wait = new ScreenWait(HOLD_S, () => scale.timeFactor);
-  const maxSteps = Math.round(MAX_RUN_MS / STEP_MS);
+  const maxSteps = Math.round(MAX_RUN_S / (STEP_S * scale.timeFactor));
   let run = 0;
   let held = false;
   const restart = () => {
@@ -389,6 +397,7 @@ export const buildCollision: SceneBuilder = (input) => {
     label: 'Collision',
     onStep,
     measures: {},
+    defaultPxPerMeter: defaultPpm,
     parts,
     physics: {
       ballSpeeds: {
@@ -399,3 +408,12 @@ export const buildCollision: SceneBuilder = (input) => {
     speedHint: Math.max(vStart, Math.min(vMax, 2 * vStart)),
   };
 };
+
+/** Steps until the balls (centres `x`, radii `r`) first hit each other at the drawn speeds `v`, bouncing off the walls; null = never. */
+function firstHitSteps(x: number[], v: number[], r: number[], W: number): number | null {
+  const walls: Walls = { x0: WALL_IN * W, x1: W - WALL_IN * W };
+  const pair: [Ball1D, Ball1D] = [0, 1].map((k) => ({ x: x[k], v: v[k], r: r[k], m: 1 })) as [Ball1D, Ball1D];
+  clampPair(pair, walls);
+  for (let i = 1; i <= 20000; i++) if (advance(pair, 1, walls, 1).hits) return i;
+  return null;
+}

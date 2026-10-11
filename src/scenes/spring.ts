@@ -12,6 +12,7 @@ import { contourMask, cutSprite, eraseFromPaper, maskBounds, roleOf } from './co
 import { axisOf, centroidOf, count, looksLikeSpring, outlineZig, planSpring, spans, splitMerged, type SpringPlan } from './spring-plan';
 import { MAX_VIEW_ASPECT, MIN_VIEW_ASPECT, STEP_ACCEL, STEP_MS } from '../sim';
 import { noteFor, scaleFor } from '../units';
+import { springPxPerMeter } from '../defaults';
 import { LMAX_FRACTION } from '../vectors';
 import { SpringOscillator, springSetup, springView } from './spring-motion';
 
@@ -295,7 +296,11 @@ export const buildSpring: SceneBuilder = (input) => {
   const kNote = noteFor(input.analysis, 'spring_constant')?.value;
   // The drawn spring length is its size on paper (for a hanging spring that is the stretched, at-rest length).
   const measures = haveSpringSprite ? { spring: L0 } : {};
-  const setup = springSetup(kNote, kgNote, scaleFor(input, measures));
+  // Without an entered length a hanging (or standing) spring is drawn long enough for its stretch m·g/k (defaults.ts);
+  // a spring lying on a floor keeps the paper's scale.
+  const defaultPpm = springPxPerMeter(L0, vertical);
+  const springScale = scaleFor(input, measures, 1, defaultPpm);
+  const setup = springSetup(kNote, kgNote, springScale, vertical ? L0 / springScale.pxPerMeter : undefined);
   const OMEGA2 = setup.omega2;
   const omega = Math.sqrt(OMEGA2);
 
@@ -435,6 +440,7 @@ export const buildSpring: SceneBuilder = (input) => {
     onStep,
     view,
     measures,
+    defaultPxPerMeter: defaultPpm,
     parts: {
       spring: {
         at: () => {

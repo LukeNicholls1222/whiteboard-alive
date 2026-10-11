@@ -29,7 +29,7 @@ export function buildScene(full: SceneInput): BuiltScene {
   const builder = BUILDERS[input.analysis.diagram] ?? buildFallback;
   // Every scene gets its scale (px per metre, slow-motion factor) from the same rule, see units.ts.
   const finish = (scene: BuiltScene) => {
-    scene.scale = scaleFor(input, scene.measures, scene.gravityScale);
+    scene.scale = scaleFor(input, scene.measures, scene.gravityScale, scene.defaultPxPerMeter);
     return scene;
   };
   try {

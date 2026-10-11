@@ -17,6 +17,7 @@ import { DRAWN_STYLE, inkImage } from '../clean';
 import { contourMask, cutSprite, eraseFromPaper, maskBounds, roleOf } from './common';
 import { MAX_VIEW_ASPECT, MIN_VIEW_ASPECT, STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, EARTH_G, STEP_S, mps, noteFor, pxPerStep, scaleFor } from '../units';
+import { flightSteps as drawnFlightSteps, pxPerMeterForSteps } from '../defaults';
 import { dragConstant, roundFactor } from '../air';
 import { FlightMeter, defaultRange, flightTheory, steppedLaunch, type FlightNumbers, type FlightTrack } from '../flight';
 import type { FlightInfo, LaunchBarrel, LaunchInfo, LaunchPlatform } from '../types';
@@ -1046,7 +1047,6 @@ export const buildProjectile: SceneBuilder = (input) => {
     span = g && g.bbox.h < g.bbox.w * 0.3 ? { x0: g.bbox.x, x1: g.bbox.x + g.bbox.w } : groundSpan(ink, exclude, W, H, floorY);
   }
   const measures: Partial<Record<PartName, number>> = span ? { ground: span.x1 - span.x0 } : {};
-  const scale = scaleFor(input, measures);
 
   const drop = floorY - (start.y + r);
   const angle = clampElevation(dir, drop > 3 * r ? MIN_ELEV_DROP_DEG : MIN_ELEV_GROUND_DEG);
@@ -1136,6 +1136,10 @@ export const buildProjectile: SceneBuilder = (input) => {
     else hi = mid;
   }
   let speed = lo;
+  // Default size (defaults.ts): the drawing is as big as it takes for this fitted shot to fly about 3 s (the same
+  // flight under Earth gravity: the same arc at √(g_E / g) times the speed). An entered ground length sets it instead.
+  const defaultPpm = pxPerMeterForSteps(drawnFlightSteps(speed * Math.sqrt(STEP_ACCEL / g), -drawnUnit.y, fall));
+  const scale = scaleFor(input, measures, 1, defaultPpm);
   // An entered launch speed or the slider (params.speed, m/s) replaces the fitted one, converted to px per step.
   const fit = speed;
   const userSpeed = input.analysis.params.speed;
@@ -1863,6 +1867,7 @@ export const buildProjectile: SceneBuilder = (input) => {
     onStep,
     onDraw,
     measures,
+    defaultPxPerMeter: defaultPpm,
     parts,
     physics: { launchSpeed: { value: mps(speed, scale), fit: mps(fit, scale), from: speedFrom }, airDrag: airFactor, launch: launchInfo, flight },
     // The larger of the launch speed and the landing speed: v² = v₀² + 2g·(drop to the ground).

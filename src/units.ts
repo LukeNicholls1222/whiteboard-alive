@@ -3,8 +3,9 @@
 // The engine itself never changes. Every scene is tuned at one physics step per 1/60 s of "engine time" and Earth
 // gravity is A_SCREEN = 1000 px/s² of that time: the scenes are tuned (and stable) at exactly that.
 // A drawing then *represents* a real-size machine:
-//   pxPerMeter  how big it is: the paper's long side is 1 m, unless the user entered a length for a part
-//               (String length 1 m: the drawn string is 1 m long);
+//   pxPerMeter  how big it is: an entered length for a part sets it (String length 1 m: the drawn string is 1 m
+//               long); without one the scene's default (defaults.ts: big enough that one motion takes ~3 s of real
+//               time, e.g. a 2.2 m pendulum), else the paper's long side is 1 m;
 //   timeFactor  physical seconds per engine second (60 steps), fixed by asking the engine's gravity to be 9.8 m/s²:
 //               9.8 = A_SCREEN · gravityScale / pxPerMeter / timeFactor²
 // A 960 px paper of 1 m gives timeFactor ≈ 0.33: one step per frame would play the motion at 0.33×. How many steps
@@ -33,15 +34,17 @@ export const OMEGA2_PER_STIFFNESS = 6.67;
 export const DEFAULT_KG = 1;
 
 /**
- * Scale of a drawing: from the first entered length that names a part the scene measured, else paper = 1 m.
+ * Scale of a drawing: from the first entered length that names a part the scene measured, else the scene's default
+ * (`defaultPxPerMeter`, defaults.ts: sized so one motion takes about 3 s of real time), else paper = 1 m.
  * `gravityScale` = how much of the engine's gravity the scene integrates (the pulley runs slower than the engine).
  */
 export function scaleFor(
   input: { width: number; height: number; analysis: Pick<Analysis, 'annotations'> },
   measures: Partial<Record<PartName, number>> = {},
   gravityScale = 1,
+  defaultPxPerMeter?: number,
 ): Scale {
-  let pxPerMeter = Math.max(input.width, input.height) / PAPER_M;
+  let pxPerMeter = defaultPxPerMeter && defaultPxPerMeter > 0 ? defaultPxPerMeter : Math.max(input.width, input.height) / PAPER_M;
   let note: Annotation | undefined;
   for (const a of input.analysis.annotations ?? []) {
     const px = measures[a.part];

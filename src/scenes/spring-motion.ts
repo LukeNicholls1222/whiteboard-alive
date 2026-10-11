@@ -12,16 +12,17 @@
 // This module has no imports besides units.ts (a leaf), so the node tests run it directly.
 
 import { DEFAULT_KG, STEP_S } from '../units';
+import { springDefaultK } from '../defaults';
 import type { Scale, ValueSource, ViewRect } from '../types';
-
-/** ω² per step² of the tuned default (1 kg on the default spring): about a 1 s swing on screen, as before. */
-export const DEFAULT_OMEGA2 = 0.01;
 
 /** Engine time unit (one physics step) in physical seconds for this drawing. */
 const stepSeconds = (s: Scale) => STEP_S * s.timeFactor;
 
-/** The tuned default spring constant (N/m) for this drawing: DEFAULT_KG swings with DEFAULT_OMEGA2. */
-export const defaultSpringK = (s: Scale) => (DEFAULT_KG * DEFAULT_OMEGA2) / stepSeconds(s) ** 2;
+/**
+ * The default spring constant (N/m, defaults.ts): DEFAULT_KG swings with a period of about 3 s. `hangingM` = length
+ * of a hanging spring in metres (its stretch m·g/k must fit in it).
+ */
+export const defaultSpringK = (hangingM?: number) => springDefaultK(hangingM);
 
 export interface SpringSetup {
   /** Spring constant, N/m. */
@@ -34,13 +35,13 @@ export interface SpringSetup {
 }
 
 /**
- * k and m from what was entered: an entered k is used as it is (else the tuned default), an entered mass as it is
- * (else DEFAULT_KG). Neither depends on the other.
+ * k and m from what was entered: an entered k is used as it is (else the default), an entered mass as it is
+ * (else DEFAULT_KG). Neither depends on the other. `hangingM` = a hanging spring's drawn length in metres.
  */
-export function springSetup(kEntered: number | undefined, kgEntered: number | undefined, s: Scale): SpringSetup {
+export function springSetup(kEntered: number | undefined, kgEntered: number | undefined, s: Scale, hangingM?: number): SpringSetup {
   const kg = kgEntered && kgEntered > 0 ? kgEntered : DEFAULT_KG;
   const typed = kEntered !== undefined && kEntered > 0;
-  const k = typed ? kEntered : defaultSpringK(s);
+  const k = typed ? kEntered : defaultSpringK(hangingM);
   return { k, kFrom: typed ? 'input' : 'assumed', kg, omega2: (k / kg) * stepSeconds(s) ** 2 };
 }
 

@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ARROW_PAD, BLOCK_PAD, defaultSpringK, SpringOscillator, springSetup, springView } from '../src/scenes/spring-motion.ts';
 import { meters, mps, scaleFor, STEP_ACCEL, STEP_S } from '../src/units.ts';
+import { MOTION_MAX_S, MOTION_MIN_S, SPRING_SAG_SHARE, springPxPerMeter } from '../src/defaults.ts';
 
 /** A 960 px paper of 1 m (slow motion ≈ 0.33×), as most drawings. */
 const SCALE = scaleFor({ width: 960, height: 720, analysis: {} });
@@ -50,7 +51,7 @@ function run(kEntered: number | undefined, kgEntered: number | undefined, ampPx:
 const theory = (k: number, kg: number) => 2 * Math.PI * Math.sqrt(kg / k);
 
 test('Total stays within 1 % and the period is 2π√(m/k) within 1 %, for any amplitude, k, m and Moon', () => {
-  const k0 = defaultSpringK(SCALE);
+  const k0 = defaultSpringK();
   const cases: [string, number | undefined, number | undefined, number, { gDrawn?: number; gNow?: number }][] = [
     ['default', undefined, undefined, 40, {}],
     ['small swing', undefined, undefined, 12, {}],
@@ -95,10 +96,23 @@ test('mass and spring constant are independent: a heavier block keeps k and swin
   assert.ok(Math.abs(run(400, undefined, 40).period / run(100, undefined, 40).period - 0.5) < 0.01);
 });
 
-test('the default spring swings about once a second on screen, as the tuned Matter spring did', () => {
+test('the default spring swings once in 2.5-3.5 s of real time (1x), lying or hanging, and a hanging one has room for its stretch', () => {
   const setup = springSetup(undefined, undefined, SCALE);
-  const screenPeriod = ((2 * Math.PI) / Math.sqrt(setup.omega2)) * STEP_S;
-  assert.ok(screenPeriod > 0.95 && screenPeriod < 1.15, `screen period ${screenPeriod.toFixed(3)} s`);
+  const period = ((2 * Math.PI) / Math.sqrt(setup.omega2)) * STEP_S * SCALE.timeFactor;
+  assert.ok(period >= MOTION_MIN_S && period <= MOTION_MAX_S, `lying: ${period.toFixed(3)} s`);
+  // A hanging spring drawn 300 px long: the default size makes its stretch m·g/k a third of it.
+  const ppm = springPxPerMeter(300, true)!;
+  const hanging = scaleFor({ width: 960, height: 720, analysis: {} }, { spring: 300 }, 1, ppm);
+  const h = springSetup(undefined, undefined, hanging, 300 / hanging.pxPerMeter);
+  const hp = ((2 * Math.PI) / Math.sqrt(h.omega2)) * STEP_S * hanging.timeFactor;
+  assert.ok(hp >= MOTION_MIN_S && hp <= MOTION_MAX_S, `hanging: ${hp.toFixed(3)} s`);
+  const stretchPx = STEP_ACCEL / h.omega2;
+  assert.ok(Math.abs(stretchPx / 300 - SPRING_SAG_SHARE) < 1e-6, `stretch ${stretchPx.toFixed(1)} px of 300`);
+  // An entered 0.25 m hanging spring is stiffer, so its stretch still fits in it; an entered k is kept as it is.
+  const short = scaleFor({ width: 960, height: 720, analysis: { annotations: [{ part: 'spring', quantity: 'length', value: 0.25, unit: 'm' }] } as never }, { spring: 300 });
+  const s = springSetup(undefined, undefined, short, 0.25);
+  assert.ok(Math.abs((STEP_ACCEL / s.omega2) / 300 - SPRING_SAG_SHARE) < 1e-6);
+  assert.equal(springSetup(3, undefined, short, 0.25).k, 3);
 });
 
 // ---- The picture shows the whole swing (springView) -----------------------------------------------------------
