@@ -99,7 +99,8 @@ export function fieldsFor(scene: BuiltScene, analysis: Pick<Analysis, 'params'>)
       break;
     }
     case 'Incline': {
-      if (parts.block) add('blockMass', said(kg('block')));
+      // A ball on the slope rolls (scenes/roll.ts): same entry, named for what was drawn.
+      if (parts.block) add('blockMass', said(kg('block')), scene.physics?.rolling ? { label: 'Ball mass' } : {});
       const used = scene.physics?.rampAngleUsed;
       const drawn = scene.physics?.rampAngle;
       if (drawn !== undefined) {

@@ -5,6 +5,8 @@
 import Matter from 'matter-js';
 import type { Simulation } from './sim';
 import type { DiagramType, Scale } from './types';
+import { rollAccel } from './scenes/roll';
+import { DEFAULT_FRICTION } from './scenes/incline';
 import {
   BASE_SCALE,
   DEFAULT_KG,
@@ -177,9 +179,24 @@ export class LiveGraph {
         const k = springK(c.stiffness, m, this.scale);
         text = `Theory 2π√(m/k) = ${formatSeconds(2 * Math.PI * Math.sqrt(m / k))}`;
       }
+    } else if (sim && sim.scene.label === 'Incline' && sim.scene.physics?.rolling) {
+      // A ball rolls down at 5/7 g sinθ (solid ball), or slides while turning when friction cannot hold it.
+      const roll = sim.scene.physics.rolling;
+      const theta = ((sim.scene.physics.rampAngleUsed?.value ?? 0) * Math.PI) / 180;
+      const mu = Number((roll.body.plugin as { inclineMu?: number }).inclineMu ?? DEFAULT_FRICTION);
+      const t = rollAccel(sim.gravity, theta, mu, roll.inertia);
+      const m = roll.measured();
+      // px per step² -> m/s².
+      const measured = m === null ? '--' : formatAccel(meters(m, this.scale) / (STEP_S * this.scale.timeFactor) ** 2);
+      text = `${t.rolls ? 'Rolls: a = 5/7 g sinθ' : 'Slides: g(sinθ − μcosθ)'} = ${formatAccel(t.a)}\nmeasured ${measured}`;
     }
     if (this.theoryLabel.textContent !== text) this.theoryLabel.textContent = text;
     this.theoryLabel.hidden = !text;
+  }
+
+  /** True when the theory line follows the motion and is redrawn every step. */
+  private liveTheory() {
+    return this.diagram === 'pendulum' || !!this.sim?.scene.physics?.rolling;
   }
 
   private measuresPeriod() {
@@ -233,10 +250,13 @@ export class LiveGraph {
     let ke = 0;
     let pe = 0;
     const ref = this.peRef;
+    const roll = sim.scene.physics?.rolling;
     for (const b of bodies) {
       const kg = this.kg.get(b) ?? DEFAULT_KG;
       const v = mps(Math.hypot(b.velocity.x, b.velocity.y), this.scale);
       ke += 0.5 * kg * v * v;
+      // A rolling ball also carries ½ I ω² = ½ (I/(m r²)) m (r ω)² in its spin (angularVelocity is rad per step).
+      if (roll && b === roll.body) ke += 0.5 * roll.inertia * kg * mps(roll.radius * Math.abs(b.angularVelocity), this.scale) ** 2;
       if (ref.kind === 'spring') continue; // gravity is inside ½ k d² below
       // Height above the bottom of the swing (pendulum) or the bottom edge (window: offset when drawing).
       const baseY = ref.kind === 'pendulum' ? ref.bottomY : sim.worldH;
@@ -253,6 +273,8 @@ export class LiveGraph {
       // The pendulum's theory follows its amplitude (air drag slowly shrinks it).
       if (this.diagram === 'pendulum') this.showTheory();
     } else {
+      // A rolling ball: the measured acceleration next to 5/7 g sinθ (and μ may change with the slider).
+      if (this.liveTheory()) this.showTheory();
       // Same tracker, same body, same conversion and formatter as the velocity arrow's number.
       const f = sim.motion.fastest();
       this.metricValue.textContent = f ? formatSpeed(mps(Math.hypot(f.track.vx, f.track.vy), this.scale)) : '--';
@@ -557,6 +579,8 @@ function range(a: number[]) {
   return hi - lo;
 }
 
+const formatAccel = (a: number) => `${a.toFixed(2)} m/s²`;
+
 function line(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number) {
   ctx.beginPath();
   ctx.moveTo(x1, y1);
@@ -587,7 +611,7 @@ function injectStyle() {
   .lg-moon input { position: absolute; opacity: 0; pointer-events: none; }
   .lg-moon-text { display: flex; flex-direction: column; align-items: flex-end; font-weight: 800; font-size: 15px; color: #3c3c3c; }
   .lg-g { font-size: 12px; font-weight: 700; color: #777; }
-  .lg-theory { margin-top: 2px; font-size: 12px; font-weight: 800; color: #1899d6; font-variant-numeric: tabular-nums; }
+  .lg-theory { margin-top: 2px; font-size: 12px; font-weight: 800; color: #1899d6; font-variant-numeric: tabular-nums; white-space: pre-line; }
   .lg-theory[hidden] { display: none; }
   .lg-switch { position: relative; width: 52px; height: 30px; border-radius: 999px; background: #e5e5e5; transition: background 0.2s; flex-shrink: 0; }
   .lg-switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; box-shadow: 0 2px 0 rgba(0,0,0,0.12); transition: transform 0.2s; }
