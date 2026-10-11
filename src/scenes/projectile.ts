@@ -1,5 +1,6 @@
 // Projectile: the drawn ball flies along a parabola from where it was drawn, in the direction of the
-// drawn arrow (or cannon barrel), leaving a dotted trail. Lands, waits 1.5 s, and fires again (0.4 s after a long shot stopped at the picture's edge).
+// drawn arrow (or cannon barrel), leaving a dotted trail. Lands, waits 1 s on screen, and fires again (0.4 s after a
+// long shot stopped at the picture's edge), at every playback speed.
 //
 // Works without AI roles: the ball is found as a small round closed loop (or a filled dot) in the ink,
 // the arrow as a long thin stroke starting at the ball, the barrel as the ink right next to the ball.
@@ -18,9 +19,15 @@ import type { FlightInfo, LaunchBarrel, LaunchInfo, LaunchPlatform } from '../ty
 import { fmt, inkSegment, segmentY, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters, untidyTurn } from './tidy';
 import type { InkSegment } from './tidy';
 
-const RELAUNCH_MS = 1500;
-/** Wait before firing again after a long shot was stopped at the picture's edge (short: it never landed). */
+/**
+ * Wait after landing before firing again, in screen time (ms on the clock, not physics steps: at 1× a frame runs several
+ * steps, at 0.11× one every few frames, and the pause should look the same).
+ */
+const RELAUNCH_MS = 1000;
+/** Wait before firing again after a long shot was stopped at the picture's edge (short: it never landed), screen ms. */
 const EDGE_RELAUNCH_MS = 400;
+/** Screen clock (ms). */
+const screenNow = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 /** Minimum elevation when the ball starts on the ground (a flat shot would just roll). */
 const MIN_ELEV_GROUND_DEG = 15;
 /** Minimum elevation when there is a drop below the ball (a horizontal shot off a cliff is still an arc). */
@@ -1287,8 +1294,6 @@ export const buildProjectile: SceneBuilder = (input) => {
   }
 
   // --- View: a shot that would leave the photo (fast, or on the Moon) widens the picture to its whole flight ---
-  const relaunchSteps = Math.round(RELAUNCH_MS / STEP_MS);
-  const edgeRelaunchSteps = Math.round(EDGE_RELAUNCH_MS / STEP_MS);
   const maxSteps = Math.round(MAX_FLIGHT_MS / STEP_MS);
   const longSteps = Math.round(LONG_FLIGHT_MS / STEP_MS);
   /** Gravity the ball feels, px per step², read from the engine every step (the gravity slider and Moon are live). */
@@ -1305,7 +1310,7 @@ export const buildProjectile: SceneBuilder = (input) => {
     return Number.isFinite(t) ? Math.min(longSteps, Math.max(maxSteps, Math.ceil(1.1 * t))) : maxSteps;
   };
   // The floor reaches as far as the ball can get within one flight, its skid and its roll.
-  const rollSteps = SKID_STEPS + (1 - Math.pow(ROLL_DECAY, relaunchSteps)) / (1 - ROLL_DECAY);
+  const rollSteps = SKID_STEPS + 1 / (1 - ROLL_DECAY);
   /** Leftmost / rightmost the ball has been (the picture never cuts off where it really went). */
   let seenX0 = start.x, seenX1 = start.x;
   const reach = Math.abs(v0.x) * (longSteps + rollSteps) + W;
@@ -1474,6 +1479,8 @@ export const buildProjectile: SceneBuilder = (input) => {
   let ghostTrail: Point[] = [];
   let steps = 0;
   let landedSteps = -1;
+  /** Screen time (ms) the ball came down or was stopped at the edge. */
+  let landedAt = 0;
   let slowSteps = 0;
 
   const touchingStatic = (engine: Matter.Engine) =>
@@ -1542,6 +1549,7 @@ export const buildProjectile: SceneBuilder = (input) => {
       if (landed || stuck || gone || steps > flightSteps()) {
         trail.push({ x: body.position.x, y: body.position.y });
         landedSteps = 0;
+        landedAt = screenNow();
         meter.stop();
       }
       return;
@@ -1556,8 +1564,12 @@ export const buildProjectile: SceneBuilder = (input) => {
       Matter.Body.setAngularVelocity(body, body.angularVelocity * ROLL_DECAY);
       stopAtEdge();
     }
-    // Stopped at the edge: fire again soon (the wait is never longer than the flight). Landed: a longer look.
-    if (++landedSteps < (hold ? edgeRelaunchSteps : relaunchSteps)) return;
+    // Stopped at the edge: fire again soon (the wait is never longer than the flight). Landed: a longer look. Both in
+    // screen time, so the pause is the same at every playback speed.
+    landedSteps++;
+    const waited = screenNow() - landedAt;
+    if (waited < (hold ? EDGE_RELAUNCH_MS : RELAUNCH_MS)) return;
+    if (DEBUG) console.log(`[projectile] fired again ${Math.round(waited)} ms after coming down (${landedSteps} steps)`);
     hold = null;
     ghostTrail = trail;
     fire();
