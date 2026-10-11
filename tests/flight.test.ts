@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Matter from 'matter-js';
-import { FlightMeter, flightTheory, landingFraction, steppedLaunch, type FlightTrack } from '../src/flight.ts';
+import { defaultRange, FlightMeter, flightTheory, landingFraction, steppedLaunch, type FlightTrack } from '../src/flight.ts';
 import { parseVoice, type VoiceContext } from '../src/voice.ts';
 import { BASE_SCALE, EARTH_G, STEP_ACCEL, STEP_MS, STEP_S, mps, pxPerStep, scaleFor } from '../src/units.ts';
 
@@ -135,4 +135,25 @@ test('voice on a projectile: ball mass, launch height ("make it higher"), launch
   };
   assert.deepEqual(parseVoice('angle 45 degrees', ramp).set, { rampAngle: 45 });
   assert.deepEqual(parseVoice('ball mass 2 kilograms', ramp).set, { blockMass: 2 });
+});
+
+test('default range: a plain flight down on the drawn ground (60-80 % of it), not a drop', () => {
+  const ground = { x0: 50, x1: 950 }; // 900 px of ground on a 1000 px picture, ball radius 10
+  // Cannon at the back end: 70 % of the ground, landing 76 % of the way along it.
+  const back = defaultRange(100, 1, 10, 1000, ground);
+  assert.equal(back, 630);
+  assert.ok((100 + back - 50) / 900 >= 0.6 && (100 + back - 50) / 900 <= 0.8);
+  // Cannon in the middle: still a long shot, but down before the ground's end (past it is often the paper's edge).
+  const mid = defaultRange(500, 1, 10, 1000, ground);
+  assert.ok(mid > 0.4 * 900 && 500 + mid < 950, `${mid}`);
+  // Mirror image: the same distances to the left.
+  assert.equal(defaultRange(900, -1, 10, 1000, ground), back);
+  assert.equal(defaultRange(500, -1, 10, 1000, ground), mid);
+  // Cannon at the far end: 60 % of the ground at least (the view zooms out), never a hop.
+  assert.equal(defaultRange(800, 1, 10, 1000, ground), 540);
+  // No ground (or a stub under the cannon): 70 % of the way to the picture's edge.
+  assert.equal(defaultRange(100, 1, 10, 1000, null), 0.7 * 890);
+  assert.equal(defaultRange(100, 1, 10, 1000, { x0: 60, x1: 200 }), 0.7 * 890);
+  // A ball at the picture's edge still flies 4 radii.
+  assert.equal(defaultRange(995, 1, 10, 1000, null), 40);
 });

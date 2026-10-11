@@ -110,3 +110,37 @@ export class FlightMeter {
     this.done = true;
   }
 }
+
+// ---- Default launch speed ---------------------------------------------------------------------
+
+/** The default shot flies this share of the drawn ground's length (70 %), at least LAND_MIN of it when that is cut... */
+const LAND_SHARE = 0.7;
+const LAND_MIN = 0.6;
+/** ...to stay inside the picture (this share of the way to its edge). */
+const IN_PICTURE = 0.95;
+/** A ground shorter than this share of the picture's width (a stub under the cannon) does not set the distance. */
+const GROUND_SHORT = 0.4;
+/** The shot comes down on the drawn ground when at least this share of it lies in front of the launcher. */
+const GROUND_AHEAD = 0.35;
+
+/**
+ * Horizontal distance (px) the default shot flies, from a launch point at x `x0` firing towards `facing` (`r` = ball
+ * radius, `W` = picture width): 70 % of the drawn ground's length, cut to land short of the ground's far end when enough
+ * of the ground lies in front, else to 95 % of the way to the picture's edge but not below 60 % of the ground (the view
+ * then zooms out a little). Without a ground (or a short one): 70 % of the way to the picture's edge. Never shorter than
+ * 4 ball radii. Long enough that the arc is plainly a flight, not a drop.
+ */
+export function defaultRange(x0: number, facing: 1 | -1, r: number, W: number, span: { x0: number; x1: number } | null): number {
+  const toEdge = Math.max(0, (facing > 0 ? W - x0 : x0) - r);
+  let range = LAND_SHARE * toEdge;
+  const L = span ? span.x1 - span.x0 : 0;
+  if (span && L >= GROUND_SHORT * W) {
+    range = LAND_SHARE * L;
+    // Down on the drawn ground when it runs on far enough in front (past its end is often the paper's edge or other
+    // ink): short of its end. Otherwise inside the picture, not below 60 % of the ground (the view zooms out a little).
+    const ahead = facing > 0 ? span.x1 - x0 : x0 - span.x0;
+    if (ahead >= GROUND_AHEAD * L) range = Math.min(range, IN_PICTURE * ahead - r);
+    else if (range > IN_PICTURE * toEdge) range = Math.max(LAND_MIN * L, IN_PICTURE * toEdge);
+  }
+  return Math.max(4 * r, range);
+}

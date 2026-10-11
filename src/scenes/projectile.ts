@@ -13,7 +13,7 @@ import { contourMask, cutSprite, eraseFromPaper, maskBounds, roleOf } from './co
 import { MAX_VIEW_ASPECT, MIN_VIEW_ASPECT, STEP_ACCEL, STEP_MS } from '../sim';
 import { DEFAULT_KG, EARTH_G, STEP_S, mps, noteFor, pxPerStep, scaleFor } from '../units';
 import { dragConstant, roundFactor } from '../air';
-import { FlightMeter, flightTheory, steppedLaunch, type FlightNumbers, type FlightTrack } from '../flight';
+import { FlightMeter, defaultRange, flightTheory, steppedLaunch, type FlightNumbers, type FlightTrack } from '../flight';
 import type { FlightInfo, LaunchBarrel, LaunchInfo, LaunchPlatform } from '../types';
 import { fmt, inkSegment, segmentY, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters, untidyTurn } from './tidy';
 import type { InkSegment } from './tidy';
@@ -1136,8 +1136,11 @@ export const buildProjectile: SceneBuilder = (input) => {
     const t = (vUp + Math.sqrt(vUp * vUp + 2 * g * fall)) / g;
     return vx * t;
   };
-  const space = (drawnUnit.x >= 0 ? W - start.x : start.x) - r;
-  const range = Math.max(3 * r, space * 0.8);
+  // Where the default shot comes down: about LAND_SHARE of the way along the drawn ground (between LAND_MIN and LAND_MAX
+  // of its length, counted from its end behind the launcher), so the arc is plainly a flight and not a drop. Without a
+  // ground in front of the launcher: LAND_SHARE of the way to the picture's edge. An arc taller than the photo is
+  // fine: the view zooms out to show it (flightView).
+  const range = defaultRange(start.x, facing, r, W, span);
   let lo = 0.5, hi = 80;
   for (let k = 0; k < 40; k++) {
     const mid = (lo + hi) / 2;
@@ -1145,10 +1148,6 @@ export const buildProjectile: SceneBuilder = (input) => {
     else hi = mid;
   }
   let speed = lo;
-  const headroom = start.y - r - 4; // keep the apex on screen
-  const vUp0 = -drawnUnit.y * speed;
-  if (vUp0 > 0 && (vUp0 * vUp0) / (2 * g) > headroom)
-    speed = Math.max(speed * 0.5, Math.sqrt(2 * g * Math.max(0, headroom)) / -drawnUnit.y);
   // An entered launch speed or the slider (params.speed, m/s) replaces the fitted one, converted to px per step.
   const fit = speed;
   const userSpeed = input.analysis.params.speed;
