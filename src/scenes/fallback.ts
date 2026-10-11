@@ -13,7 +13,7 @@ import type { CleanPart, Contour, Point, SceneBuilder, Sprite } from '../types';
 import { contourMask, cutSprite, eraseFromPaper, roleOf } from './common';
 import { replayWhenStopped } from './replay';
 import { STEP_ACCEL } from '../sim';
-import { fmt, offAxis, TIDY, TIDY_MAX_DEG, tidyLog } from './tidy';
+import { fmt, inkSegment, offAxis, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters, untidyTurn } from './tidy';
 
 /** A body whose bottom is closer than this (× view height) to the floor hops first. */
 const MIN_DROP = 0.25;
@@ -21,6 +21,25 @@ const MIN_DROP = 0.25;
 const HOP = 0.2;
 /** Initial spin, rad per step. */
 const SPIN = 0.025;
+
+/** A stroke this long (× the picture's width) and thin, with no role, is the ground the objects fall onto. */
+const GROUND_MIN_W = 0.4;
+
+/** A contour's hull as a line: its length (farthest two corners) and width across that. Null unless it runs level-ish. */
+function lineShape(c: Contour): { long: number; across: number } | null {
+  const vs = c.hull;
+  if (vs.length < 2) return null;
+  let a = vs[0], b = vs[0], far = -1;
+  for (const p of vs) for (const q of vs) {
+    const d = Math.hypot(p.x - q.x, p.y - q.y);
+    if (d > far) [far, a, b] = [d, p, q];
+  }
+  const v = { x: b.x - a.x, y: b.y - a.y };
+  const L = Math.hypot(v.x, v.y) || 1;
+  const across = Math.max(1, ...vs.map((p) => Math.abs((p.x - a.x) * v.y - (p.y - a.y) * v.x) / L));
+  if (offAxis(v).axis !== 'h') return null;
+  return { long: L, across };
+}
 
 /** Is `p` inside (or on) the convex polygon `hull`, whichever way it winds? */
 function insideHull(p: Point, hull: Point[]): boolean {
@@ -107,26 +126,68 @@ export const buildFallback: SceneBuilder = (input) => {
   /** Static bodies made from the drawing (a drawn ground or ramp): shown in the clean figure, unlike the walls. */
   const drawnStatic: Matter.Body[] = [];
 
-  // Tidy-up (tidy.ts): a drawn ground line (a long thin static stroke) within 15° of level is made level, the body
-  // as well as the picture, so things land on a level floor. Steeper ones stay as drawn.
+  // A drawn ground line (a long thin stroke, mostly level: the AI's ground, or with no role at all one across at least
+  // GROUND_MIN_W of the picture) stays fixed and the objects land on it. Its body is a thick slab under the line, so a
+  // fast fall cannot pass through it. Tidy-up (tidy.ts): within TIDY_MAX_DEG of level it is made level, the body as well
+  // as the picture (a ground line at the level height, traced where it was drawn by the morph); steeper ones stay as drawn.
   const tidyNotes: string[] = [];
+  /** Drawn outline of each ground line body. */
   const drawnPoints = new Map<Matter.Body, Point[]>();
-  const levelGround = (body: Matter.Body) => {
-    const vs = body.vertices.map((v) => ({ x: v.x, y: v.y }));
-    let a = vs[0], b = vs[0], far = -1;
-    for (const p of vs) for (const q of vs) {
-      const d = Math.hypot(p.x - q.x, p.y - q.y);
-      if (d > far) [far, a, b] = [d, p, q];
+  /** Levelled ground lines: the clean figure draws each as a ground line from x0 to x1. */
+  const levelLines = new Map<Matter.Body, CleanPart>();
+  /** Top of every drawn ground line (slab) at x, null past its ends: where a body above it lands. */
+  const groundTops: ((x: number) => number | null)[] = [];
+  const isStaticRole = (c: Contour) => {
+    const r = roleOf(input, c.id);
+    return !!r && (r.role === 'ground' || r.role === 'incline');
+  };
+  const groundLine = new Set<Contour>();
+  for (const c of input.contours) {
+    const role = roleOf(input, c.id)?.role;
+    const shape = lineShape(c);
+    if (!shape) continue;
+    const fixedRole = role === 'ground' || role === 'incline';
+    if (fixedRole ? shape.long >= 4 * shape.across : (!role || role === 'other' || role === 'label') && shape.long >= GROUND_MIN_W * W && shape.long >= 6 * shape.across)
+      groundLine.add(c);
+  }
+  // Only lines drawn: they fall as before (something always moves).
+  const outlines = input.contours.filter((c) => c.hull.length >= 3);
+  if (outlines.length && outlines.every((c) => groundLine.has(c) || isStaticRole(c)))
+    for (const c of [...groundLine]) if (!isStaticRole(c)) groundLine.delete(c);
+
+  const addGroundLine = (c: Contour) => {
+    const inLine = contourMask(input, [c], 3);
+    const b = c.bbox;
+    const seg = inkSegment(input.ink, W, H, { x0: b.x - 3, y0: b.y - 3, x1: b.x + b.w + 3, y1: b.y + b.h + 3 }, (i) => inLine[i] === 1);
+    if (!seg) return false;
+    const L = Math.hypot(seg.b.x - seg.a.x, seg.b.y - seg.a.y);
+    const mid = { x: (seg.a.x + seg.b.x) / 2, y: (seg.a.y + seg.b.y) / 2 };
+    const turn = Math.atan2(seg.b.y - seg.a.y, seg.b.x - seg.a.x);
+    const depth = Math.max(40, 0.05 * H);
+    const opts = { isStatic: true, friction: 0.6, restitution: 0.3 };
+    const level = TIDY && Math.abs(seg.deg) <= TIDY_MAX_DEG;
+    tidyNotes.push(`ground ${fmt(seg.deg)} → ${level ? '0°' : `${fmt(seg.deg)} (kept${TIDY ? ': slanted on purpose' : ''})`}`);
+    let body: Matter.Body;
+    if (level) {
+      // Level at the height of its middle: the top of the slab is the line.
+      body = Matter.Bodies.rectangle(mid.x, mid.y + depth / 2, L, depth, opts);
+      const part: CleanPart = { kind: 'ground', y: mid.y, x0: mid.x - L / 2, x1: mid.x + L / 2 };
+      const u = untidyTurn(mid, turn);
+      if (untidyMatters(u, L / 2)) part.untidy = u;
+      levelLines.set(body, part);
+      groundTops.push((x) => (x >= mid.x - L / 2 && x <= mid.x + L / 2 ? mid.y : null));
+    } else {
+      // As drawn: the top of the slab along the top of the stroke.
+      const n = { x: -Math.sin(turn), y: Math.cos(turn) };
+      const k = depth / 2 - seg.thick / 2;
+      body = Matter.Bodies.rectangle(mid.x + n.x * k, mid.y + n.y * k, L, depth, { ...opts, angle: turn });
+      const top = (x: number) => mid.y - seg.thick / 2 / Math.cos(turn) + (x - mid.x) * Math.tan(turn);
+      groundTops.push((x) => (x >= seg.a.x && x <= seg.b.x ? top(x) : null));
     }
-    const long = { x: b.x - a.x, y: b.y - a.y };
-    const L = Math.hypot(long.x, long.y) || 1;
-    const across = Math.max(...vs.map((p) => Math.abs((p.x - a.x) * long.y - (p.y - a.y) * long.x) / L));
-    const { axis, off } = offAxis(long);
-    if (axis !== 'h' || L < 4 * Math.max(1, across)) return;
-    tidyNotes.push(`ground ${fmt(off)} → ${Math.abs(off) <= TIDY_MAX_DEG && TIDY ? '0°' : `${fmt(off)} (kept${TIDY ? ': slanted on purpose' : ''})`}`);
-    if (!TIDY || Math.abs(off) > TIDY_MAX_DEG || Math.abs(off) < 0.05) return;
-    drawnPoints.set(body, vs);
-    Matter.Body.rotate(body, (-off * Math.PI) / 180);
+    bodies.push(body);
+    drawnStatic.push(body);
+    drawnPoints.set(body, c.hull.map((p) => ({ ...p })));
+    return true;
   };
 
   const addBody = (hull: { x: number; y: number }[], bbox: { x: number; y: number }, isStatic: boolean, mask: Uint8Array | null) => {
@@ -136,10 +197,7 @@ export const buildFallback: SceneBuilder = (input) => {
     const hb = body.bounds;
     Matter.Body.translate(body, { x: bbox.x - hb.min.x, y: bbox.y - hb.min.y });
     bodies.push(body);
-    if (isStatic) {
-      drawnStatic.push(body);
-      levelGround(body);
-    }
+    if (isStatic) drawnStatic.push(body);
     if (isStatic || !mask) return;
     moving.push(body);
     masks.push(mask);
@@ -149,10 +207,7 @@ export const buildFallback: SceneBuilder = (input) => {
     });
   };
 
-  const isStaticContour = (c: Contour) => {
-    const r = roleOf(input, c.id);
-    return !!r && (r.role === 'ground' || r.role === 'incline');
-  };
+  const isStaticContour = (c: Contour) => isStaticRole(c) || groundLine.has(c);
   // A stroke drawn inside another one (the axle dot in a cannon wheel) is part of it, not a body of its own:
   // as a separate body it would start inside the other's solid hull, and the two would push each other
   // around forever. It moves with the smallest outline that contains it (or stays on paper if that is static).
@@ -176,6 +231,7 @@ export const buildFallback: SceneBuilder = (input) => {
   for (const c of input.contours) {
     if (parentOf.has(c) || c.hull.length < 3) continue;
     const isStatic = isStaticContour(c);
+    if (groundLine.has(c) && addGroundLine(c)) continue;
     const group = input.contours.filter((k) => rootOf(k) === c);
     addBody(c.hull, c.bbox, isStatic, isStatic ? null : contourMask(input, group));
   }
@@ -227,11 +283,25 @@ export const buildFallback: SceneBuilder = (input) => {
     Matter.Bodies.rectangle(W + 50, H / 2, 100, H * 4, opts),
   );
 
+  // A body drawn overlapping a ground line (or reached by the levelled line) starts just on top of it.
+  const groundBodies = [...drawnPoints.keys()];
+  for (const body of moving)
+    for (let lift = 0; lift < 0.2 * H && Matter.Query.collides(body, groundBodies).length; lift++) Matter.Body.translate(body, { x: 0, y: -1 });
+  /** Where a body above x comes down: the highest ground line under its bottom, else the floor. */
+  const supportAt = (x: number, bottom: number) => {
+    let best = floorTop;
+    for (const top of groundTops) {
+      const y = top(x);
+      if (y !== null && y >= bottom - 2 && y < best) best = y;
+    }
+    return best;
+  };
+
   moving.forEach((body, i) => {
     const b = body.bounds;
     // If it is resting below the floor line already (drawn to the very bottom), lift it onto the floor.
     if (b.max.y > floorTop) Matter.Body.translate(body, { x: 0, y: floorTop - b.max.y });
-    const gap = floorTop - body.bounds.max.y;
+    const gap = supportAt((b.min.x + b.max.x) / 2, body.bounds.max.y) - body.bounds.max.y;
     let vy = 0;
     if (gap < MIN_DROP * H) {
       const room = Math.max(0, body.bounds.min.y - 0.02 * H);
@@ -248,7 +318,12 @@ export const buildFallback: SceneBuilder = (input) => {
   // Clean figure: the floor line, drawn static parts as fixed solids, and every falling body as its own physics outline
   // (corners slightly rounded). With no lines found at all, the photo's patch itself keeps falling.
   const clean: CleanPart[] = [{ kind: 'ground', y: floorTop }];
-  for (const b of drawnStatic) clean.push({ kind: 'solid', points: b.vertices.map((v) => ({ x: v.x, y: v.y })), drawnPoints: drawnPoints.get(b) });
+  for (const b of drawnStatic) {
+    const line = levelLines.get(b);
+    if (line) clean.push(line);
+    // A ground line kept as drawn shows its drawn outline; other fixed parts their own shape.
+    else clean.push({ kind: 'solid', points: (drawnPoints.get(b) ?? b.vertices).map((v) => ({ x: v.x, y: v.y })) });
+  }
   tidyLog('Falling objects', tidyNotes);
   if (!input.contours.length) for (const sprite of sprites) clean.push({ kind: 'sprite', sprite });
   else for (const body of moving) clean.push({ kind: 'body', body, tone: 'mass' });
