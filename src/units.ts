@@ -1,13 +1,15 @@
 // Physical units: the one place that turns the engine's pixels and steps into metres, seconds, kg and joules.
 //
-// The engine itself never changes. Every scene runs one physics step per frame (60 steps per screen second)
-// and Earth gravity is A_SCREEN = 1000 px/s² of screen time: the scenes are tuned (and stable) at exactly that.
+// The engine itself never changes. Every scene is tuned at one physics step per 1/60 s of "engine time" and Earth
+// gravity is A_SCREEN = 1000 px/s² of that time: the scenes are tuned (and stable) at exactly that.
 // A drawing then *represents* a real-size machine:
 //   pxPerMeter  how big it is: the paper's long side is 1 m, unless the user entered a length for a part
 //               (String length 1 m: the drawn string is 1 m long);
-//   timeFactor  physical seconds per screen second, fixed by asking the engine's gravity to be 9.8 m/s²:
+//   timeFactor  physical seconds per engine second (60 steps), fixed by asking the engine's gravity to be 9.8 m/s²:
 //               9.8 = A_SCREEN · gravityScale / pxPerMeter / timeFactor²
-// A 960 px paper of 1 m gives timeFactor ≈ 0.33: the screen plays the motion at 0.33× (labelled "Slow motion").
+// A 960 px paper of 1 m gives timeFactor ≈ 0.33: one step per frame would play the motion at 0.33×. How many steps
+// a frame actually runs follows the playback speed the user picks (playback.ts: speed / timeFactor), so every
+// reading below, which is per step, stays the same at any speed.
 // The gravity slider and Moon mode change the engine's gravity and keep timeFactor, so the Moon reads 1.62 m/s².
 // This module has no imports besides types (sim.ts re-exports the step constants from here).
 
@@ -61,7 +63,7 @@ export const scaleOf = (scene: BuiltScene): Scale => scene.scale ?? DEFAULT_SCAL
 // ---- Conversions (engine -> physical) ---------------------------------------------------------------
 
 export const meters = (px: number, s: Scale) => px / s.pxPerMeter;
-/** Screen seconds -> physical seconds. */
+/** Engine seconds (steps × STEP_S) -> physical seconds. */
 export const physSeconds = (screenS: number, s: Scale) => screenS * s.timeFactor;
 /** Engine speed (px per physics step) -> m/s. */
 export const mps = (pxPerStep: number, s: Scale) => pxPerStep / STEP_S / s.pxPerMeter / s.timeFactor;
@@ -104,11 +106,3 @@ export const formatMass = (kg: number) => `${sig(kg)} kg`;
 export const formatSpringK = (k: number) => `${sig(k)} N/m`;
 export const formatSeconds = (s: number) => `${s.toFixed(2)} s`;
 export const formatEnergy = (j: number) => `${j >= 100 ? j.toFixed(0) : j >= 10 ? j.toFixed(1) : j.toFixed(2)} J`;
-const formatFactor = (f: number) => (f >= 1 ? f.toFixed(1) : sig(f, 2));
-
-/** "Slow motion 0.33×" / "Fast-forward 1.6×": how fast the screen plays physical time. */
-export function timeLabel(s: Scale): string {
-  const f = s.timeFactor;
-  if (Math.abs(f - 1) < 0.05) return 'Real time';
-  return f < 1 ? `Slow motion ${formatFactor(f)}×` : `Fast-forward ${formatFactor(f)}×`;
-}
