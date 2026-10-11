@@ -267,6 +267,8 @@ export class QuickNumbers {
             <span class="qp-name">${shortLabel(f)}</span><span class="qp-val"></span></button>`,
         )
         .join('');
+      // Four pills (left / right x two numbers, or the launch's four) sit 2 x 2 instead of wrapping 3 + 1.
+      this.pills.dataset.n = String(fields.length);
       if (!fields.some((f) => f.key === this.open)) this.open = null;
       if (fresh) this.open = null;
     }
@@ -444,9 +446,11 @@ function injectStyle() {
     font: inherit; font-size: 14px; font-weight: 800; white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
     font-variant-numeric: tabular-nums; transition: transform 0.05s;
   }
+  .quick-pills[data-n="4"] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .quick-pills[data-n="4"] .quick-pill { padding: 0 8px; }
   .quick-pill:active { transform: translateY(2px); border-bottom-width: 2px; }
-  .quick-pill .qp-name { color: #777; }
-  .quick-pill .qp-val { font-weight: 900; }
+  .quick-pill .qp-name { color: #777; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .quick-pill .qp-val { font-weight: 900; flex: none; }
   .quick-pill.set .qp-val { color: #1899d6; }
   .quick-pill.on { border-color: #1cb0f6; background: #ddf4ff; color: #1899d6; }
   .quick-pill.on .qp-name { color: #1899d6; }
