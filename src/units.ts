@@ -12,7 +12,7 @@
 // This module has no imports besides types (sim.ts re-exports the step constants from here).
 
 import type Matter from 'matter-js';
-import type { Analysis, Annotation, BuiltScene, PartName, Quantity, Scale, ValueSource } from './types';
+import type { Analysis, Annotation, BuiltScene, PartName, Quantity, Scale } from './types';
 
 export const STEP_MS = 1000 / 60;
 export const STEP_S = STEP_MS / 1000;
@@ -112,13 +112,3 @@ export function timeLabel(s: Scale): string {
   if (Math.abs(f - 1) < 0.05) return 'Real time';
   return f < 1 ? `Slow motion ${formatFactor(f)}×` : `Fast-forward ${formatFactor(f)}×`;
 }
-
-export const SOURCE_TEXT: Record<ValueSource, string> = {
-  input: 'you entered',
-  assumed: 'assumed',
-  drawn: 'drawn',
-  auto: 'auto',
-  slider: 'slider',
-  adjusted: 'adjusted',
-  scaled: 'to scale',
-};

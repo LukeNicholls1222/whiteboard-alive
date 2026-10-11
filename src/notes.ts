@@ -1,5 +1,5 @@
-// Values on the drawing: a small card next to each part with its physical value and, underneath, where that
-// value came from ("L = 0.42 m / assumed", "m = 2 kg / you entered"), plus the slow-motion badge on the picture.
+// Values on the drawing: a small card next to each part with its physical value and unit ("L = 0.42 m",
+// "m = 2 kg"; where a value came from is never shown), plus the slow-motion badge on the picture.
 // Everything is read from the scene (measures, parts, physics) and converted by units.ts.
 //
 // Where a card goes: next to its part, but off the way of everything that moves. When the scene starts, the
@@ -13,18 +13,16 @@
 import Matter from 'matter-js';
 import { DEFAULT_FRICTION } from './scenes/incline';
 import { visibleRect, type Simulation } from './sim';
-import type { Analysis, BuiltScene, PartInfo, PartName, Point, ValueSource, ViewRect } from './types';
+import type { Analysis, BuiltScene, PartInfo, PartName, Point, ViewRect } from './types';
 import {
   DEFAULT_KG,
   OMEGA2_PER_STIFFNESS,
-  SOURCE_TEXT,
   STEP_MS,
   formatLength,
   formatMass,
   formatSpeed,
   formatSpringK,
   meters,
-  noteFor,
   scaleOf,
   springK,
   timeLabel,
@@ -48,10 +46,9 @@ const PART_COLOR: Record<PartName, string> = {
   'right ball': C.blue,
 };
 
-/** Sizes in CSS px (converted to world px every frame, like the velocity arrows). Two lines: value, then source. */
+/** Sizes in CSS px (converted to world px every frame, like the velocity arrows). One line: the value and unit. */
 const FONT_CSS = 11.5;
-const SRC_FONT_CSS = 9.5;
-const PILL_H_CSS = 31;
+const PILL_H_CSS = 22;
 const PAD_CSS = 8;
 const RADIUS_CSS = 11;
 /** Between the cards of one part; between different parts' cards and the scale bar it is LABEL_SPACE_CSS. */
@@ -73,8 +70,6 @@ interface Pill {
   part: PartName;
   /** e.g. "L = 0.42 m"; re-read every frame (μ follows the slider). */
   value: () => string;
-  /** e.g. "assumed". */
-  from: () => string;
 }
 
 /** The labels of one part, drawn as one block next to it (two cards per row). */
@@ -165,7 +160,6 @@ export class QuantityLabels {
     const gap = GAP_CSS * css;
     const pad = PAD_CSS * css;
     const font = `800 ${FONT_CSS * css}px Nunito, "Avenir Next", system-ui, sans-serif`;
-    const srcFont = `700 ${SRC_FONT_CSS * css}px Nunito, "Avenir Next", system-ui, sans-serif`;
     const placed: Box[] = [];
     const space = LABEL_SPACE_CSS * css;
     const lmax = LMAX_FRACTION * Math.min(worldW, worldH);
@@ -200,14 +194,10 @@ export class QuantityLabels {
     for (const group of this.groups) {
       const part = scene.parts?.[group.part];
       if (!part) continue;
-      const rows = group.pills.map((pill) => ({ value: pill.value(), from: pill.from() }));
+      const rows = group.pills.map((pill) => ({ value: pill.value() }));
       let cw = 0;
-      for (const r of rows) {
-        ctx.font = font;
-        cw = Math.max(cw, ctx.measureText(r.value).width);
-        ctx.font = srcFont;
-        cw = Math.max(cw, ctx.measureText(r.from).width);
-      }
+      ctx.font = font;
+      for (const r of rows) cw = Math.max(cw, ctx.measureText(r.value).width);
       cw += 2 * pad;
       // The part's labels as one block placed as a unit: same-width cards, two per row.
       const cols = Math.min(2, rows.length);
@@ -282,8 +272,8 @@ export class QuantityLabels {
         const inRow = Math.min(cols, rows.length - row * cols);
         const rowW = inRow * cw + (inRow - 1) * gap;
         const at = { x: c.x - rowW / 2 + cw / 2 + col * (cw + gap), y: c.y - H / 2 + h / 2 + row * (h + gap) };
-        drawPill(ctx, at, cw, h, css, r.value, r.from, font, srcFont, PART_COLOR[group.part]);
-        this.last.push({ text: `${r.value} (${r.from})`, x: at.x, y: at.y, spot: k });
+        drawPill(ctx, at, cw, h, css, r.value, font, PART_COLOR[group.part]);
+        this.last.push({ text: r.value, x: at.x, y: at.y, spot: k });
       });
     }
     this.boxes = placed;
@@ -547,29 +537,26 @@ function boxCircleOverlap(b: Box, c: Point, r: number) {
   return dx * dx + dy * dy < r * r;
 }
 
-/** The labels for one scene: which values each diagram shows, and where each value came from. */
+/** The labels for one scene: which values each diagram shows (value and unit only, never where it came from). */
 function pillsFor(scene: BuiltScene, analysis: Analysis): Pill[] {
   const s = scaleOf(scene);
   const out: Pill[] = [];
   const measures = scene.measures ?? {};
   const parts = scene.parts ?? {};
-  const add = (part: PartName, value: () => string, from: () => string) => {
-    if (parts[part]) out.push({ part, value, from });
+  const add = (part: PartName, value: () => string) => {
+    if (parts[part]) out.push({ part, value });
   };
-  const text = (src: ValueSource) => SOURCE_TEXT[src];
-  // A length is "you entered" on the part that set the scale, "to scale" elsewhere, else from paper = 1 m.
   const length = (part: PartName, symbol = 'L') => {
     const px = measures[part];
     if (!px) return;
-    const from: ValueSource = s.note ? (s.note.part === part ? 'input' : 'scaled') : 'assumed';
-    add(part, () => `${symbol} = ${formatLength(meters(px, s))}`, () => text(from));
+    add(part, () => `${symbol} = ${formatLength(meters(px, s))}`);
   };
   // Masses: always where they change the motion or energy story; elsewhere only when entered.
   const mass = (part: PartName, always: boolean) => {
     const p = parts[part];
     if (!p?.kg || (!always && p.kgFrom !== 'input')) return;
     const kg = p.kg;
-    add(part, () => `m = ${formatMass(kg)}`, () => text(p.kgFrom ?? 'assumed'));
+    add(part, () => `m = ${formatMass(kg)}`);
   };
   const notedLength = () => (s.note ? s.note.part : null);
 
@@ -581,12 +568,9 @@ function pillsFor(scene: BuiltScene, analysis: Analysis): Pill[] {
     case 'Spring and mass': {
       const c = scene.constraints[0];
       const block = parts.block;
-      const info = scene.physics?.springK;
       if (c && block) {
         const k = springK(c.stiffness, block.kg ?? DEFAULT_KG, s);
-        add('spring', () => `k = ${formatSpringK(k)}`, () =>
-          info?.from === 'adjusted' && info.note ? `adjusted from ${formatSpringK(info.note)}` : text(info?.from ?? 'assumed'),
-        );
+        add('spring', () => `k = ${formatSpringK(k)}`);
       }
       if (notedLength() === 'spring') length('spring');
       mass('block', true);
@@ -596,15 +580,12 @@ function pillsFor(scene: BuiltScene, analysis: Analysis): Pill[] {
       // The angle the ramp runs: as drawn, or the entered one (the drawing is stretched to it, see incline.ts).
       const used = scene.physics?.rampAngleUsed;
       const drawn = scene.physics?.rampAngle;
-      const asked = noteFor(analysis, 'angle', ['ramp']);
-      if (used) {
-        const from = used.from === 'adjusted' && asked ? `most that fits (not ${Math.round(asked.value)}°)` : text(used.from);
-        add('ramp', () => `θ = ${Math.round(used.value)}°`, () => from);
-      } else if (drawn !== undefined) add('ramp', () => `θ = ${Math.round(drawn)}°`, () => text('drawn'));
+      if (used) add('ramp', () => `θ = ${Math.round(used.value)}°`);
+      else if (drawn !== undefined) add('ramp', () => `θ = ${Math.round(drawn)}°`);
       const block = parts.block?.body;
       if (block) {
         const mu = () => Number((block.plugin as { inclineMu?: number }).inclineMu ?? DEFAULT_FRICTION);
-        add('ramp', () => `μ = ${mu().toFixed(2)}`, () => text(Math.abs(mu() - DEFAULT_FRICTION) < 1e-6 ? 'assumed' : 'slider'));
+        add('ramp', () => `μ = ${mu().toFixed(2)}`);
       }
       const n = notedLength();
       if (n === 'ramp' || n === 'ground') length(n);
@@ -613,7 +594,7 @@ function pillsFor(scene: BuiltScene, analysis: Analysis): Pill[] {
     }
     case 'Projectile': {
       const ls = scene.physics?.launchSpeed;
-      if (ls) add('arrow', () => `v₀ = ${formatSpeed(ls.value)}`, () => text(ls.from));
+      if (ls) add('arrow', () => `v₀ = ${formatSpeed(ls.value)}`);
       length('ground');
       mass('ball', false);
       break;
@@ -630,10 +611,10 @@ function pillsFor(scene: BuiltScene, analysis: Analysis): Pill[] {
         mass(part, true);
         const s0 = v?.[side];
         if (s0)
-          add(part, () => `v₀ = ${Math.abs(s0.value) < 1e-9 ? '0 m/s' : `${s0.value < 0 ? '← ' : ''}${formatSpeed(Math.abs(s0.value))}${s0.value > 0 ? ' →' : ''}`}`, () => text(s0.from));
+          add(part, () => `v₀ = ${Math.abs(s0.value) < 1e-9 ? '0 m/s' : `${s0.value < 0 ? '← ' : ''}${formatSpeed(Math.abs(s0.value))}${s0.value > 0 ? ' →' : ''}`}`);
       }
       const e = () => Math.min(1, Math.max(0, Number(analysis.params.bounciness ?? 1)));
-      add('ground', () => `e = ${e().toFixed(2)}`, () => (analysis.params.bounciness === undefined ? text('assumed') : text('slider')));
+      add('ground', () => `e = ${e().toFixed(2)}`);
       break;
     }
     case 'Seesaw': {
@@ -642,8 +623,7 @@ function pillsFor(scene: BuiltScene, analysis: Analysis): Pill[] {
       for (const [part, side] of [['left weight', lever?.left], ['right weight', lever?.right]] as const) {
         mass(part, true);
         if (!side || !measures[part]) continue;
-        const from = side.dFrom === 'adjusted' ? 'most that fits' : text(side.dFrom);
-        add(part, () => `d = ${formatLength(side.d)}`, () => from);
+        add(part, () => `d = ${formatLength(side.d)}`);
       }
       break;
     }
@@ -651,19 +631,8 @@ function pillsFor(scene: BuiltScene, analysis: Analysis): Pill[] {
   return out;
 }
 
-/** Rounded white card with a coloured border: the value on top, where it came from underneath. */
-function drawPill(
-  ctx: CanvasRenderingContext2D,
-  c: Point,
-  w: number,
-  h: number,
-  css: number,
-  value: string,
-  from: string,
-  font: string,
-  srcFont: string,
-  color: string,
-) {
+/** Rounded white card with a coloured border and the value in it. */
+function drawPill(ctx: CanvasRenderingContext2D, c: Point, w: number, h: number, css: number, value: string, font: string, color: string) {
   const x = c.x - w / 2, y = c.y - h / 2, r = Math.min(RADIUS_CSS * css, h / 2);
   ctx.save();
   ctx.beginPath();
@@ -682,10 +651,7 @@ function drawPill(
   ctx.textAlign = 'center';
   ctx.font = font;
   ctx.fillStyle = '#3c3c3c';
-  ctx.fillText(value, c.x, c.y - 5.5 * css);
-  ctx.font = srcFont;
-  ctx.fillStyle = '#9a9a9a';
-  ctx.fillText(from, c.x, c.y + 7 * css);
+  ctx.fillText(value, c.x, c.y + 0.5 * css);
   ctx.restore();
 }
 
