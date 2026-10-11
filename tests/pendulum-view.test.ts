@@ -9,6 +9,7 @@ import {
   easeRect,
   fitAspect,
   pendulumTarget,
+  roomOf,
   SmoothView,
   swingAmplitude,
   swingBox,
@@ -74,23 +75,75 @@ test('fitAspect / unionRect: the smallest rect of the asked shape around the box
   assert.deepEqual(tall, { x: 0, y: -20, w: 100, h: 120 });
 });
 
-test('pendulumTarget: the photo while the swing fits, else both in the photo shape (CSS height unchanged)', () => {
-  const W = 960, H = 720;
-  assert.equal(pendulumTarget(W, H, { x: 100, y: 50, w: 400, h: 500 }, BOUNDS), null);
-  // Swing dips 60 px below the photo: the view is taller, and widened to keep 720 / 960.
-  const v = pendulumTarget(W, H, { x: 300, y: 50, w: 400, h: 730 }, BOUNDS)!;
+// A phone-width picture (390 CSS px) of a 960 × 720 photo: 18 px from the edges, 64 px (46 px row of buttons + 18) at the top.
+const INSETS = { left: 18, right: 18, top: 64, bottom: 18 };
+const SPEC = { photoW: 960, photoH: 720, cssW: 390, insets: INSETS, bounds: BOUNDS };
+/** Room (CSS px) between the box and each edge of the view, as the picture shows it (view.w = cssW on screen). */
+const roomCss = (v: { x: number; y: number; w: number; h: number }, box: { x: number; y: number; w: number; h: number }, cssW: number) => {
+  const k = v.w / cssW;
+  return { left: (box.x - v.x) / k, right: (v.x + v.w - box.x - box.w) / k, top: (box.y - v.y) / k, bottom: (v.y + v.h - box.y - box.h) / k };
+};
+
+test('pendulumTarget: the photo while the swing fits with its room, else zoomed out in the photo shape with the room kept', () => {
+  const W = 960, H = 720, k = W / 390; // world px per CSS px on the photo
+  // Well inside: the photo.
+  assert.equal(pendulumTarget(SPEC, { x: 200, y: 200, w: 400, h: 400 }), null);
+  // Just inside the room on every side: still the photo. 1 px past the room on any side: a view.
+  const r = roomOf({ x: 0, y: 0, w: W, h: H }, INSETS, 390);
+  assert.equal(pendulumTarget(SPEC, r), null);
+  for (const d of [{ x: r.x - 1 }, { y: r.y - 1 }, { w: r.w + 1 }, { h: r.h + 1 }]) assert.ok(pendulumTarget(SPEC, { ...r, ...d }), `past the room: ${JSON.stringify(d)}`);
+  // Moon 1×: the swing fits the photo but ends 3 CSS px from its left edge: not zoomed (the photo's width), slid
+  // just far enough that the bob has its 18 px, nothing more.
+  const near = { x: 3 * k, y: 200, w: 500, h: 400 };
+  const v = pendulumTarget(SPEC, near)!;
   assert.ok(v, 'a view');
+  close(v.w, W, 1e-9, 'not zoomed');
   close(v.h / v.w, H / W, 1e-12, 'photo shape kept');
-  assert.ok(containsRect(v, { x: 0, y: 0, w: W, h: H }, 1e-9), 'whole photo shown');
-  assert.ok(containsRect(v, { x: 300, y: 50, w: 400, h: 730 }, 1e-9), 'whole swing shown');
-  close(v.h, 780, 1e-9, 'as tall as needed, no more');
-  // A bob swinging past the right edge: wider, and taller by the same shape.
-  const s = pendulumTarget(W, H, { x: 500, y: 50, w: 600, h: 500 }, BOUNDS)!;
+  close(roomCss(v, near, 390).left, 18, 1e-9, 'bob 18 px from the left');
+  close(v.y, 0, 1e-9, 'not moved up or down');
+  // A swing past the right edge that still fits the photo's width: not zoomed, slid left just enough (18 px on the right).
+  const over = { x: 500, y: 100, w: 600, h: 400 };
+  const o = pendulumTarget(SPEC, over)!;
+  close(o.w, W, 1e-9, 'not zoomed');
+  close(roomCss(o, over, 390).right, 18, 1e-9, 'bob 18 px from the right');
+  // A swing wider than the photo: zoomed out (wider than the photo), the shape kept, the box in the middle.
+  const wide = { x: -100, y: 100, w: 1100, h: 400 };
+  const s = pendulumTarget(SPEC, wide)!;
   close(s.h / s.w, H / W, 1e-12, 'photo shape kept');
-  close(s.w, 1100, 1e-9, 'as wide as needed');
+  close(s.w, 1100 / (1 - 36 / 390), 1e-9, 'as wide as needed: the box plus 18 px each side');
+  const sr = roomCss(s, wide, 390);
+  close(sr.left, 18, 1e-9, 'left room');
+  close(sr.right, 18, 1e-9, 'right room');
+  assert.ok(sr.top >= 64 - 1e-9 && sr.bottom >= 18 - 1e-9, `top/bottom room ${sr.top}/${sr.bottom}`);
+  // A full turn around a pivot (the box is the circle's square): the pivot sits in the middle of the room, which
+  // puts it (64 − 18) / 2 = 23 CSS px below the centre of the picture, and the room is kept all round.
+  const pivot = { x: 480, y: 150 }, R = 440;
+  const turn = { x: pivot.x - R, y: pivot.y - R, w: 2 * R, h: 2 * R };
+  const t = pendulumTarget(SPEC, turn)!;
+  close(t.h / t.w, H / W, 1e-12, 'photo shape kept');
+  const tr = roomCss(t, turn, 390);
+  for (const [side, want] of [['left', 18], ['right', 18], ['top', 64], ['bottom', 18]] as const) assert.ok(tr[side] >= want - 1e-9, `${side} room ${tr[side]}`);
+  close((t.x + t.w / 2 - pivot.x) / (t.w / 390), 0, 1e-9, 'pivot in the middle across');
+  close((pivot.y - (t.y + t.h / 2)) / (t.w / 390), 23, 1e-9, 'pivot 23 CSS px below the middle');
+  // Between "slid" and "centred" the placing blends: a box needing 5 % more than the photo is a third of the way.
+  const some = { x: 100, y: 100, w: 1.05 * (1 - 36 / 390) * W, h: 300 };
+  const b = pendulumTarget(SPEC, some)!;
+  close(b.w, 1.05 * W, 1e-9, 'zoomed 5 %');
+  const bx = { min: some.x + some.w + 18 * (b.w / 390) - b.w, max: some.x - 18 * (b.w / 390) };
+  const slidY = Math.min(bx.max, Math.max(bx.min, 0)), midX = (bx.min + bx.max) / 2;
+  close(b.x, slidY + (midX - slidY) / 3, 1e-9, 'a third of the way from slid to centred');
   // A very tall photo is clamped to what sim.ts allows.
-  const t = pendulumTarget(400, 800, { x: -10, y: 0, w: 100, h: 100 }, BOUNDS)!;
-  close(t.h / t.w, 1.6, 1e-12, 'clamped shape');
+  const tall = pendulumTarget({ ...SPEC, photoW: 400, photoH: 800 }, { x: -10, y: 0, w: 100, h: 100 })!;
+  close(tall.h / tall.w, 1.6, 1e-12, 'clamped shape');
+});
+
+test('pendulumTarget: the room is counted in CSS px, so a wider picture needs less of the photo', () => {
+  const box = { x: 10, y: 200, w: 500, h: 400 };
+  const phone = pendulumTarget(SPEC, box)!;
+  const tablet = pendulumTarget({ ...SPEC, cssW: 780 }, box)!;
+  close(roomCss(phone, box, 390).left, 18, 1e-9, 'phone: 18 CSS px');
+  close(roomCss(tablet, box, 780).left, 18, 1e-9, 'tablet: 18 CSS px');
+  assert.ok(phone.x < tablet.x, 'the phone slides the photo further (its CSS px are bigger in world px)');
 });
 
 test('SmoothView: shows its first target at once, glides to a new one in about 0.4 s, and is the photo again when back', () => {
