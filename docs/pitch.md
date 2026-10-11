@@ -39,7 +39,7 @@ Every feature used below is live. If something goes wrong on stage, jump to "Bac
 *The string length changes. Point at the period readout.*
 > "One meter of string: the period is about two seconds, and the theory, 2π root L over g, agrees."
 
-If voice doesn't respond within ~3 seconds (noisy room, mic permission), don't retry. Type 1 into **String length** under *Your numbers* instead, or tap **Moon**:
+If voice doesn't respond within ~3 seconds (noisy room, mic permission), don't retry. Tap the **Length** pill right under the swinging picture and type 1 instead, or tap **Moon**:
 > "Or one tap: we're on the Moon now. Lower gravity, longer period. You can watch it on the graph."
 
 ## 5. A judge draws (1:25–2:15, 50s)
@@ -57,7 +57,7 @@ If voice doesn't respond within ~3 seconds (noisy room, mic permission), don't r
 
 > "That's your drawing, turned into physics."
 
-If they drew two balls colliding, point at the **first** hit between the balls and the green Total p line:
+If they drew two balls colliding, tap the badge at the top left of the picture until it reads **SLOW MOTION 0.11×** *before* you take the photo (the speed carries over to the next photo), then point at the **first** hit between the balls and the green Total p line:
 > "Watch the green line, the total momentum. When the two balls hit, it doesn't change. Momentum is conserved."
 
 Total momentum is only conserved when the balls hit each other. When a ball bounces off a wall at the side, the total changes, because the wall pushes from outside. So always explain it on the first collision, before either ball reaches a wall.
@@ -100,12 +100,12 @@ If recognition misses:
 1. Don't wait it out. Say: "Venue Wi-Fi. Let me show you it works even without the AI."
 2. Switch to the backup tab (https://lukenicholls1222.github.io/whiteboard-alive/?offline) and take the same photo again.
 3. Say: "With no AI at all, it guesses from the shapes alone: triangles, circles, zig-zags. That got 42 out of 42 of our test drawings right."
-4. The transformation, "Show what AI saw", Your numbers and the sliders still work in this mode.
+4. The transformation, "Show what AI saw", the value pills, Your numbers and the sliders still work in this mode.
 
 **If the Wi-Fi is dead** (the page won't load or nothing responds):
 1. Use the example gallery and run one of the saved examples. It needs no network. If that fails too, switch to the backup `?offline` tab, which is already loaded, and snap the backup pre-drawn pendulum.
 2. Say: "The Wi-Fi died, but this is a saved run of exactly the same pipeline."
-3. Then carry on from section 4 (Your numbers / Moon) as normal.
+3. Then carry on from section 4 (the value pills / Moon) as normal.
 
 ## If a judge asks
 

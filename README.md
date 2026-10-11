@@ -20,14 +20,16 @@ Built at OCCHacks 2026 (Education track).
    - The fixed parts of your drawing stay faintly in the background. The hand-drawn moving parts fade out after a few seconds.
    - Tap **Show what AI saw** to bring the colour overlay back at any time.
 5. Change the physics while it runs:
+   - **Value pills**: right under the moving picture, each value sits in a small pill (for example Length 0.45 m, Mass 1 kg). Tap one to get − / +, a slider and a number box, and change it while you watch it move, with no scrolling. The pills stay in sync with Your numbers.
    - **Your numbers**: type in the real values. String length, mass, spring constant, ramp angle, launch speed, ground length, the left and right pulley masses, each ball's mass and speed in a collision, and each seesaw weight's mass and distance (whichever the diagram uses).
    - **Sliders**: Gravity (every diagram), Friction (incline), Launch speed (projectile), Bounciness e from 0 to 1 (collision).
+   - **Slow motion**: tap the badge at the top left of the picture to step through 1× → 0.5× → 0.33× → 0.11× and back to 1× (it reads REAL TIME 1× or SLOW MOTION 0.11×, for example). It starts at 1× and goes back to 1× on reload. Only the playback slows down: each physics step stays the same length, so the period, speed and energy readouts are the same at every setting.
    - **Gravity presets**: Earth, Moon and Jupiter. Moon mode makes a pendulum swing slowly enough to see the longer period.
    - **Voice**: tap **Talk** and say something like "make the string 1 meter" or "make gravity weaker". Voice can change every setting.
    - **Air resistance**: a switch. The label is honest about the scale: real air, or real air ×N when it is exaggerated so you can see the effect.
    - **Velocity arrows**: arrow length is proportional to speed, with a scale bar.
 6. Below the simulation there is a live graph card that shows the theory next to what was measured:
-   - Pendulum and spring: energy graph (potential energy measured from the lowest point) and the period next to the theory value (2π√(L/g) for the pendulum).
+   - Pendulum and spring: energy graph (potential energy measured from the lowest point) and the period next to the theory value (2π√(L/g) for the pendulum, 2π√(m/k) for the spring). The spring's total energy line stays flat.
    - Rolling ball: the measured acceleration next to a = 5/7 g sinθ.
    - Collision: the momentum of each ball and the total, plus the kinetic energy.
    - Seesaw: a Torque balance card comparing m·g·d on each side (Left wins / Right wins / Balanced! / Nearly balanced).
@@ -56,7 +58,7 @@ photo ─► OpenCV.js (on the phone) ─► numbered contours ─► Gemini lab
 1. **Computer vision on the device (OpenCV.js).** By default only black ink is picked up, so stains, the desk, fold shadows and the paper edge don't become strokes. If the drawing is in blue pen, it switches to the general ink detection automatically. The photo is normalised against its own background, ruled or grid lines are erased, small breaks in strokes are joined, and specks are dropped. Each remaining contour is simplified (Douglas-Peucker) and given an id.
 2. **The AI only labels; it never places anything (Gemini).** Gemini gets the photo with every contour outlined and numbered, plus the list of contours. It returns JSON (enforced with a response schema) giving the diagram type and the role of each contour id. All positions come from OpenCV, never from the model. Sizes and masses come from the numbers you type in, not from the paper.
 3. **If the AI fails, the shapes still decide.** The app waits for the AI before anything moves. If every model fails or times out, a shape-based guess takes over: it looks for closed triangles, circles and boxes, filled-in blobs and zig-zag bands in the ink. Add `?offline` to the URL to force this mode.
-4. **Physics (Matter.js).** Each diagram type has its own scene builder that turns roles into bodies and constraints. Stiffness and damping are fixed constants per diagram type, not chosen by the AI, so a scene behaves the same way every time. The incline adds its own Coulomb friction step.
+4. **Physics (Matter.js).** Each diagram type has its own scene builder that turns roles into bodies and constraints. Stiffness and damping are fixed constants per diagram type, not chosen by the AI, so a scene behaves the same way every time. The incline adds its own Coulomb friction step. The spring moves by the exact solution of u'' = −(k/m)(u − u_eq), so its period is exactly 2π√(m/k), and mass and spring constant are separate values (doubling the mass makes the period √2 times longer).
 5. **The transformation.** Each scene describes its own clean figure. A light traces the matching strokes part by part, the clean shape snaps in over them, and from then on the clean figure is what moves.
 6. **Voice.** The Web Speech API turns speech into text. A keyword parser handles it first, instantly. Only if nothing matches does Gemini turn the text into a small diff such as `{"set": {"gravity": 1.6}}`.
 
@@ -90,7 +92,7 @@ All code in this repository was written during OCCHacks 2026 (Oct 10–11, 2026)
 - Seven diagram scenes (the incline handles both a block and a rolling ball) plus the always-moving fallback
 - The transformation from hand drawing to clean figure (colour overlay, tracing light, snap-in shapes)
 - Black-ink detection and clean-up for messy phone photos
-- Your numbers, gravity presets (Moon mode), bounciness, air resistance, velocity arrows and voice control
+- Value pills under the picture, Your numbers, gravity presets (Moon mode), bounciness, air resistance, velocity arrows and voice control
 - Live graph card with theory next to measurement: period, rolling acceleration, momentum, torque balance
 - The shape-based guess for when the AI is unavailable
 - 42 test drawings in `samples/generated/`, made with an image model

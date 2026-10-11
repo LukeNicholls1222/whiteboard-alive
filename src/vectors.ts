@@ -31,12 +31,14 @@ const EASE = 1 - Math.exp(-STEP_S / 0.1);
 
 /**
  * Visibility: the threshold is this share of the top speed (at least SHOW_MIN_MPS). An arrow appears at
- * SHOW_HYST times the threshold and goes away after HIDE_FRAMES frames below it, so jitter never flickers.
+ * SHOW_HYST times the threshold and goes away after HIDE_STEPS physics steps below it, so jitter never flickers.
+ * Tracking (smoothing, show / hide, sudden stops) runs after every physics step, not every frame: a frame may run
+ * several steps or none (playback speed, playback.ts), and a step is the same physical time at any speed.
  */
 const SHOW_FRACTION = 0.04;
 const SHOW_MIN_MPS = 0.05;
 const SHOW_HYST = 1.5;
-const HIDE_FRAMES = 10;
+const HIDE_STEPS = 10;
 /**
  * A sudden stop (a block hitting the floor or a wall, a pulley weight reaching the end) is followed by a small
  * settling wobble that reads as flicker. A body that stopped like that keeps its arrow hidden until a clear
@@ -48,12 +50,12 @@ const CRASH_TO = 0.1;
 const WAKE_FRACTION = 0.2;
 const WAKE_TRAVEL = 0.5;
 /**
- * Light smoothing of the velocity vector (weight of the newest frame), only while slow: that is where
+ * Light smoothing of the velocity vector (weight of the newest step), only while slow: that is where
  * contact jitter would make a tiny arrow twitch. Above SMOOTH_BELOW_MPS the arrow is the exact velocity.
  */
 const SMOOTH = 0.5;
 const SMOOTH_BELOW_MPS = 0.5;
-/** A jump larger than this (world px in one frame) is a reset/relaunch: drop the smoothing history. */
+/** A jump larger than this (world px in one step) is a reset/relaunch: drop the smoothing history. */
 const JUMP_PX = 60;
 
 const COLOR = '#ff4b4b';
@@ -81,10 +83,10 @@ interface Track {
   vy: number;
   x: number;
   y: number;
-  /** Smoothed speed this frame, m/s. */
+  /** Smoothed speed after the last step, m/s. */
   speed: number;
   shown: boolean;
-  /** Consecutive frames under the hide threshold. */
+  /** Consecutive steps under the hide threshold. */
   below: number;
   /** Set by a sudden stop: where it stopped and how big it is (see WAKE_*). */
   rest: { x: number; y: number; size: number } | null;
@@ -204,6 +206,9 @@ export class VelocityArrows {
     this.fade = null;
     this.marks.clear();
     this.topRow = null;
+    sim.stepListeners.push(() => {
+      if (this.sim === sim) this.track(sim.scene);
+    });
     sim.drawListeners.push((ctx, scene, s) => {
       if (this.sim === sim) this.draw(ctx, scene, s);
     });
@@ -263,31 +268,9 @@ export class VelocityArrows {
     const worldH = vis.h;
     const lmax = LMAX_FRACTION * Math.min(worldW, worldH);
 
-    // Pass 1: smoothed velocity and speed of every body, and the top speed of the scene so far.
+    // Speeds come from the tracking after the last step (none yet while the morph plays).
     let maxNow = 0;
-    for (const b of bodies) {
-      const p = b.position;
-      let t = this.tracks.get(b);
-      if (!t || Math.hypot(p.x - t.x, p.y - t.y) > JUMP_PX) {
-        t = { vx: b.velocity.x, vy: b.velocity.y, x: p.x, y: p.y, speed: 0, shown: false, below: 0, rest: null };
-        this.tracks.set(b, t);
-      } else {
-        // Smooth only when it was slow and still is, so a sudden stop (landing, end of the ramp) is exact too.
-        const raw = Math.hypot(b.velocity.x, b.velocity.y) / STEP_S / PX_PER_M;
-        const prev = Math.hypot(t.vx, t.vy) / STEP_S / PX_PER_M;
-        // A reversal (turning point of a swing or spring) is shown at once, never averaged towards zero.
-        const sameWay = b.velocity.x * t.vx + b.velocity.y * t.vy > 0;
-        const k = sameWay && Math.max(raw, prev) < SMOOTH_BELOW_MPS ? SMOOTH : 1;
-        t.vx += (b.velocity.x - t.vx) * k;
-        t.vy += (b.velocity.y - t.vy) * k;
-        t.x = p.x;
-        t.y = p.y;
-      }
-      const speed = mps(Math.hypot(t.vx, t.vy), scale); // physical m/s (units.ts)
-      this.updateShown(t, b, speed);
-      t.speed = speed;
-      maxNow = Math.max(maxNow, speed);
-    }
+    for (const b of bodies) maxNow = Math.max(maxNow, this.tracks.get(b)?.speed ?? 0);
 
     // The factor for this frame: Lmax at the expected top speed, or at the fastest seen if that is faster.
     this.vMax = Math.max(this.vMax, maxNow);
@@ -321,8 +304,8 @@ export class VelocityArrows {
     const labels: Array<{ text: string; box: Box }> = [];
     const edge = (HEAD_HALF_W_CSS + OUTLINE_CSS) * css;
     for (const b of bodies) {
-      const t = this.tracks.get(b)!;
-      if (!t.shown) continue;
+      const t = this.tracks.get(b);
+      if (!t || !t.shown) continue;
       const p = b.position;
       const n = Math.hypot(t.vx, t.vy);
       if (!(n > 0)) continue;
@@ -441,6 +424,36 @@ export class VelocityArrows {
     return vis.y + y;
   }
 
+  /** After every physics step: smoothed velocity and speed of every moving body, and the top speed so far. */
+  private track(scene: BuiltScene) {
+    const scale = scaleOf(scene);
+    let maxNow = 0;
+    for (const b of this.movingBodies(scene)) {
+      const p = b.position;
+      let t = this.tracks.get(b);
+      if (!t || Math.hypot(p.x - t.x, p.y - t.y) > JUMP_PX) {
+        t = { vx: b.velocity.x, vy: b.velocity.y, x: p.x, y: p.y, speed: 0, shown: false, below: 0, rest: null };
+        this.tracks.set(b, t);
+      } else {
+        // Smooth only when it was slow and still is, so a sudden stop (landing, end of the ramp) is exact too.
+        const raw = Math.hypot(b.velocity.x, b.velocity.y) / STEP_S / PX_PER_M;
+        const prev = Math.hypot(t.vx, t.vy) / STEP_S / PX_PER_M;
+        // A reversal (turning point of a swing or spring) is shown at once, never averaged towards zero.
+        const sameWay = b.velocity.x * t.vx + b.velocity.y * t.vy > 0;
+        const k = sameWay && Math.max(raw, prev) < SMOOTH_BELOW_MPS ? SMOOTH : 1;
+        t.vx += (b.velocity.x - t.vx) * k;
+        t.vy += (b.velocity.y - t.vy) * k;
+        t.x = p.x;
+        t.y = p.y;
+      }
+      const speed = mps(Math.hypot(t.vx, t.vy), scale); // physical m/s (units.ts)
+      this.updateShown(t, b, speed);
+      t.speed = speed;
+      maxNow = Math.max(maxNow, speed);
+    }
+    this.vMax = Math.max(this.vMax, maxNow);
+  }
+
   /** Top speed the factor is based on, m/s: the expected one, the fastest seen, or the fading seed without a hint. */
   private vRef(): number {
     const seed = this.hint > 0 ? 0 : SEED_MPS * Math.max(0, 1 - this.frames / SEED_FRAMES);
@@ -461,7 +474,7 @@ export class VelocityArrows {
     }
     if (t.shown) {
       if (speed < base) {
-        if (++t.below >= HIDE_FRAMES) t.shown = false;
+        if (++t.below >= HIDE_STEPS) t.shown = false;
       } else t.below = 0;
       return;
     }

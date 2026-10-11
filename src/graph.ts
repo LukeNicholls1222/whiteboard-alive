@@ -1,4 +1,4 @@
-// Live readout under the simulation: energy graph in joules (last 8 s on screen), period / speed, and Moon mode.
+// Live readout under the simulation: energy graph in joules (last 480 steps), period / speed, and Moon mode.
 // A seesaw shows its torque balance instead: the moment m·g·d of each side as a bar, and which side wins.
 // Reads everything from the running Simulation each step; keeps no gravity state of its own. Every number is in
 // physical units through units.ts (the scene's px per metre and slow-motion factor).
@@ -21,7 +21,6 @@ import {
   massesOf,
   meters,
   mps,
-  OMEGA2_PER_STIFFNESS,
   physSeconds,
   scaleOf,
   springK,
@@ -29,6 +28,7 @@ import {
   STEP_S,
 } from './units';
 
+/** Engine seconds the graph shows (8 s on screen at one step per frame; physical span = × timeFactor). */
 const WINDOW_S = 8;
 const MAX_SAMPLES = Math.round(WINDOW_S / STEP_S);
 const MOON_G = 1.62;
@@ -70,7 +70,7 @@ interface Sample {
  * measured from the lowest point the moving body can reach, not from the bottom of the picture:
  *  - pendulum: the bottom of the swing (pivot + string length straight down), fixed;
  *  - spring:   the rest (equilibrium) position: gravity and spring together give ½ k d², d from rest;
- *  - window:   anything else, the lowest PE in the last 8 s on screen (subtracted when drawing).
+ *  - window:   anything else, the lowest PE in the last 480 steps (subtracted when drawing).
  */
 type PeRef = { kind: 'pendulum'; bottomY: number } | { kind: 'spring' } | { kind: 'window' };
 
@@ -100,8 +100,10 @@ export class LiveGraph {
   private samples: Sample[] = [];
   private yMax = 0;
   private peRef: PeRef = { kind: 'window' };
-  /** Screen seconds since the drawing started (the period meter works in screen time). */
+  /** Engine seconds (steps × STEP_S) since the drawing started (the period meter works in engine time). */
   private time = 0;
+  /** A step changed what the card shows; it is painted once, at the end of the frame (a frame may run many steps). */
+  private redraw = false;
   private period = new PeriodMeter();
   private lastG = NaN;
   /** Ball collision on screen: the two balls and their masses (the card shows momentum instead of energy). */
@@ -198,7 +200,18 @@ export class LiveGraph {
     if (this.moon.checked) sim.setParams({ gravity: MOON_G });
     this.syncGravity();
     this.showTheory();
+    this.redraw = false;
     sim.stepListeners.push((engine) => this.onStep(sim, engine));
+    sim.frameListeners.push(() => this.onFrame(sim));
+  }
+
+  /** Once per frame, after its steps: paint the card if any step changed it. */
+  private onFrame(sim: Simulation) {
+    if (this.sim !== sim || !this.redraw) return;
+    this.redraw = false;
+    if (this.lever) this.showTorque(this.lever, sim.gravity);
+    else if (this.balls) this.drawMomentum();
+    else this.draw();
   }
 
   /**
@@ -218,11 +231,10 @@ export class LiveGraph {
       const T = g > 0 && amp !== null ? (2 * Math.PI * Math.sqrt(L / g)) * amplitudeFactor(amp) : 0;
       text = amp === null || !(T > 0) ? 'Theory 2π√(L/g) = --' : `Theory (θ₀=${Math.round((amp * 180) / Math.PI)}°) = ${formatSeconds(T)}`;
     } else if (sim && this.diagram === 'spring' && sim.scene.label === 'Spring and mass') {
-      const c = sim.scene.constraints[0];
+      const k = sim.scene.physics?.springK?.value;
       const block = sim.scene.parts?.block;
-      if (c && block) {
+      if (k && block) {
         const m = block.kg ?? DEFAULT_KG;
-        const k = springK(c.stiffness, m, this.scale);
         text = `Theory 2π√(m/k) = ${formatSeconds(2 * Math.PI * Math.sqrt(m / k))}`;
       }
     } else if (sim && sim.scene.label === 'Incline' && sim.scene.physics?.rolling) {
@@ -294,7 +306,7 @@ export class LiveGraph {
     }
   }
 
-  /** Measured period, converted from screen seconds to physical seconds. */
+  /** Measured period, converted from engine seconds to physical seconds. */
   private showPeriod() {
     const p = this.period.value();
     const T = p ? physSeconds(p.period, this.scale) : 0;
@@ -307,7 +319,7 @@ export class LiveGraph {
     this.syncGravity();
     const g = sim.gravity;
     if (this.lever) {
-      this.showTorque(this.lever, g);
+      this.redraw = true;
       return;
     }
     const bodies = Matter.Composite.allBodies(engine.world).filter((b) => !b.isStatic);
@@ -322,7 +334,7 @@ export class LiveGraph {
       setText(this.metricValue, formatMomentum(s.p1 + s.p2));
       setText(this.theoryLabel, `Kinetic energy ${formatEnergy(s.ke)}`);
       this.theoryLabel.hidden = false;
-      this.drawMomentum();
+      this.redraw = true;
       return;
     }
 
@@ -342,7 +354,7 @@ export class LiveGraph {
       const baseY = ref.kind === 'pendulum' ? ref.bottomY : sim.worldH;
       pe += kg * g * Math.max(0, meters(baseY - b.position.y, this.scale));
     }
-    pe += ref.kind === 'spring' ? springEnergyFromRest(engine, this.scale, this.kg) : springEnergy(engine, this.scale, this.kg);
+    pe += ref.kind === 'spring' ? springEnergyFromRest(sim, this.scale) : springEnergy(engine, this.scale, this.kg);
     this.samples.push({ ke, pe });
     if (this.samples.length > MAX_SAMPLES) this.samples.shift();
 
@@ -359,7 +371,7 @@ export class LiveGraph {
       const f = sim.motion.fastest();
       setText(this.metricValue, f ? formatSpeed(mps(Math.hypot(f.track.vx, f.track.vy), this.scale)) : '--');
     }
-    this.draw();
+    this.redraw = true;
   }
 
   /** Ball collision: momentum (each ball and the total) on top, kinetic energy of both below, last 8 s. */
@@ -572,7 +584,7 @@ export class LiveGraph {
     ctx.textAlign = 'right';
     ctx.fillText('now', right, cssH - 4);
     ctx.textAlign = 'left';
-    // The window is 8 s on screen; the axis is in physical time like every other readout.
+    // The window is 480 steps (8 engine seconds); the axis is in physical time like every other readout.
     const span = physSeconds(WINDOW_S, this.scale);
     ctx.fillText(`-${span < 10 ? span.toFixed(1) : span.toFixed(0)} s`, left, cssH - 4);
     // Where PE is zero, small, between the time labels (clear of the curves).
@@ -731,37 +743,21 @@ function peRefOf(sim: Simulation, diagram: DiagramType): PeRef {
     const L = scene.measures?.string;
     if (swing?.kind === 'swing' && L) return { kind: 'pendulum', bottomY: swing.pivot.y + L };
   }
-  if (diagram === 'spring' && scene.label === 'Spring and mass' && scene.constraints.some((c) => c.stiffness < 0.1))
-    return { kind: 'spring' };
+  if (diagram === 'spring' && scene.label === 'Spring and mass' && scene.physics?.springK) return { kind: 'spring' };
   return { kind: 'window' };
 }
 
 /**
- * Potential energy of a mass on a drawn spring measured from its rest position, in joules: ½ k d², d = how far
- * the spring end is from where gravity and spring balance (rest length + g along the spring / ω²). Gravity's
- * share is inside this: m g h + ½ k x² is ½ k d² plus a constant.
+ * Potential energy of a mass on a drawn spring measured from its rest position, in joules: ½ k d², with the k the
+ * spring scene runs (scenes/spring-motion.ts) and d = how far the block is from where gravity and spring balance
+ * right now. Gravity's share is inside this: m g h + ½ k x² is ½ k d² plus a constant. The scene's motion keeps
+ * ½ m v² + ½ k d² exactly, so the Total stays flat.
  */
-function springEnergyFromRest(engine: Matter.Engine, scale: Scale, kg: Map<Matter.Body, number>): number {
-  const g = engine.gravity;
-  const toStep = g.scale * (STEP_S * 1000) ** 2;
-  let e = 0;
-  for (const c of Matter.Composite.allConstraints(engine.world)) {
-    if (c.stiffness >= 0.1) continue;
-    const ends = [c.bodyA, c.bodyB].filter((b): b is Matter.Body => !!b && !b.isStatic);
-    if (!ends.length) continue;
-    const ms = ends.map((b) => kg.get(b) ?? DEFAULT_KG);
-    const m = ms.length === 2 ? (ms[0] * ms[1]) / (ms[0] + ms[1]) : ms[0];
-    const a = Matter.Constraint.pointAWorld(c);
-    const b = Matter.Constraint.pointBWorld(c);
-    const len = Math.hypot(b.x - a.x, b.y - a.y);
-    if (len < 1e-6) continue;
-    // Gravity along the spring (towards the moving end), px per step², over ω² per step² = the sag in px.
-    const ga = ((g.x * (b.x - a.x) + g.y * (b.y - a.y)) / len) * toStep;
-    const rest = c.length + ga / (OMEGA2_PER_STIFFNESS * c.stiffness);
-    const d = meters(len - rest, scale);
-    e += 0.5 * springK(c.stiffness, m, scale) * d * d;
-  }
-  return e;
+function springEnergyFromRest(sim: Simulation, scale: Scale): number {
+  const spring = sim.scene.physics?.springK;
+  if (!spring) return 0;
+  const d = meters(spring.stretch(), scale);
+  return 0.5 * spring.value * d * d;
 }
 
 /**

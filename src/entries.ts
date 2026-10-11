@@ -4,7 +4,7 @@
 // exactly where they used to read handwritten notes. The launch speed is also params.speed, shared with its slider.
 
 import type { Analysis, Annotation, BuiltScene, PartName, Quantity } from './types';
-import { DEFAULT_KG, meters, scaleOf, springK } from './units';
+import { DEFAULT_KG, meters, scaleOf } from './units';
 
 export type EntryKey =
   | 'stringLength'
@@ -112,8 +112,8 @@ export function fieldsFor(scene: BuiltScene, analysis: Pick<Analysis, 'params'>)
       break;
     case 'Spring and mass': {
       if (parts.block) add('springMass', said(kg('block')));
-      const c = scene.constraints[0];
-      if (c && parts.block) add('springK', said(springK(c.stiffness, kg('block'), s)));
+      const k = scene.physics?.springK?.value;
+      if (k && parts.block) add('springK', said(k));
       break;
     }
     case 'Incline': {

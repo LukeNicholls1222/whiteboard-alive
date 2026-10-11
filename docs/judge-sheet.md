@@ -24,7 +24,7 @@ Anything else? Draw it anyway. If we can't tell what it is, it still falls.
 - **Keep lines connected**: the string touches the ceiling, the zig-zag touches the box.
 - **Keep words and numbers away from the parts**, about one finger's width, so they don't get mixed up with the lines.
 
-You don't need to write any numbers. Values such as string length and mass can be changed in the app's input fields.
+You don't need to write any numbers. Values such as string length and mass can be changed by tapping them right under the moving picture.
 
 ## 3. Taking the photo
 
