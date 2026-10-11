@@ -6,7 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cycleSpeed, MAX_STEPS_PER_FRAME, playbackSpeed, playedSpeed, SPEEDS, speedLabel, StepClock, stepRate } from '../src/playback.ts';
+import { cycleSpeed, MAX_STEPS_PER_FRAME, playbackSpeed, playedSpeed, ScreenWait, SPEEDS, speedLabel, StepClock, stepRate, stepsForScreen } from '../src/playback.ts';
 import { DEFAULT_SCALE, STEP_S } from '../src/units.ts';
 
 const TF = DEFAULT_SCALE.timeFactor; // a 960 px paper of 1 m, 0.326
@@ -67,4 +67,48 @@ test('labels', () => {
   assert.deepEqual(speedLabel(1 / 9, TF), { word: 'Slow motion', num: '0.11×' });
   // A tiny drawing (timeFactor > 1) plays fewer than one step a frame at every speed, so all speeds are exact.
   assert.deepEqual(speedLabel(1, 1.6), { word: 'Real time', num: '1×' });
+});
+
+// ---- Waits on screen --------------------------------------------------------------------------------------------
+// A rest before a replay used to be counted in steps: at 1× (3 to 15 steps a frame) the seesaw rested 0.2 s, at
+// 0.11× the ramp 8 s. Counted in screen seconds it lasts the same at every speed.
+
+function setSpeed(speed: number) {
+  while (playbackSpeed() !== speed) cycleSpeed();
+}
+
+/** Frames (as sim.ts runs them) until the wait is over, at the current speed. */
+function framesUntil(wait: ScreenWait, tf: number, onStep: () => boolean = () => wait.tick()): number {
+  const clock = new StepClock();
+  for (let frame = 1; frame < 100_000; frame++) {
+    const n = clock.next(stepRate(playbackSpeed(), tf));
+    for (let i = 0; i < n; i++) if (onStep()) return frame;
+  }
+  return Infinity;
+}
+
+test('a ScreenWait lasts its seconds on screen at every speed, also when the step cap holds 1× back', () => {
+  for (const tf of [TF, 0.01, 1.6]) {
+    for (const speed of SPEEDS) {
+      setSpeed(speed);
+      const frames = framesUntil(new ScreenWait(1, () => tf), tf);
+      // Whole frames: at 0.11× a step comes every 3rd frame (and covers the next two), so it can be 2 frames off.
+      assert.ok(frames >= 57 && frames <= 63, `tf ${tf}, ${speed}×: ${frames} frames for 1 s`);
+    }
+  }
+  setSpeed(1);
+  assert.equal(stepsForScreen(1, TF), 180);
+  assert.equal(stepsForScreen(1, TF, 1 / 9), 20);
+});
+
+test('a speed change in the middle of a wait only changes what is left of it', () => {
+  setSpeed(1);
+  const wait = new ScreenWait(1, () => TF);
+  const clock = new StepClock();
+  let frames = 0;
+  for (; frames < 30; frames++) for (let i = clock.next(stepRate(playbackSpeed(), TF)); i > 0; i--) assert.equal(wait.tick(), false);
+  setSpeed(1 / 9);
+  const rest = framesUntil(wait, TF);
+  setSpeed(1);
+  assert.ok(frames + rest >= 57 && frames + rest <= 63, `${frames} + ${rest} frames`);
 });

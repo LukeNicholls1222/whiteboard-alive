@@ -18,7 +18,8 @@
 import Matter from 'matter-js';
 import type { CleanPart, Contour, Point, SceneBuilder, SceneInput, Sprite, ValueSource } from '../types';
 import { STEP_ACCEL, STEP_MS } from '../sim';
-import { noteFor } from '../units';
+import { noteFor, scaleOf } from '../units';
+import { ScreenWait } from '../playback';
 import { buildFallback } from './fallback';
 import { contourMask, cutSprite, deepestPoint, eraseFromPaper, maskBounds, roleOf } from './common';
 import { deg, drawnSupport, fmt, TIDY, TIDY_MAX_DEG, tidyLog, untidyMatters, untidyMove, untidySegment, untidyTurn } from './tidy';
@@ -31,8 +32,8 @@ const TIE_TOLERANCE = 0.08;
 const WHEEL_CLEAR = 1.15;
 /** A row is part of a weight (not rope) when its width is at least this fraction of the widest row on that side. */
 const WEIGHT_ROW_FRACTION = 0.5;
-/** Steps to hold still at the end of the run before resetting (1.5 s at 60 fps, keeps the demo looping). */
-const HOLD_STEPS = 90;
+/** Held still at the end of the run before resetting, screen seconds at any playback speed (keeps the demo looping). */
+const HOLD_S = 1;
 /** Gap kept between a rising weight and the wheel, px. */
 const WHEEL_GAP = 4;
 const MIN_TRAVEL = 30;
@@ -581,10 +582,12 @@ export const buildPulley: SceneBuilder = (input) => {
   // s = downward displacement of the left weight (right moves up by s). One degree of freedom.
   let s = 0;
   let v = 0;
-  let hold = 0;
+  let hold = false;
+  const wait = new ScreenWait(HOLD_S, () => scaleOf(scene).timeFactor);
   const onStep = (engine: Matter.Engine) => {
-    if (hold > 0) {
-      if (--hold === 0) {
+    if (hold) {
+      if (wait.tick()) {
+        hold = false;
         s = 0;
         v = 0;
       }
@@ -597,7 +600,8 @@ export const buildPulley: SceneBuilder = (input) => {
       if (Math.abs(s) >= maxDown) {
         s = Math.sign(s) * maxDown;
         v = 0;
-        hold = HOLD_STEPS;
+        hold = true;
+        wait.reset();
       }
     }
     Matter.Body.setPosition(bodyL, { x: homeL.x, y: homeL.y + s });
@@ -724,7 +728,7 @@ export const buildPulley: SceneBuilder = (input) => {
   );
 
   const half = (s: Side) => Math.max(s.weightBox.w, s.weightBox.h) / 2;
-  return {
+  const scene: ReturnType<SceneBuilder> = {
     bodies: [bodyL, bodyR],
     constraints: [],
     sprites,
@@ -743,4 +747,5 @@ export const buildPulley: SceneBuilder = (input) => {
       wheel: { at: () => C, clear: R, side: 'above' },
     },
   };
+  return scene;
 };

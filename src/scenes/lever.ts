@@ -16,7 +16,8 @@
 
 import Matter from 'matter-js';
 import type { CleanPart, LeverInfo, LeverSide, Point, SceneBuilder, Sprite, Untidy, ValueSource } from '../types';
-import { STEP_ACCEL, STEP_MS, noteFor, scaleFor } from '../units';
+import { STEP_ACCEL, STEP_MS, noteFor, scaleFor, scaleOf } from '../units';
+import { ScreenWait } from '../playback';
 import { buildFallback } from './fallback';
 import { cutSprite, eraseFromPaper } from './common';
 import {
@@ -24,6 +25,7 @@ import {
   floorLimits,
   framePoint,
   balanceOf,
+  HOLD_S,
   imbalance,
   leverInertia,
   leverTorque,
@@ -154,7 +156,8 @@ export const buildLever: SceneBuilder = (input) => {
   const tauSign = Math.sign(leverTorque(model, theta0, 1));
   const room = (th: number) => (tauSign > 0 ? model.thetaMax - th : th - model.thetaMin);
   if (!balanced && tauSign !== 0 && room(theta0) < rad(3)) theta0 = 0;
-  const motion = new LeverMotion(model, theta0, balanced, verdict.settle);
+  // The rest on the floor lasts HOLD_S on screen at any playback speed (this scene's timeFactor is read when it runs).
+  const motion = new LeverMotion(model, theta0, balanced, verdict.settle, new ScreenWait(HOLD_S, () => scaleOf(scene).timeFactor));
 
   // Slow-down so the tip takes ~TARGET_TIP_S on screen: θ = α t² / 2 => scale = 2 θ / (α T²), α at Earth gravity.
   const alpha0 = Math.abs(leverTorque(model, theta0, STEP_ACCEL)) / leverInertia(model);
@@ -278,7 +281,7 @@ export const buildLever: SceneBuilder = (input) => {
     };
   });
 
-  return {
+  const scene: ReturnType<SceneBuilder> = {
     bodies: [plank, ...weights],
     constraints: [],
     sprites,
@@ -292,4 +295,5 @@ export const buildLever: SceneBuilder = (input) => {
     parts,
     physics: { lever },
   };
+  return scene;
 };

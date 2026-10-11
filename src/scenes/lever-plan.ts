@@ -23,6 +23,7 @@
 // back level. Nearly balanced (moments within the drawing's error): it tips a little toward the heavier side and stays.
 
 import type { BBox, Point } from '../types';
+import type { ScreenWait } from '../playback';
 
 // ---- Tunables ----------------------------------------------------------------------------------------------------
 
@@ -595,8 +596,10 @@ export function riding(P: Point, u: number, v: number, theta: number, omega: num
 const BOUNCE = 0.3;
 /** Slower than this after a bounce (rad/step): it rests. */
 const REST_OMEGA = 0.0015;
-/** Steps resting on the floor before replaying (1.5 s). */
+/** Steps resting on the floor before replaying, without a screen-time wait (tests). */
 export const HOLD_STEPS = 90;
+/** Resting on the floor before replaying, screen seconds at any playback speed (playback.ts). */
+export const HOLD_S = 1;
 /** Balanced rocking: amplitude (rad), period and decay (steps), one cycle (steps). */
 const ROCK_AMP = (2.5 * Math.PI) / 180;
 const ROCK_PERIOD = 70;
@@ -610,7 +613,7 @@ const ROCK_CYCLE = 300;
 export class LeverMotion {
   theta: number;
   omega = 0;
-  /** Steps resting on the floor (counts up to HOLD_STEPS, then replays). */
+  /** Steps resting on the floor (counts up while it rests; `wait` or HOLD_STEPS ends the rest). */
   hold = 0;
   bounces = 0;
   private t = 0;
@@ -619,8 +622,11 @@ export class LeverMotion {
   readonly balanced: boolean;
   /** Nearly balanced: it settles this far (radians) from theta0 toward the heavier side, and rocks about there. */
   readonly settle: number;
-  constructor(model: LeverModel, theta0: number, balanced: boolean, settle = 0) {
+  /** Ends the rest on the floor after a time on screen (playback.ts); without it, after HOLD_STEPS steps. */
+  private readonly wait: ScreenWait | null;
+  constructor(model: LeverModel, theta0: number, balanced: boolean, settle = 0, wait: ScreenWait | null = null) {
     this.model = model;
+    this.wait = wait;
     this.theta0 = theta0;
     this.balanced = balanced;
     // Never as far as the floor: a gentle tilt, well inside the turning range.
@@ -635,6 +641,7 @@ export class LeverMotion {
     this.hold = 0;
     this.bounces = 0;
     this.t = 0;
+    this.wait?.reset();
   }
 
   /** Angular acceleration now, rad/step², for gravity `g` px/step². */
@@ -660,7 +667,8 @@ export class LeverMotion {
       return;
     }
     if (this.hold > 0) {
-      if (++this.hold > HOLD_STEPS) this.reset();
+      this.hold++;
+      if (this.wait ? this.wait.tick() : this.hold > HOLD_STEPS) this.reset();
       return;
     }
     this.omega += this.accel(g);
@@ -674,6 +682,7 @@ export class LeverMotion {
     if (Math.abs(this.omega) < REST_OMEGA || this.bounces >= 4) {
       this.omega = 0;
       this.hold = 1;
+      this.wait?.reset();
     }
   }
 }

@@ -59,6 +59,49 @@ export class StepClock {
   }
 }
 
+// ---- Waits on screen ------------------------------------------------------------------------------------------
+// A scene that rests before it plays again (seesaw, pulley, collision, ramp) waits a time the viewer sees: about a
+// second on screen at any speed. Counted in steps it would shrink to a blink at 1× (several steps a frame) and
+// stretch to ages at 0.11× (one step every few frames), so it is counted in screen seconds, one step at a time.
+
+/** Screen seconds per frame: sim.ts runs one batch of steps per animation frame (60 fps). */
+export const FRAME_S = 1 / 60;
+
+/** Screen seconds one physics step takes at this speed on a scene with this timeFactor. */
+export const screenSecondsPerStep = (timeFactor: number, speed: number = playbackSpeed()): number =>
+  FRAME_S / stepRate(speed, timeFactor);
+
+/** Physics steps that fill `seconds` of screen time at this speed (at least 1). */
+export const stepsForScreen = (seconds: number, timeFactor: number, speed: number = playbackSpeed()): number =>
+  Math.max(1, Math.round(seconds / screenSecondsPerStep(timeFactor, speed)));
+
+/**
+ * A wait of `seconds` on screen, ticked once per physics step. Each tick adds the screen time of one step at the speed
+ * chosen right now, so a tap on the badge in the middle of a wait changes only what is left of it.
+ */
+export class ScreenWait {
+  private elapsed = 0;
+  seconds: number;
+  /** Read on every tick (the scene's scale is set after it is built). */
+  private readonly timeFactor: () => number;
+  constructor(seconds: number, timeFactor: () => number) {
+    this.seconds = seconds;
+    this.timeFactor = timeFactor;
+  }
+
+  reset() {
+    this.elapsed = 0;
+  }
+
+  /** One step of waiting: true once `seconds` of screen time have passed since the last reset (then it starts over). */
+  tick(): boolean {
+    this.elapsed += screenSecondsPerStep(this.timeFactor());
+    if (this.elapsed < this.seconds - 1e-9) return false;
+    this.elapsed = 0;
+    return true;
+  }
+}
+
 /** "Real time 1×" / "Slow motion 0.5×": the badge's two parts (word, number). */
 export function speedLabel(speed: number, timeFactor: number): { word: string; num: string } {
   const played = playedSpeed(speed, timeFactor);
